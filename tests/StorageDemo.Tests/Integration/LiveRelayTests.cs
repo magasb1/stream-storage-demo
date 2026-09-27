@@ -1,4 +1,5 @@
 using FFmpeg.AutoGen.Abstractions;
+using Microsoft.Extensions.DependencyInjection;
 using StorageDemo.Core.Streaming;
 using StorageDemo.Infrastructure.Media;
 using StorageDemo.Infrastructure.Streaming;
@@ -99,6 +100,67 @@ public sealed class LiveRelayTests : IAsyncLifetime
             System.Globalization.CultureInfo.InvariantCulture);
 
         Assert.True(given >= 5, $"asked for 5 seconds back and was given {given}");
+    }
+
+    /// <summary>
+    /// The sibling claim, and the one that used to be a quiet lie: a rollback deeper than the
+    /// viewer's queue is cut to what will fit, and the header says the shorter figure.
+    ///
+    /// A queue is seeded from the buffer before a live packet reaches it, and a seed bigger than the
+    /// queue does not lose the part that did not fit - every seeded packet is offered as not starting
+    /// a segment, so the first overflow throws the whole history away and waits for the next
+    /// keyframe. A viewer whose header promised it eight seconds then starts at the live edge, which
+    /// is the worst of the three answers available.
+    ///
+    /// The queue's ceiling is set to 150 packets here, because it is what has to bind and the
+    /// reference sender is fifteen frames a second of video and nothing else: the configured ceiling
+    /// of two thousand is over two minutes of that, and no test could reach it. 150 packets is ten
+    /// seconds, four of which are held back for the live flow, so six is what a rollback can have.
+    /// </summary>
+    [Fact]
+    public async Task A_rollback_deeper_than_the_viewers_queue_is_cut_to_what_fits()
+    {
+        Assert.SkipUnless(Srt.IsAvailable, LiveReplicas.NoLibsrt);
+        Assert.SkipUnless(LiveReplicas.HasSrt(), LiveReplicas.NoFfmpegSrt);
+
+        const string name = "deep-rollback-camera";
+        const double asked = 8;
+
+        var a = _replicas.Start("pod-a", _aIngest, viewerQueuePackets: 150);
+
+        using var meters = new Meters(a.Services.GetRequiredService<LiveMetrics>());
+
+        _replicas.Send(_aIngest, name);
+
+        await LiveReplicas.Until(
+            async () => await _replicas.Registry.GetAsync(name) is { BufferedSeconds: > asked },
+            TimeSpan.FromSeconds(40),
+            $"A never buffered the {asked} seconds this test asks to roll back through");
+
+        using var client = _replicas.Client(a);
+        using var response = await client.GetAsync(
+            $"api/live/peer/view/{name}?from={asked}&continue=0",
+            HttpCompletionOption.ResponseHeadersRead);
+
+        response.EnsureSuccessStatusCode();
+
+        var given = double.Parse(
+            response.Headers.GetValues("X-Live-Preroll").Single(),
+            System.Globalization.CultureInfo.InvariantCulture);
+
+        Assert.True(
+            given > 0 && given < asked,
+            $"asked for {asked} seconds back against a queue holding six and was promised {given}");
+
+        // Promised is not given. Reading the stream is what proves the history actually arrived:
+        // an overflow on the way in would have discarded it, and the skip is counted.
+        await using var body = await response.Content.ReadAsStreamAsync();
+
+        var buffer = new byte[64 * 1024];
+
+        Assert.True(await body.ReadAsync(buffer) > 0, "the relayed viewer received nothing");
+
+        Assert.Empty(meters.Of("live.overflows"));
     }
 
     /// <summary>

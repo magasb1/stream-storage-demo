@@ -210,8 +210,59 @@ public sealed class LiveOptions
     public int MaxRecordingMinutes { get; init; } = 12 * 60;
 
     /// <summary>
-    /// Queue depth for a viewer, in packets. Overflowing costs a viewer a skip forward to live,
-    /// which is the right answer for something that must never accumulate delay.
+    /// Queue depth for a viewer, in seconds of media. Overflowing costs a viewer a skip forward to
+    /// live, which is the right answer for something that must never accumulate delay - and this is
+    /// how much delay it may accumulate first, which is the only unit that statement can be made
+    /// in. A viewer's queue is therefore sized per stream, from what the sender is actually
+    /// sending, plus whatever rollback that viewer asked to start from.
+    ///
+    /// It is as honest as the sender's own declaration, which is what the rate is read from: a
+    /// sender that overstates its frame rate gets a queue shallower in real seconds than this asks
+    /// for, and one that understates it a deeper one. <see cref="ViewerQueuePackets"/> is what
+    /// bounds the cost of the second case, and a sanity clamp on the declared rate the first.
+    ///
+    /// This used to be stated in packets, and 2000 of them read as a generous queue right up until
+    /// somebody worked out what it was worth: a packet here is one demultiplexed frame, so at
+    /// twenty-five a second that queue was eighty seconds deep. Skip-to-live never engaged, because
+    /// a viewer would have had to fall more than a minute behind to reach it, and a viewer that far
+    /// behind live is not a viewer any more.
+    ///
+    /// Four seconds: two keyframe intervals at a common two-second setting, so an ordinary
+    /// scheduling or network hiccup costs nothing, and short enough that the skip when one does not
+    /// recover is a correction rather than a jump out of the recent past. Overflowing costs the
+    /// wait for the next keyframe on top of this, which is why it is not shorter.
+    ///
+    /// Four is what measured clean rather than what was argued for: at this depth five hundred and
+    /// fifty healthy readers against two hundred streams skipped nothing at all, while two hundred
+    /// deliberately slow ones skipped about once every six seconds each, which is this protection
+    /// working. The case for a larger figure - that four seconds is two keyframe intervals, and thin
+    /// against a collection pause, a retransmit burst or a handover - is untested, because the rig
+    /// behind those numbers has no way to make a reader stall in bursts rather than steadily. See
+    /// .scratch/scale-to-1000/ingest-and-readers.md.
+    /// </summary>
+    [Range(0.25, 60)]
+    public double ViewerQueueSeconds { get; init; } = 4;
+
+    /// <summary>
+    /// The ceiling on a viewer's queue, in packets, whatever <see cref="ViewerQueueSeconds"/> and a
+    /// rollback work out to. It is what stops a sender claiming an absurd frame rate from sizing a
+    /// queue per viewer that this replica cannot afford, and it is why the depth above can be
+    /// expressed in seconds at all.
+    ///
+    /// Kept under its old name and its old value, so a deployment that tuned it keeps a bound it
+    /// recognises. What changed is that it is a ceiling rather than the depth itself: a deployment
+    /// that lowered it still gets no more than it asked for, and one that left it alone no longer
+    /// gets a queue measured in minutes.
+    ///
+    /// It is not a formality. At twenty-five frames a second beside AAC audio it is about
+    /// twenty-eight seconds of media, which is less than the rolling buffer's own window, so it is
+    /// this rather than <see cref="ViewerQueueSeconds"/> that decides how far back the deepest
+    /// rollback a viewer can be given actually reaches - see the pre-roll clamp in
+    /// <c>LiveStreamCoordinator</c>, which is where the two meet.
+    ///
+    /// A forward still takes this figure as its depth outright rather than as a ceiling. A forward
+    /// is not a viewer - it is one configured far end rather than one of a thousand arriving
+    /// players - and sizing it is not what this option was changed for.
     /// </summary>
     [Range(64, 100_000)]
     public int ViewerQueuePackets { get; init; } = 2_000;
@@ -219,6 +270,12 @@ public sealed class LiveOptions
     /// <summary>
     /// Queue depth for a recorder. Larger, because overflowing here is not a skip: it ends the
     /// recording and marks the document truncated, and that must be genuinely rare.
+    ///
+    /// Still in packets, and deliberately left that way. A recorder wants the same treatment a
+    /// viewer has just been given and cannot safely have it yet: overflowing costs data rather than
+    /// a moment, and its queue has to cover a part upload, which happens between reads with nothing
+    /// draining the channel. A figure in seconds that did not account for that would turn a slow
+    /// storage backend into truncated recordings. Tracked as its own change.
     /// </summary>
     [Range(64, 1_000_000)]
     public int RecorderQueuePackets { get; init; } = 20_000;

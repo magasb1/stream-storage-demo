@@ -508,8 +508,11 @@ public sealed class LiveStreamsController(
         Response.ContentType = "video/mp2t";
 
         // Asking for twenty seconds and receiving twenty-six is normal, since a stream can only be
-        // joined where a decoder can start. The SRT path has to log this because that transport has
-        // no way to say it back; here there is one, and the relaying replica logs what it was told.
+        // joined where a decoder can start. So is receiving less: a stream may not have been running
+        // that long, and a rollback deeper than a viewer's queue can hold is cut to what will fit
+        // rather than thrown away on the way in. The SRT path has to log this because that transport
+        // has no way to say it back; here there is one, and the relaying replica logs what it was
+        // told.
         Response.Headers["X-Live-Preroll"] = live
             .ResolvePreroll(name, from)
             .ToString("0.###", CultureInfo.InvariantCulture);
@@ -517,10 +520,12 @@ public sealed class LiveStreamsController(
         // A live stream that only flushes at the end is not a live stream.
         HttpContext.Features.Get<IHttpResponseBodyFeature>()?.DisableBuffering();
 
-        // libav writes through a synchronous callback and has no asynchronous form of it, so this
-        // one response opts back in to what the server forbids by default.
-        HttpContext.Features.Get<IHttpBodyControlFeature>()!.AllowSynchronousIO = true;
-
+        // No synchronous IO, although libav's muxer writes through a synchronous callback and has no
+        // asynchronous form of it. This response used to opt back into what the server forbids by
+        // default, and what the server forbids it for turned out to be exactly what happened: a
+        // viewer that stopped reading held the thread writing to it, one pool worker per slow viewer.
+        // The muxer writes into memory now and the coordinator writes memory to this response
+        // asynchronously, which is why the route no longer needs it - see LiveStreamCoordinator.
         await live.WriteToViewerAsync(
             // Relayed by definition: only a replica that does not own the stream calls this route,
             // and the viewer on the other end of it reached the cluster somewhere else.

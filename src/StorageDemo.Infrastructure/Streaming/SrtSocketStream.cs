@@ -267,10 +267,48 @@ public sealed unsafe class SrtSocketStream : Stream, IWireWriter
         }
     }
 
+    /// <summary>
+    /// The synchronous send, inline, and returning a task that is already finished.
+    ///
+    /// libsrt has no asynchronous send: a send blocks until the socket has room, and making that
+    /// non-blocking would mean libsrt's own epoll rather than anything a .NET task can express. A
+    /// write to an SRT peer therefore occupies a thread whatever this method does. What the base
+    /// class does is not wrong so much as pointless here: it moves the blocking send to a
+    /// thread-pool worker and releases the caller while it runs, which for a consumer that has
+    /// nothing else to do until the write finishes buys a hop and a <see cref="Task"/> and no
+    /// concurrency at all.
+    ///
+    /// The load-bearing part is what that costs the viewer path. Serving a viewer drains its muxed
+    /// bytes with an await per packet, and against a destination like this one that await completes
+    /// synchronously and the loop simply carries on. Left to the base class, every packet for every
+    /// direct viewer would instead suspend the loop and queue a work item, which is a per-packet
+    /// pool dispatch on the busiest path this service has.
+    /// </summary>
+    public override ValueTask WriteAsync(
+        ReadOnlyMemory<byte> buffer,
+        CancellationToken cancellationToken = default)
+    {
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return ValueTask.FromCanceled(cancellationToken);
+        }
+
+        Write(buffer.Span);
+
+        return ValueTask.CompletedTask;
+    }
+
+    /// <inheritdoc cref="WriteAsync(ReadOnlyMemory{byte}, CancellationToken)"/>
+    public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+        => WriteAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
+
     /// <summary>Nothing to do: libsrt puts every message on the wire as it is sent.</summary>
     public override void Flush()
     {
     }
+
+    /// <inheritdoc cref="Flush"/>
+    public override Task FlushAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 
     public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
 

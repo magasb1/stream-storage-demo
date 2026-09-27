@@ -16,13 +16,59 @@ namespace StorageDemo.Infrastructure.Streaming;
 /// </summary>
 public sealed unsafe class StreamLayout : IDisposable
 {
+    /// <summary>
+    /// What a stream is assumed to send when it says nothing usable about itself - a probe that
+    /// ended before libav could average a frame rate leaves zero there, and a queue sized from zero
+    /// is no queue at all.
+    ///
+    /// Sixty is high for a picture and about right for everything else a transport carries. It errs
+    /// deep for anything slower, which costs a queue a few hundred kilobytes it did not need, and
+    /// shallow for anything faster, which costs that viewer a skip; of the two, a skip is the one
+    /// worth avoiding. A KLV stream beside 25 fps video measured nearer eighty-five packets a second
+    /// in total than the fifty a packet-per-frame assumption predicts, so this is also the closer
+    /// guess for the metadata case it is most often used for.
+    /// </summary>
+    private const double AssumedPacketsPerSecond = 60;
+
+    /// <summary>
+    /// The most one stream is believed to send. Above this the figure is a sender's claim rather
+    /// than a measurement: a thousand packets a second is four times the fastest camera anything
+    /// here has seen and twenty times a live audio track, and the claims that reach it are
+    /// arithmetic rather than video - an <c>avg_frame_rate</c> of 10000/1, or an audio frame size of
+    /// one sample. Both would otherwise pin every viewer of that stream to the packet ceiling, and so
+    /// to a fraction of a second of queue, which is a sender opting its own viewers out of ever
+    /// riding out a hiccup.
+    /// </summary>
+    private const double MaxPacketsPerSecond = 1_000;
+
+    /// <summary>
+    /// The floor under a queue, in seconds, because a floor in packets is the bug this arithmetic
+    /// exists to fix in miniature: sixty-four packets is a reasonable queue at 25 fps, thirteen
+    /// seconds of one at five, and over a minute at one frame a second. Half a second is about as
+    /// short as a queue can be and still ride out one scheduling hiccup.
+    /// </summary>
+    private const double MinimumSeconds = 0.5;
+
+    /// <summary>
+    /// The floor under a queue in packets, which is mechanical rather than a policy about seconds: a
+    /// transport interleaves its streams rather than aligning them, so a queue has to hold at least
+    /// a packet from each of them and one being read, however slow the stream is.
+    /// </summary>
+    private const int MinimumPackets = 4;
+
     private readonly IntPtr[] _parameters;
     private readonly AVRational[] _timeBases;
 
-    private StreamLayout(IntPtr[] parameters, AVRational[] timeBases, int videoIndex, int klvIndex)
+    private StreamLayout(
+        IntPtr[] parameters,
+        AVRational[] timeBases,
+        double packetsPerSecond,
+        int videoIndex,
+        int klvIndex)
     {
         _parameters = parameters;
         _timeBases = timeBases;
+        PacketsPerSecond = packetsPerSecond;
         VideoIndex = videoIndex;
         KlvIndex = klvIndex;
     }
@@ -38,6 +84,27 @@ public sealed unsafe class StreamLayout : IDisposable
     public int KlvIndex { get; }
 
     public int Count => _parameters.Length;
+
+    /// <summary>
+    /// Roughly how many demultiplexed packets a second this transport carries, across every stream
+    /// in it.
+    ///
+    /// It is what turns a queue depth in seconds into a queue depth in packets, which is the only
+    /// unit a channel has. A packet here is one <c>AVPacket</c> - a video frame, an audio frame, a
+    /// metadata item - so the figure is the sum of the streams' own rates rather than the video
+    /// frame rate: audio at forty-seven frames a second is more packets than the picture it
+    /// accompanies, and a queue sized from the picture alone would be less than half as deep in
+    /// seconds as it was asked to be.
+    ///
+    /// Roughly, and deliberately. It is read once from what the sender presented and never
+    /// corrected, because what it is used for is sizing a queue at the moment a consumer attaches;
+    /// a variable frame rate or a sender that lied costs a queue somewhat deeper or shallower in
+    /// seconds than asked for, which is the difference between four seconds and five rather than
+    /// between four and eighty. A declaration that cannot be true - an infinity, or ten thousand
+    /// frames a second - is replaced rather than believed, because this figure is sender-controlled
+    /// and a viewer's queue is sized from it.
+    /// </summary>
+    public double PacketsPerSecond { get; }
 
     /// <summary>
     /// The clock everything is measured against. The video stream when there is one, so a segment
@@ -56,12 +123,16 @@ public sealed unsafe class StreamLayout : IDisposable
         var count = (int)format->nb_streams;
         var parameters = new IntPtr[count];
         var timeBases = new AVRational[count];
+        var packetsPerSecond = 0d;
         var videoIndex = -1;
         var klvIndex = -1;
 
         for (var index = 0; index < count; index++)
         {
             var stream = format->streams[index];
+
+            packetsPerSecond += RateOf(stream);
+
             var copy = ffmpeg.avcodec_parameters_alloc();
 
             ffmpeg.avcodec_parameters_copy(copy, stream->codecpar);
@@ -86,8 +157,80 @@ public sealed unsafe class StreamLayout : IDisposable
             }
         }
 
-        return new StreamLayout(parameters, timeBases, videoIndex, klvIndex);
+        return new StreamLayout(parameters, timeBases, packetsPerSecond, videoIndex, klvIndex);
     }
+
+    /// <summary>
+    /// How many packets a subscriber has to hold to keep this many seconds of this stream, never
+    /// fewer than a burst's worth and never more than <paramref name="ceiling"/>.
+    ///
+    /// The ceiling is the reason a queue can be asked for in seconds at all. Seconds are what the
+    /// intent is written in - a viewer must never accumulate more delay than it can be asked to
+    /// tolerate - but the memory the queue costs is packets, and a sender is free to claim a
+    /// thousand frames a second. Whichever of the two binds first is the answer.
+    /// </summary>
+    public int QueueDepth(double seconds, int ceiling)
+    {
+        // The floor is in seconds, so that a slow stream gets a short queue rather than a deep one:
+        // a floor in packets is how a queue meant to hold a moment came to hold eighty seconds.
+        var packets = Math.Ceiling(Math.Max(seconds, MinimumSeconds) * PacketsPerSecond);
+
+        // Clamped this way round rather than with Math.Clamp, which throws when a deployment has
+        // set a ceiling below the floor rather than quietly giving it the smaller of the two. The
+        // rates are finite by construction, so the cast cannot see a NaN.
+        return Math.Min(ceiling, Math.Max(MinimumPackets, (int)Math.Min(packets, int.MaxValue)));
+    }
+
+    /// <summary>
+    /// What one stream sends a second, in packets, from what the sender presented about it.
+    ///
+    /// Each kind of stream says it differently. A picture says it as a frame rate, and the average
+    /// rather than the base rate because a telecined or variable source sends the average. Audio
+    /// says it as a sample rate over the samples in one frame, which is how forty-eight kilohertz
+    /// AAC comes out at forty-seven packets a second rather than forty-eight thousand. Anything
+    /// else - KLV metadata, a subtitle track - declares no rate at all and is taken to send
+    /// <see cref="AssumedPacketsPerSecond"/>, which for the metadata case is the closer of the two
+    /// available guesses.
+    ///
+    /// Every answer goes through <see cref="Believable"/>, because all of it is the sender's
+    /// arithmetic: a rational with a zero denominator is an infinity, and a frame rate of ten
+    /// thousand is a claim.
+    /// </summary>
+    private static double RateOf(AVStream* stream)
+    {
+        var parameters = stream->codecpar;
+
+        if (parameters->codec_type == AVMediaType.AVMEDIA_TYPE_AUDIO
+            && parameters->sample_rate > 0
+            && parameters->frame_size > 0)
+        {
+            return Believable((double)parameters->sample_rate / parameters->frame_size);
+        }
+
+        var average = ffmpeg.av_q2d(stream->avg_frame_rate);
+
+        if (average > 0)
+        {
+            return Believable(average);
+        }
+
+        var declared = ffmpeg.av_q2d(stream->r_frame_rate);
+
+        return declared > 0 ? Believable(declared) : AssumedPacketsPerSecond;
+    }
+
+    /// <summary>
+    /// One stream's declared rate, or the assumption where what it declared cannot be true.
+    ///
+    /// Discarded rather than clamped to the maximum, which is the difference that matters: a claim of
+    /// ten thousand frames a second clamped to a thousand is still four times anything real, and a
+    /// sender could use it to pin its own viewers to the packet ceiling and so to a fraction of a
+    /// second of queue. Treated as a stream that declared nothing, it gets the same queue a stream
+    /// libav could not measure gets. Nothing downstream is allowed to see an infinity or a NaN
+    /// either, because this figure is multiplied by a number of seconds and cast to a queue depth.
+    /// </summary>
+    private static double Believable(double rate)
+        => double.IsFinite(rate) && rate is > 0 and <= MaxPacketsPerSecond ? rate : AssumedPacketsPerSecond;
 
     /// <summary>
     /// Recreates these streams on a container being written, so a consumer's muxer carries the
