@@ -63,6 +63,19 @@ Scaling to a thousand streams. The plan, the reasoning and the research behind e
 - [ ] Flaky under a full-suite run: A_reconnect_under_the_same_name_resumes_the_same_stream. Passed
       3/3 alone, 16/16 in its class and on a repeat full run; the SRT timing tests share ports and
       ffmpeg senders with the rest of the suite
+- [x] Export what the service already measures: OTLP to a collector, Prometheus and Tempo behind it,
+      and a Grafana dashboard each for streaming and for the API. No /metrics endpoint on the pod -
+      the .NET Prometheus exporter is still beta and this service has public ports. The meters
+      grew with it: the census a beat publishes, what each stream fed, claims and endings, viewer
+      attaches by route, overflows, capture outcomes, the heartbeat's own latency, and on the API
+      side the open server streams, document bytes by surface and the hop between replicas.
+      docs/observability.md says what to alert on
+- [ ] Export the detection worker's meter too. It already publishes live.detection.duration on the
+      same meter name, and nothing carries it off the pod: the worker is a separate deployment with
+      no exporter wired, so today it is readable only with dotnet-counters against that process
+- [ ] Decide whether logs should ride OTLP beside the metrics and traces. Serilog writes structured
+      JSON to stdout and the cluster collects it; one sink would let Grafana pivot from a span to
+      the lines inside it, at the cost of a second path for something that already works
 - [ ] Detection, per .scratch/scale-to-1000/detection-plan.md: geometry first, then RF-DETR on the
       processor, the worker, the GPU, YOLO, and tracking
 - [ ] Decide the Ultralytics licence question before YOLO ships in anything delivered. RF-DETR's

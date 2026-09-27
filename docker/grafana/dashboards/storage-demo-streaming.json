@@ -1,0 +1,1479 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "description": "SRT ingest, the packet fan-out, capture and the heartbeat that keeps the cluster honest. Every series here is an aggregate: nothing is tagged with a stream name, because a thousand streams times several instruments is thousands of time series to answer a question GET /api/live answers per stream for free.",
+  "editable": true,
+  "graphTooltip": 1,
+  "links": [],
+  "panels": [
+    {
+      "id": 1,
+      "type": "row",
+      "title": "This replica now",
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Streams owned",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "storage-demo-prometheus"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 0,
+        "y": 1
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "storage-demo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(live_streams_owned{service_instance_id=~\"$replica\"})",
+          "legendFormat": "Streams owned",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "description": "Streams this replica holds the connection for, interrupted ones included. The same figure an autoscaler reads, and it is the one number here that cannot be trusted alone: see the kernel UDP errors below."
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Interrupted",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "storage-demo-prometheus"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 4,
+        "y": 1
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "storage-demo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(live_streams_interrupted{service_instance_id=~\"$replica\"})",
+          "legendFormat": "Interrupted",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              }
+            ]
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "description": "Feeds that have stopped arriving but are inside their grace period. A whole census interrupted is senders going away, not streams."
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Unstartable",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "storage-demo-prometheus"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 8,
+        "y": 1
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "storage-demo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(live_streams_unstartable{service_instance_id=~\"$replica\"})",
+          "legendFormat": "Unstartable",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              }
+            ]
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "description": "No decodable position inside the buffer window: every pre-roll from these is empty and every snapshot second-hand. The fix is at the encoder."
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Viewers",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "storage-demo-prometheus"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 12,
+        "y": 1
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "storage-demo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(live_viewers{service_instance_id=~\"$replica\"})",
+          "legendFormat": "Viewers",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "description": "Players pulling a stream from this replica, direct and relayed alike."
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Recording",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "storage-demo-prometheus"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 16,
+        "y": 1
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "storage-demo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(live_recordings_active{service_instance_id=~\"$replica\"})",
+          "legendFormat": "Recording",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "description": "Recordings running here, each writing a document."
+    },
+    {
+      "id": 7,
+      "type": "stat",
+      "title": "Forwarding",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "storage-demo-prometheus"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 20,
+        "y": 1
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "storage-demo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(live_forwards_active{service_instance_id=~\"$replica\"})",
+          "legendFormat": "Forwarding",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 8,
+      "type": "row",
+      "title": "Ingest",
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 6
+      }
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Ingest bitrate",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "storage-demo-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 7
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "storage-demo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (service_instance_id) (rate(live_bytes{service_instance_id=~\"$replica\"}[$__rate_interval])) * 8",
+          "legendFormat": "{{service_instance_id}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisSoftMin": 0
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "bps"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Bytes demultiplexed into a hub, as a rate. Counted by the hub while it holds the lock it already holds, and reported by the heartbeat, so nothing here costs the demultiplexer's thread an instrument call per packet."
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Packet rate",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "storage-demo-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 7
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "storage-demo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (service_instance_id) (rate(live_packets{service_instance_id=~\"$replica\"}[$__rate_interval]))",
+          "legendFormat": "{{service_instance_id}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisSoftMin": 0
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "pps"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Transport loss and drop",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "storage-demo-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 15
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "storage-demo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(live_packets_lost{service_instance_id=~\"$replica\"}[$__rate_interval]))",
+          "legendFormat": "lost",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "storage-demo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(live_packets_dropped{service_instance_id=~\"$replica\"}[$__rate_interval]))",
+          "legendFormat": "dropped",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisSoftMin": 0
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "pps"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Two different failures. Lost never arrived and could not be retransmitted in time: the network, or a receive path that cannot keep up. Dropped arrived too late for the latency window, which usually means the window is too small for the link. Per stream, these are on GET /api/live; this is the pod's total."
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Kernel UDP receive errors",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "storage-demo-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 15
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "storage-demo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (service_instance_id) (rate(live_udp_receive_errors{service_instance_id=~\"$replica\"}[$__rate_interval]))",
+          "legendFormat": "{{service_instance_id}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisSoftMin": 0,
+            "thresholdsStyle": {
+              "mode": "dashed"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "pps",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "What never reached libsrt at all, so no per-socket figure can see it. This is the collapse itself: the 250-stream baseline hit 319,000 of these in fifteen seconds while every stream still reported itself healthy. Zero on a quiet pod. Anything sustained here means this pod is past its knee whatever the stream count says. Linux only."
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "Handshakes",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "storage-demo-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 23
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "storage-demo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (port) (rate(live_accepts{service_instance_id=~\"$replica\"}[$__rate_interval]))",
+          "legendFormat": "accepted :{{port}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "storage-demo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (port, reason) (rate(live_rejects{service_instance_id=~\"$replica\"}[$__rate_interval]))",
+          "legendFormat": "refused :{{port}} {{reason}}",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisSoftMin": 0
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Callers arriving on the ingest and consumption ports. A refusal is not necessarily a fault: conflict is the name lock doing its job, overload is Live:MaxStreams doing its job, and either is a sign the deployment needs another replica rather than a bug."
+    },
+    {
+      "id": 14,
+      "type": "timeseries",
+      "title": "Claims and endings",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "storage-demo-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 23
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "storage-demo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (outcome) (rate(live_claims{service_instance_id=~\"$replica\"}[$__rate_interval]))",
+          "legendFormat": "claim {{outcome}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "storage-demo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (reason) (rate(live_streams_ended{service_instance_id=~\"$replica\"}[$__rate_interval]))",
+          "legendFormat": "ended {{reason}}",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisSoftMin": 0
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "cps"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "A rolling update should read as shutdown here and resumed on whichever replica took the names: that is a move, and nothing was lost. Refused claims are the ordinary outcome of the source reconcile - every replica reaches for every configured source and all but one loses."
+    },
+    {
+      "id": 15,
+      "type": "row",
+      "title": "Fan-out and capture",
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 31
+      }
+    },
+    {
+      "id": 16,
+      "type": "timeseries",
+      "title": "Subscribers that fell behind",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "storage-demo-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 32
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "storage-demo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (policy) (rate(live_overflows{service_instance_id=~\"$replica\"}[$__rate_interval]))",
+          "legendFormat": "{{policy}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisSoftMin": 0,
+            "thresholdsStyle": {
+              "mode": "dashed"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "cps",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "The fan-out's fault signal, and the one thing on this path counted as it happens rather than sampled. skip-to-live is a viewer losing a moment to catch up; fail is a recorder stopping and marking its document truncated. Neither should be steady."
+    },
+    {
+      "id": 17,
+      "type": "timeseries",
+      "title": "Viewers served",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "storage-demo-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 32
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "storage-demo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (route) (rate(live_viewer_sessions{service_instance_id=~\"$replica\"}[$__rate_interval]))",
+          "legendFormat": "{{route}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisSoftMin": 0
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "cps"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Counted once a viewer is actually subscribed, by the replica that owns its stream: a player that reached another pod is fetched from the owner and counts there, tagged relayed. Per attach rather than per connection, so a viewer held across a change of owner counts again - which is how often a stream moves under somebody watching. Mostly relayed means most viewers land on a replica that does not own their stream, which is a load-balancer question rather than a fault."
+    },
+    {
+      "id": 18,
+      "type": "timeseries",
+      "title": "Recordings and snapshots",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "storage-demo-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 40
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "storage-demo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (outcome) (rate(live_recordings{service_instance_id=~\"$replica\"}[$__rate_interval]) * 60)",
+          "legendFormat": "recording {{outcome}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "storage-demo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (outcome) (rate(live_snapshots{service_instance_id=~\"$replica\"}[$__rate_interval]) * 60)",
+          "legendFormat": "snapshot {{outcome}}",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisSoftMin": 0
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "cpm"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Outcomes rather than counts. A truncated recording is real but short. A snapshot tagged preview was served from the harvester's older, smaller picture because the feed had sent no keyframe recently enough, which is a quality problem nobody would otherwise notice."
+    },
+    {
+      "id": 19,
+      "type": "timeseries",
+      "title": "Recorded bytes",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "storage-demo-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 40
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "storage-demo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(live_recorded_bytes{service_instance_id=~\"$replica\"}[$__rate_interval]))",
+          "legendFormat": "stored",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisSoftMin": 0
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "Bps"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Counted as each part is stored, so a six-hour recording reports while it runs rather than in one lump at the end."
+    },
+    {
+      "id": 20,
+      "type": "timeseries",
+      "title": "MISB KLV",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "storage-demo-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 48
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "storage-demo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(live_klv_packets{service_instance_id=~\"$replica\"}[$__rate_interval]))",
+          "legendFormat": "decoded",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "storage-demo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(live_klv_rejected{service_instance_id=~\"$replica\"}[$__rate_interval]))",
+          "legendFormat": "failed checksum",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisSoftMin": 0
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "pps"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "The always-attached metadata subscriber. Rejections are packets that were ST 0601 and failed their checksum, which is a sender or a link problem rather than a decoder one - the decoder was validated against a real MISB stream."
+    },
+    {
+      "id": 21,
+      "type": "timeseries",
+      "title": "Detections posted",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "storage-demo-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 48
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "storage-demo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(live_detections{service_instance_id=~\"$replica\"}[$__rate_interval]))",
+          "legendFormat": "VMTI frames",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisSoftMin": 0
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "pps"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "VMTI frames the detection workers posted back to this replica. Nothing pushes work to a worker: it claims a stream and posts what it finds."
+    },
+    {
+      "id": 22,
+      "type": "row",
+      "title": "Control plane",
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 56
+      }
+    },
+    {
+      "id": 23,
+      "type": "timeseries",
+      "title": "Heartbeat duration",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "storage-demo-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 57
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "storage-demo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(live_heartbeat_duration_bucket{service_instance_id=~\"$replica\"}[$__rate_interval])))",
+          "legendFormat": "p50",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "storage-demo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(live_heartbeat_duration_bucket{service_instance_id=~\"$replica\"}[$__rate_interval])))",
+          "legendFormat": "p95",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "storage-demo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(live_heartbeat_duration_bucket{service_instance_id=~\"$replica\"}[$__rate_interval])))",
+          "legendFormat": "p99",
+          "range": true,
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisSoftMin": 0,
+            "thresholdsStyle": {
+              "mode": "dashed"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 2
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "The beat is two seconds. A pass that takes longer is a registry every other replica is reading stale, which is how two pods come to admit one name - and at a thousand streams the pass is a thousand registry writes and a whole listing read back. The first thing to look at when a cluster starts disagreeing with itself."
+    },
+    {
+      "id": 24,
+      "type": "timeseries",
+      "title": "Heartbeat failures",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "storage-demo-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 57
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "storage-demo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (stage) (rate(live_heartbeat_failures{service_instance_id=~\"$replica\"}[$__rate_interval]) * 60)",
+          "legendFormat": "{{stage}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisSoftMin": 0,
+            "thresholdsStyle": {
+              "mode": "dashed"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "cpm",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Work the beat swallowed so that a Redis blip could not take the ingest port down. That is exactly why it is counted: the log line is the only other trace it leaves. registry means the handshake is answering from a stale copy of what is claimed."
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "tags": [
+    "storage-demo",
+    "streaming"
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "replica",
+        "label": "Replica",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "storage-demo-prometheus"
+        },
+        "query": "label_values(service_instance_id)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "description": "The pod, by the same name the stream registry records as a stream's owner."
+      }
+    ]
+  },
+  "time": {
+    "from": "now-30m",
+    "to": "now"
+  },
+  "timezone": "browser",
+  "title": "Storage Demo - live streaming",
+  "uid": "storage-demo-streaming",
+  "version": 1
+}

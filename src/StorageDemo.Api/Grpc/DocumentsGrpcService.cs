@@ -2,6 +2,7 @@ using Google.Protobuf;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using StorageDemo.Api.Controllers;
+using StorageDemo.Api.Observability;
 using StorageDemo.Api.Uploads;
 using Microsoft.Extensions.Options;
 using StorageDemo.Core.Documents;
@@ -27,9 +28,25 @@ public sealed class DocumentsGrpcService(
     ContentTypeSniffer sniffer,
     IChangeFeed changeFeed,
     ProviderInfo providers,
+    ApiMetrics metrics,
     ILogger<DocumentsGrpcService> logger) : StorageDemo.Grpc.Documents.DocumentsBase
 {
     private const int ChunkSize = 64 * 1024;
+
+    /// <summary>
+    /// How this surface's measurements are tagged. REST writes to the same instruments with the
+    /// surface set to <c>rest</c>, because how much was uploaded is a question about the store rather
+    /// than about the protocol - and which surface anybody is actually using is worth asking too. The
+    /// three kinds exist because a wall of a thousand live tiles and a thousand file downloads are
+    /// nothing like the same load.
+    /// </summary>
+    private const string Surface = "grpc";
+
+    private const string Document = "document";
+
+    private const string Thumbnail = "thumbnail";
+
+    private const string Preview = "preview";
 
     public override async Task<ListResponse> List(Empty request, ServerCallContext context)
     {
@@ -68,7 +85,7 @@ public sealed class DocumentsGrpcService(
     {
         var content = await documents.DownloadAsync(ParseId(request.Id), context.CancellationToken);
 
-        await StreamAsync(content?.Stream, responseStream, context, "Document or object not found.");
+        await StreamAsync(content?.Stream, responseStream, context, "Document or object not found.", Document);
     }
 
     public override async Task DownloadThumbnail(
@@ -80,34 +97,58 @@ public sealed class DocumentsGrpcService(
             ParseId(request.Id),
             context.CancellationToken);
 
-        await StreamAsync(content?.Stream, responseStream, context, "No thumbnail for this document.");
+        await StreamAsync(
+            content?.Stream, responseStream, context, "No thumbnail for this document.", Thumbnail);
     }
 
-    private static async Task StreamAsync(
+    /// <param name="kind">
+    /// What is being served - a document, a thumbnail or a live preview - so the three can be told
+    /// apart on the meter. A wall of a thousand live tiles and a thousand file downloads are very
+    /// different loads and would otherwise be one number.
+    /// </param>
+    private async Task StreamAsync(
         Stream? source,
         IServerStreamWriter<Chunk> responseStream,
         ServerCallContext context,
-        string missingMessage)
+        string missingMessage,
+        string kind)
     {
         if (source is null)
         {
+            metrics.Downloaded(Surface, kind, "missing");
+
             throw new RpcException(new Status(StatusCode.NotFound, missingMessage));
         }
 
+        metrics.Downloaded(Surface, kind, "served");
+
         await using var stream = source;
         var buffer = new byte[ChunkSize];
+        var written = 0L;
 
-        while (true)
+        try
         {
-            var read = await stream.ReadAsync(buffer, context.CancellationToken);
-            if (read == 0)
+            while (true)
             {
-                break;
-            }
+                var read = await stream.ReadAsync(buffer, context.CancellationToken);
+                if (read == 0)
+                {
+                    break;
+                }
 
-            await responseStream.WriteAsync(
-                new Chunk { Data = UnsafeByteOperations.UnsafeWrap(buffer.AsMemory(0, read)) },
-                context.CancellationToken);
+                await responseStream.WriteAsync(
+                    new Chunk { Data = UnsafeByteOperations.UnsafeWrap(buffer.AsMemory(0, read)) },
+                    context.CancellationToken);
+
+                written += read;
+            }
+        }
+        finally
+        {
+            // In a finally, so a client that gave up halfway is counted for what it actually read.
+            // Bytes that left this process are bytes that left it, whether or not the call ended
+            // tidily, and a download abandoned at ninety per cent is exactly the event worth seeing.
+            metrics.DownloadedBytes(Surface, kind, written);
         }
     }
 
@@ -118,6 +159,8 @@ public sealed class DocumentsGrpcService(
         if (!await requestStream.MoveNext(context.CancellationToken)
             || requestStream.Current.PayloadCase != UploadRequest.PayloadOneofCase.Metadata)
         {
+            metrics.Uploaded(Surface, "rejected", 0);
+
             throw new RpcException(new Status(
                 StatusCode.InvalidArgument,
                 "The first message must carry upload metadata."));
@@ -152,6 +195,11 @@ public sealed class DocumentsGrpcService(
             contentType,
             context.CancellationToken);
 
+        // The stored document's own size, not a count of the chunks that arrived: what was stored is
+        // the figure this is asked about, and for a provider that rewrites nothing they are the same
+        // number anyway.
+        metrics.Uploaded(Surface, "stored", document.Size);
+
         return ToMessage(document);
     }
 
@@ -167,6 +215,8 @@ public sealed class DocumentsGrpcService(
         ServerCallContext context)
     {
         logger.LogInformation("Client subscribed to the change feed {Peer}", context.Peer);
+
+        using var counted = metrics.Streaming(ServerStreams.Changes);
 
         // Registered before the headers go out, so a client that waits for them cannot miss an
         // event published between its call arriving and the stream starting.
@@ -192,6 +242,8 @@ public sealed class DocumentsGrpcService(
                         FileName = change.FileName,
                     },
                     context.CancellationToken);
+
+                counted.Sent();
             }
         }
         catch (OperationCanceledException)
@@ -224,6 +276,8 @@ public sealed class DocumentsGrpcService(
     public override async Task WatchLiveStreams(
         Empty request, IServerStreamWriter<LiveListResponse> responseStream, ServerCallContext context)
     {
+        using var counted = metrics.Streaming(ServerStreams.LiveStreams);
+
         LiveListResponse? previous = null;
         while (!context.CancellationToken.IsCancellationRequested)
         {
@@ -232,6 +286,11 @@ public sealed class DocumentsGrpcService(
             {
                 await responseStream.WriteAsync(current, context.CancellationToken);
                 previous = current;
+
+                // Only what changed is written, which is the point of this RPC and also what makes
+                // the message count worth having: a wall of streams that never changes sends nothing
+                // at all, and a message rate climbing with the stream count is the cost of the wall.
+                counted.Sent();
             }
             await Task.Delay(TimeSpan.FromSeconds(1), context.CancellationToken);
         }
@@ -493,6 +552,9 @@ public sealed class DocumentsGrpcService(
         LiveStreamName request, IServerStreamWriter<LiveDetectionsMessage> responseStream, ServerCallContext context)
     {
         RequireLive();
+
+        using var counted = metrics.Streaming(ServerStreams.LiveDetections);
+
         Timestamp? previous = null;
         while (!context.CancellationToken.IsCancellationRequested)
         {
@@ -503,6 +565,8 @@ public sealed class DocumentsGrpcService(
                 {
                     await responseStream.WriteAsync(frame, context.CancellationToken);
                     previous = frame.Timestamp;
+
+                    counted.Sent();
                 }
             }
             catch (RpcException ex) when (ex.StatusCode == StatusCode.NotFound)
@@ -567,6 +631,9 @@ public sealed class DocumentsGrpcService(
                 new Chunk { Data = UnsafeByteOperations.UnsafeWrap(local) },
                 context.CancellationToken);
 
+            metrics.Downloaded(Surface, Preview, "served");
+            metrics.DownloadedBytes(Surface, Preview, local.Length);
+
             return;
         }
 
@@ -577,6 +644,8 @@ public sealed class DocumentsGrpcService(
 
         if (stream is null || !stream.HasPreview || live.Owns(request.Name))
         {
+            metrics.Downloaded(Surface, Preview, "missing");
+
             throw new RpcException(new Status(StatusCode.NotFound, "No preview for this stream."));
         }
 
@@ -584,7 +653,8 @@ public sealed class DocumentsGrpcService(
             await peers.OpenAsync(stream, $"api/live/preview/{request.Name}", context.CancellationToken),
             responseStream,
             context,
-            "No preview for this stream.");
+            "No preview for this stream.",
+            Preview);
     }
 
     public override async Task<DocumentId> SnapshotLive(
@@ -659,6 +729,8 @@ public sealed class DocumentsGrpcService(
     public override async Task WatchLiveKlv(
         LiveStreamName request, IServerStreamWriter<LiveKlvMessage> responseStream, ServerCallContext context)
     {
+        using var counted = metrics.Streaming(ServerStreams.LiveKlv);
+
         Google.Protobuf.WellKnownTypes.Timestamp? previous = null;
         while (!context.CancellationToken.IsCancellationRequested)
         {
@@ -669,6 +741,8 @@ public sealed class DocumentsGrpcService(
                 {
                     await responseStream.WriteAsync(current, context.CancellationToken);
                     previous = current.ReceivedAt;
+
+                    counted.Sent();
                 }
             }
             catch (RpcException ex) when (ex.StatusCode == StatusCode.NotFound)

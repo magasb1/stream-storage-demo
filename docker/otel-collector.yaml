@@ -1,0 +1,68 @@
+# The one thing the API talks to. Everything else in the observability stack talks to this.
+#
+# The service exports OTLP and nothing else, which is what keeps a preview-quality Prometheus
+# exporter and a second public port out of a media process. The collector is where the Prometheus
+# shape appears: it re-exposes what it received on :8889 for Prometheus to scrape, and forwards
+# traces to Tempo. Swap this file for Grafana Alloy, or point the API straight at a collector you
+# already run, and nothing in the service changes.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  # Fewer, larger exports. At a thousand streams the API publishes a few hundred series per replica
+  # and every one of them arrives on the same schedule, so batching is the difference between a
+  # steady trickle and a spike per export interval.
+  batch:
+    timeout: 5s
+    send_batch_size: 1024
+
+  # A hard ceiling, because the collector shares a machine with the thing it is measuring. Dropping
+  # telemetry is always better than pushing the service it measures into swap.
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 256
+    spike_limit_mib: 64
+
+exporters:
+  # Scraped by Prometheus, rather than the collector pushing: a pull model is what Prometheus is
+  # built around, and it means a collector restart leaves a gap rather than a backlog.
+  prometheus:
+    endpoint: 0.0.0.0:8889
+    # service.name and service.instance.id become labels, so a query can say "this replica" - which
+    # is the same name the stream registry records as a stream's owner.
+    resource_to_telemetry_conversion:
+      enabled: true
+    # One vocabulary. With suffixes on, this exporter renames what it forwards: a counter gains
+    # `_total` and an instrument declaring bytes or seconds gains `_bytes` or `_seconds`, so
+    # `live.bytes` reaches Grafana as `live_bytes_total` and `live.heartbeat.duration` as
+    # `live_heartbeat_duration_seconds_bucket`. That is the Prometheus convention and it is a
+    # perfectly good default, but it means the name in the code, the name in docs/observability.md
+    # and the name in a panel are three different strings, and the failure it produces - an empty
+    # panel with no error - is the most tedious one in this whole stack to diagnose. Off, so a
+    # dotted name becomes the same name with underscores and nothing else. Turn it on and the
+    # committed dashboards need renaming to match.
+    add_metric_suffixes: false
+
+  otlp/tempo:
+    endpoint: tempo:4317
+    tls:
+      insecure: true
+
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [prometheus]
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlp/tempo]
+  telemetry:
+    logs:
+      level: warn

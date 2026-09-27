@@ -296,13 +296,22 @@ spec:
 # Autoscaling: what to scale on, and what to watch to know the answer is still true.
 #
 # There is no HorizontalPodAutoscaler here on purpose. One needs a metrics pipeline this repository
-# does not install, and the thing it would read is not exported yet: the service publishes its
-# figures through System.Diagnostics.Metrics under the meter StorageDemo.Live, which
-# `dotnet-counters monitor -n StorageDemo.Api --counters StorageDemo.Live` reads with no package at
-# all. Turning that into a /metrics endpoint is two calls in Program.cs plus
-# OpenTelemetry.Extensions.Hosting and OpenTelemetry.Exporter.Prometheus.AspNetCore - and that
-# exporter has never shipped a stable release (1.18.0-beta.1, so --prerelease), which is one more
-# reason not to take the dependency before there is an HPA that needs it.
+# does not install. The figures themselves are exported now: the service publishes them through
+# System.Diagnostics.Metrics under the meter StorageDemo.Live, which
+# `dotnet-counters monitor -n StorageDemo.Api --counters StorageDemo.Live` still reads with no
+# package at all, and OTLP carries them to a collector when Telemetry__Enabled and
+# OTEL_EXPORTER_OTLP_ENDPOINT are set in k8s/configmap.yaml. There is no /metrics endpoint on the
+# pod and deliberately so - the .NET Prometheus exporter is still beta, and a media service with
+# public ports is the wrong place to open another one on a preview package. A collector alongside it
+# exposes the Prometheus shape instead. See docs/observability.md.
+#
+# WHICH LABELS THE SERIES ACTUALLY CARRIES. A collector receiving OTLP labels what it re-exposes
+# from the resource the service declared - service_name, service_instance_id, the pod name this
+# container injects as POD_NAME - and not from Kubernetes. The rule below therefore reads the pod
+# from the scrape, which works where the collector runs as a sidecar or a DaemonSet the
+# ServiceMonitor scrapes per pod. Where one central collector receives from every replica, every
+# series arrives with that collector's pod label and the rule has to key on service_instance_id
+# instead. Check which shape the cluster has before trusting either.
 #
 # SCALE OUT ON live_streams_owned, AT A TARGET A LITTLE UNDER Live__MaxStreams.
 #

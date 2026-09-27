@@ -1,7 +1,13 @@
 namespace StorageDemo.Core.Streaming;
 
 /// <param name="Preroll">How far back the caller asked to start, in seconds. Zero means live.</param>
-public sealed record ViewerRequest(string Name, double Preroll);
+/// <param name="Relayed">
+/// True when this viewer reached another replica and is being fetched from here, which only the
+/// peer view route sets. It travels with the request because it is a fact about how the player
+/// arrived, and the replica that owns the stream - the one that counts the viewer - cannot see it
+/// any other way.
+/// </param>
+public sealed record ViewerRequest(string Name, double Preroll, bool Relayed = false);
 
 /// <summary>
 /// Live streaming, as everything outside the pipeline sees it.

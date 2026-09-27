@@ -1,0 +1,1400 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "description": "The two request surfaces, the documents that pass through them, the hop between replicas, and what the process costs. Mostly framework metrics: a gRPC call is an HTTP/2 request, so one histogram covers both surfaces.",
+  "editable": true,
+  "graphTooltip": 1,
+  "links": [],
+  "panels": [
+    {
+      "id": 25,
+      "type": "row",
+      "title": "Requests",
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      }
+    },
+    {
+      "id": 26,
+      "type": "stat",
+      "title": "Requests/s",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "storage-demo-prometheus"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 0,
+        "y": 1
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "storage-demo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(http_server_request_duration_count{service_instance_id=~\"$replica\"}[$__rate_interval]))",
+          "legendFormat": "Requests/s",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "description": "Both surfaces. A gRPC call is an HTTP/2 request and is counted here too, with its method as the route."
+    },
+    {
+      "id": 27,
+      "type": "stat",
+      "title": "In flight",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "storage-demo-prometheus"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 4,
+        "y": 1
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "storage-demo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(http_server_active_requests{service_instance_id=~\"$replica\"})",
+          "legendFormat": "In flight",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "description": "Includes every open server stream, which is why it sits well above zero on an idle service with clients attached."
+    },
+    {
+      "id": 28,
+      "type": "stat",
+      "title": "p95 latency",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "storage-demo-prometheus"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 8,
+        "y": 1
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "storage-demo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(http_server_request_duration_bucket{service_instance_id=~\"$replica\"}[$__rate_interval])))",
+          "legendFormat": "p95 latency",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "description": "Across everything, subscriptions included, so read it per route below rather than here: an RPC held open for an hour is in this number when it finally ends."
+    },
+    {
+      "id": 29,
+      "type": "stat",
+      "title": "5xx/s",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "storage-demo-prometheus"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 12,
+        "y": 1
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "storage-demo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(http_server_request_duration_count{service_instance_id=~\"$replica\",http_response_status_code=~\"5..\"}[$__rate_interval]))",
+          "legendFormat": "5xx/s",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.01
+              }
+            ]
+          },
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 30,
+      "type": "stat",
+      "title": "gRPC failures/s",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "storage-demo-prometheus"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 16,
+        "y": 1
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "storage-demo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(calls_failed{service_instance_id=~\"$replica\"}[$__rate_interval]))",
+          "legendFormat": "gRPC failures/s",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.01
+              }
+            ]
+          },
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "description": "From gRPC's own meter, which is the only place a gRPC status code is visible: the status rides in a trailer, so a failed call is an HTTP 200 to everything else here."
+    },
+    {
+      "id": 31,
+      "type": "stat",
+      "title": "Open server streams",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "storage-demo-prometheus"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 20,
+        "y": 1
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "storage-demo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(api_grpc_streams_active{service_instance_id=~\"$replica\"})",
+          "legendFormat": "Open server streams",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "description": "The subscriptions: the change feed, the live wall, KLV and detections."
+    },
+    {
+      "id": 32,
+      "type": "timeseries",
+      "title": "Request rate by route",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "storage-demo-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 6
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "storage-demo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (http_route) (rate(http_server_request_duration_count{service_instance_id=~\"$replica\"}[$__rate_interval]))",
+          "legendFormat": "{{http_route}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisSoftMin": 0
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "REST routes and gRPC methods together. The live preview route is usually the busiest thing here, because a wall of tiles refreshes every one of them."
+    },
+    {
+      "id": 33,
+      "type": "timeseries",
+      "title": "p95 latency by route",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "storage-demo-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 6
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "storage-demo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by (le, http_route) (rate(http_server_request_duration_bucket{service_instance_id=~\"$replica\"}[$__rate_interval])))",
+          "legendFormat": "{{http_route}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisSoftMin": 0
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 34,
+      "type": "timeseries",
+      "title": "gRPC calls and failures",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "storage-demo-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 14
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "storage-demo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(total_calls{service_instance_id=~\"$replica\"}[$__rate_interval]))",
+          "legendFormat": "calls",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "storage-demo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (grpc_method) (rate(calls_failed{service_instance_id=~\"$replica\"}[$__rate_interval]))",
+          "legendFormat": "failed {{grpc_method}}",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "storage-demo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(calls_deadline_exceeded{service_instance_id=~\"$replica\"}[$__rate_interval]))",
+          "legendFormat": "deadline exceeded",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "storage-demo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(calls_unimplemented{service_instance_id=~\"$replica\"}[$__rate_interval]))",
+          "legendFormat": "unimplemented",
+          "range": true,
+          "refId": "D"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisSoftMin": 0
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "gRPC's own meter, which keeps its pre-conventions instrument names - hence total_calls and calls_failed rather than anything beginning rpc_server_. It is the only place a gRPC status is visible at all, because the status rides in a trailer and every call is an HTTP 200 to everything else here. A failed call is not necessarily a fault: asking any replica about a stream it does not own answers NOT_FOUND, and that is how this API is meant to be used."
+    },
+    {
+      "id": 35,
+      "type": "row",
+      "title": "Subscriptions",
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 22
+      }
+    },
+    {
+      "id": 36,
+      "type": "timeseries",
+      "title": "Open server streams by RPC",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "storage-demo-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 23
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "storage-demo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (rpc) (api_grpc_streams_active{service_instance_id=~\"$replica\"})",
+          "legendFormat": "{{rpc}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 25,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            },
+            "axisSoftMin": 0
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "A server stream is one request for as long as a client is running, so a request rate says nothing about it and a duration histogram only reports the ones that already ended. How many are open is the question."
+    },
+    {
+      "id": 37,
+      "type": "timeseries",
+      "title": "Messages sent to subscribers",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "storage-demo-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 23
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "storage-demo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (rpc) (rate(api_grpc_stream_messages{service_instance_id=~\"$replica\"}[$__rate_interval]))",
+          "legendFormat": "{{rpc}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisSoftMin": 0
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "cps"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Only changes are written, so an idle wall of streams sends nothing. A message rate that climbs with the stream count is what the wall actually costs."
+    },
+    {
+      "id": 38,
+      "type": "row",
+      "title": "Documents",
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 31
+      }
+    },
+    {
+      "id": 39,
+      "type": "timeseries",
+      "title": "Uploads and downloads",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "storage-demo-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 32
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "storage-demo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (surface, outcome) (rate(api_documents_uploads{service_instance_id=~\"$replica\"}[$__rate_interval]) * 60)",
+          "legendFormat": "upload {{surface}} {{outcome}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "storage-demo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (surface, kind) (rate(api_documents_downloads{service_instance_id=~\"$replica\"}[$__rate_interval]) * 60)",
+          "legendFormat": "download {{surface}} {{kind}}",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisSoftMin": 0
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "cpm"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Tagged by surface, because which of gRPC and REST anybody is actually using is worth knowing, and by kind, because a live preview and a recording are the same instrument and nothing like the same load."
+    },
+    {
+      "id": 40,
+      "type": "timeseries",
+      "title": "Bytes through the API",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "storage-demo-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 32
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "storage-demo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(api_documents_upload_bytes{service_instance_id=~\"$replica\"}[$__rate_interval]))",
+          "legendFormat": "uploaded",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "storage-demo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (kind) (rate(api_documents_download_bytes{service_instance_id=~\"$replica\"}[$__rate_interval]))",
+          "legendFormat": "downloaded {{kind}}",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisSoftMin": 0
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "Bps"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Downloads are counted only where this service copies the bytes itself, which is every gRPC download and a preview. A REST download hands a stream to Kestrel and may serve a range of it, so Kestrel's own meter is the honest place for that figure."
+    },
+    {
+      "id": 41,
+      "type": "row",
+      "title": "Between replicas",
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 40
+      }
+    },
+    {
+      "id": 42,
+      "type": "timeseries",
+      "title": "Forwarded calls",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "storage-demo-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 41
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "storage-demo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (kind, outcome) (rate(api_peer_calls{service_instance_id=~\"$replica\"}[$__rate_interval]))",
+          "legendFormat": "{{kind}} {{outcome}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisSoftMin": 0,
+            "thresholdsStyle": {
+              "mode": "dashed"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "reqps",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Only the replica holding a stream can answer for it, so a call that landed anywhere else is forwarded: control repeats the call, fetch reads a JSON answer back, media opens a stream of bytes. unreachable is usually a registry entry naming a pod that has already gone; no-address is a missing Live:PeerBaseUrl, which is a configuration fault rather than a network one."
+    },
+    {
+      "id": 43,
+      "type": "timeseries",
+      "title": "Outbound call latency",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "storage-demo-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 41
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "storage-demo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by (le, server_address) (rate(http_client_request_duration_bucket{service_instance_id=~\"$replica\"}[$__rate_interval])))",
+          "legendFormat": "p95 {{server_address}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisSoftMin": 0
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Every call out of this process: the peer hop, the object store, a webhook. The object store is the one that shows up as upload latency to a client."
+    },
+    {
+      "id": 44,
+      "type": "row",
+      "title": "The pod itself",
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 49
+      }
+    },
+    {
+      "id": 45,
+      "type": "timeseries",
+      "title": "Working set",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "storage-demo-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 50
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "storage-demo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (service_instance_id) (dotnet_process_memory_working_set{service_instance_id=~\"$replica\"})",
+          "legendFormat": "{{service_instance_id}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisSoftMin": 0
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "What bounds a pod, and the reason this project runs the workstation garbage collector against the ASP.NET default: at 100 streams that measured 971-1034 MB against 1152-1556 with the server collector. k8s/live/deployment.yaml sizes the limit from this."
+    },
+    {
+      "id": 46,
+      "type": "timeseries",
+      "title": "CPU",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "storage-demo-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 50
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "storage-demo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (service_instance_id) (rate(dotnet_process_cpu_time{service_instance_id=~\"$replica\"}[$__rate_interval]))",
+          "legendFormat": "{{service_instance_id}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisSoftMin": 0
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Cores, not a percentage of one. Two threads per stream at about 1.7% of a core is what dominates this, rather than the preview decode."
+    },
+    {
+      "id": 47,
+      "type": "timeseries",
+      "title": "Garbage collector pauses",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "storage-demo-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 58
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "storage-demo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(dotnet_gc_pause_time{service_instance_id=~\"$replica\"}[$__rate_interval]))",
+          "legendFormat": "paused",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisSoftMin": 0
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Time paused per second. A packet is copied out of libav into managed memory on its way to the buffer, so this is where that choice shows up if it ever costs anything."
+    },
+    {
+      "id": 48,
+      "type": "timeseries",
+      "title": "Thread pool queue",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "storage-demo-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 58
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "storage-demo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(dotnet_thread_pool_queue_length{service_instance_id=~\"$replica\"})",
+          "legendFormat": "queued",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "storage-demo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(kestrel_queued_connections{service_instance_id=~\"$replica\"})",
+          "legendFormat": "connections queued",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisSoftMin": 0,
+            "thresholdsStyle": {
+              "mode": "dashed"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 10
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "A queue that does not drain is the shape of a saturated pod: the SRT receive worker and the demultiplexer threads are outside the pool, but every request, every heartbeat and every upload runs on it."
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "tags": [
+    "storage-demo",
+    "api"
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "replica",
+        "label": "Replica",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "storage-demo-prometheus"
+        },
+        "query": "label_values(service_instance_id)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "description": "The pod, by the same name the stream registry records as a stream's owner."
+      }
+    ]
+  },
+  "time": {
+    "from": "now-30m",
+    "to": "now"
+  },
+  "timezone": "browser",
+  "title": "Storage Demo - API and gRPC",
+  "uid": "storage-demo-api",
+  "version": 1
+}

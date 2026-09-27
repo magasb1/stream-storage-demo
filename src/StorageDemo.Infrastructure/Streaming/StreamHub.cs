@@ -20,6 +20,7 @@ namespace StorageDemo.Infrastructure.Streaming;
 public sealed class StreamHub : IDisposable
 {
     private readonly ILogger _logger;
+    private readonly LiveMetrics? _metrics;
     private readonly Lock _gate = new();
 
     /// <summary>Copy-on-write, so publishing never takes a lock on the demultiplexer's thread.</summary>
@@ -34,11 +35,19 @@ public sealed class StreamHub : IDisposable
     /// </summary>
     private readonly List<StreamLayout> _retired = [];
 
-    public StreamHub(string name, LiveOptions options, ILogger logger)
+    /// <param name="metrics">
+    /// Where a subscriber that falls behind is reported, or null where nothing is measuring: the
+    /// detection worker builds a hub of its own and so do the tests, and neither publishes a meter.
+    /// The hub itself measures nothing - it already counts packets and bytes as part of publishing
+    /// them, and the heartbeat reports the interval since it last looked, which is what keeps the
+    /// demultiplexer's thread free of instrument calls.
+    /// </param>
+    public StreamHub(string name, LiveOptions options, ILogger logger, LiveMetrics? metrics = null)
     {
         Name = name;
         _logger = logger;
         Options = options;
+        _metrics = metrics;
     }
 
     public string Name { get; }
@@ -130,7 +139,8 @@ public sealed class StreamHub : IDisposable
             capacity,
             policy,
             streamIndexes,
-            () => Detach(subscription));
+            () => Detach(subscription),
+            _metrics);
 
         lock (_gate)
         {

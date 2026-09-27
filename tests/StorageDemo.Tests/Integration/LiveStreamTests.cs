@@ -789,6 +789,10 @@ public sealed class LiveStreamTests : IAsyncLifetime
 
         const string name = "camera-with-an-audience";
 
+        // Started before the players, because a counter is an event: a listener attached afterwards
+        // sees nothing of what it already counted.
+        using var meters = new Meters(_factory.Services.GetRequiredService<LiveMetrics>());
+
         Push(name);
 
         var stream = await WaitForStreamAsync(name, TimeSpan.FromSeconds(40));
@@ -817,6 +821,18 @@ public sealed class LiveStreamTests : IAsyncLifetime
         Assert.True(
             await WaitAsync(async () => (await Get(name))?.Viewers == 0, TimeSpan.FromSeconds(20)),
             $"the count never fell back to zero; last was {(await Get(name))?.Viewers}");
+
+        // Two players, two sessions, and no more. The session count is of viewers actually served:
+        // the consumption port re-attaches every quarter second while it has nothing to serve, so
+        // counting where the attach is decided rather than where it succeeds turns this figure into
+        // a count of retries the moment anything goes wrong.
+        Assert.Equal(2, meters.Total("live.viewer.sessions"));
+
+        Assert.All(
+            meters.Of("live.viewer.sessions"),
+            session => Assert.Equal(
+                new KeyValuePair<string, object?>("route", "direct"),
+                Assert.Single(session.Tags)));
     }
 
     /// <summary>

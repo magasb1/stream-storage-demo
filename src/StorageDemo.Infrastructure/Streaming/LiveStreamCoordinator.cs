@@ -114,6 +114,8 @@ public sealed class LiveStreamCoordinator(
 
         entry.Detection.Post(sample);
 
+        metrics.Detected();
+
         return true;
     }
 
@@ -311,7 +313,7 @@ public sealed class LiveStreamCoordinator(
 
     private LiveStreamEntry Create(string name, bool manual, string? manualUrl)
     {
-        var hub = new StreamHub(name, _options, logger);
+        var hub = new StreamHub(name, _options, logger, metrics);
 
         var harvester = new Harvester(
             mediaOptions.Value.ThumbnailSize,
@@ -365,11 +367,17 @@ public sealed class LiveStreamCoordinator(
                     entry.Name,
                     existing.Owner);
 
+                metrics.Claimed("refused");
+
                 return false;
             }
 
+            var resumed = false;
+
             if (existing is not null && !LiveStreamStaleness.IsGone(existing, Grace))
             {
+                resumed = true;
+
                 // The same stream resuming, so it keeps the start time it has always had. Without
                 // this a stream that moved replicas looked identical to a new one with the same
                 // name: same registry entry, but a start time that jumped to the moment the new
@@ -388,6 +396,11 @@ public sealed class LiveStreamCoordinator(
             }
 
             await registry.UpsertAsync(Describe(entry, LiveStreamState.Live), cancellationToken);
+
+            // A move and a reconnect are both "resumed", which is the distinction that matters to
+            // anyone reading this: a rolling update should show a resume for every stream it moved
+            // and no new stream at all.
+            metrics.Claimed(resumed ? "resumed" : "taken");
 
             return true;
         }
@@ -487,8 +500,14 @@ public sealed class LiveStreamCoordinator(
 
         if (bytes is null)
         {
+            metrics.Snapshotted("none");
+
             return null;
         }
+
+        // The note is set only where the harvester's older, smaller picture had to stand in, so it
+        // is also the honest answer to "how good was this snapshot".
+        metrics.Snapshotted(note is null ? "stored" : "preview");
 
         var takenAt = DateTimeOffset.UtcNow;
 
@@ -627,7 +646,8 @@ public sealed class LiveStreamCoordinator(
             logger,
             duration,
             () => entry.Klv.Classification,
-            detection);
+            detection,
+            metrics);
 
         entry.Records(recorder, recorder.RunAsync(entry.Lifetime.Token));
 
@@ -662,7 +682,7 @@ public sealed class LiveStreamCoordinator(
             return await GetAsync(name, cancellationToken) is not null;
         }
 
-        await EndAsync(entry, "it was stopped");
+        await EndAsync(entry, "stopped", "it was stopped");
 
         return true;
     }
@@ -718,6 +738,14 @@ public sealed class LiveStreamCoordinator(
         // call arrived, and left in a finally so a fault below still lets the count go down.
         entry.ViewerJoined();
 
+        // The session is counted here, for the same reason and at the same moment: past the layout
+        // check above, a viewer is being served. Counting where the attach was decided instead made
+        // this a count of attempts - the consumption port retries every quarter second, so a stream
+        // with no layout yet, or an owner whose address the registry never recorded, scored a
+        // session several times a second for as long as the player stayed connected, which is
+        // exactly the incident the figure exists to describe.
+        metrics.Viewing(request.Relayed ? "relayed" : "direct");
+
         try
         {
             await foreach (var packet in subscription.Packets.ReadAllAsync(cancellationToken))
@@ -758,37 +786,114 @@ public sealed class LiveStreamCoordinator(
     /// </summary>
     public async Task TickAsync(CancellationToken cancellationToken)
     {
-        foreach (var entry in _local.Values.ToList())
-        {
-            try
-            {
-                await TickAsync(entry, cancellationToken);
-            }
-            catch (Exception ex)
-            {
-                logger.LogWarning(ex, "The heartbeat for '{Name}' failed", entry.Name);
-            }
-        }
-
-        // After the pass, so it counts what survived it. One beat stale at worst, which is the same
-        // freshness as everything else a replica publishes about itself, and an autoscaler that
-        // cared about two seconds would be reacting to a reconnect.
-        metrics.StreamsOwned = _local.Count;
-
-        await RefreshKnownAsync(cancellationToken);
+        // Timed in a finally, so a pass that threw is timed too. That is the reading that matters:
+        // a registry taking longer than the beat is what a slow pass usually is, and it throws at
+        // the end of the wait rather than at the start of it.
+        var started = TimeProvider.System.GetTimestamp();
 
         try
         {
-            await AdoptAsync(cancellationToken);
+            foreach (var entry in _local.Values.ToList())
+            {
+                try
+                {
+                    await TickAsync(entry, cancellationToken);
+                }
+                catch (Exception ex)
+                {
+                    logger.LogWarning(ex, "The heartbeat for '{Name}' failed", entry.Name);
+
+                    metrics.BeatFailed("stream");
+                }
+            }
+
+            // After the pass, so it counts what survived it. One beat stale at worst, which is the
+            // same freshness as everything else a replica publishes about itself, and an autoscaler
+            // that cared about two seconds would be reacting to a reconnect.
+            metrics.Census = Census();
+
+            try
+            {
+                await RefreshKnownAsync(cancellationToken);
+            }
+            catch (Exception)
+            {
+                // Counted and rethrown, unlike the two passes around it. The caller already treats a
+                // failed beat as survivable, and losing this read is what makes the handshake answer
+                // from a stale copy of what is claimed, so it has to leave more than a log line.
+                metrics.BeatFailed("registry");
+
+                throw;
+            }
+
+            try
+            {
+                await AdoptAsync(cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                // The store is a second thing that can be unreachable, and unlike the registry its
+                // implementations let a failure out rather than swallowing it. A Redis that has gone
+                // away must cost the cluster new pull streams, not the heartbeat that keeps the ones
+                // already running listed.
+                logger.LogWarning(ex, "Reconciling configured sources failed");
+
+                metrics.BeatFailed("sources");
+            }
         }
-        catch (Exception ex)
+        finally
         {
-            // The store is a second thing that can be unreachable, and unlike the registry its
-            // implementations let a failure out rather than swallowing it. A Redis that has gone
-            // away must cost the cluster new pull streams, not the heartbeat that keeps the ones
-            // already running listed.
-            logger.LogWarning(ex, "Reconciling configured sources failed");
+            metrics.Beat(TimeProvider.System.GetElapsedTime(started));
         }
+    }
+
+    /// <summary>
+    /// Counts what this replica is holding, for the six figures a dashboard reads as the shape of a
+    /// pod: how many streams, how many of them are broken in the two ways that matter, and how much
+    /// work is hanging off them.
+    ///
+    /// A second walk of the local streams rather than an accumulation through the pass above,
+    /// because the pass removes entries as it goes and a count taken while it ran would include
+    /// streams that are no longer here. One hub lock per stream per beat, which is the same cost
+    /// describing them already pays.
+    /// </summary>
+    private LiveCensus Census()
+    {
+        // Counted in the walk rather than read off the dictionary afterwards, so the total and the
+        // figures inside it describe the same set: a stream arriving between the two would otherwise
+        // leave a census claiming more interrupted streams than streams.
+        var streams = 0;
+        var interrupted = 0;
+        var unstartable = 0;
+        var viewers = 0;
+        var recordings = 0;
+        var forwards = 0;
+
+        foreach (var entry in _local.Values)
+        {
+            streams++;
+
+            if (Interrupted(entry, Silence(entry)))
+            {
+                interrupted++;
+            }
+
+            if (!entry.Hub.BufferState().Startable)
+            {
+                unstartable++;
+            }
+
+            viewers += entry.Viewers;
+
+            if (entry.Recorder is { Finished: false })
+            {
+                recordings++;
+            }
+
+            forwards += entry.Forwards.Count;
+        }
+
+        return new LiveCensus(streams, interrupted, unstartable, viewers, recordings, forwards);
     }
 
     /// <summary>
@@ -936,6 +1041,12 @@ public sealed class LiveStreamCoordinator(
             // recording closes as a complete document rather than moving.
             logger.LogInformation("'{Name}' now belongs to {Owner}; standing down", entry.Name, shared.Owner);
 
+            // Not EndAsync: the registry entry belongs to the new owner now and removing it would
+            // delete a live stream out from under it. The meter still hears about it, because a pod
+            // shedding streams it thought were its own is the same event from here whichever way it
+            // is written.
+            metrics.Ended("displaced");
+
             _local.TryRemove(entry.Name, out _);
             entry.StandingDown = true;
 
@@ -951,7 +1062,7 @@ public sealed class LiveStreamCoordinator(
         {
             _local.TryRemove(entry.Name, out _);
 
-            await EndAsync(entry, "its grace period expired");
+            await EndAsync(entry, "expired", "its grace period expired");
 
             return;
         }
@@ -978,7 +1089,7 @@ public sealed class LiveStreamCoordinator(
             // viewers - that is the stop endpoint, asked for explicitly.
             _local.TryRemove(entry.Name, out _);
 
-            await EndAsync(entry, "its source was switched off");
+            await EndAsync(entry, "source-off", "its source was switched off");
 
             return;
         }
@@ -1089,9 +1200,16 @@ public sealed class LiveStreamCoordinator(
     private bool Interrupted(LiveStreamEntry entry, TimeSpan? silent)
         => !entry.FeedRunning || silent > TimeSpan.FromSeconds(_options.FeedTimeoutSeconds);
 
-    private async Task EndAsync(LiveStreamEntry entry, string why)
+    /// <param name="reason">
+    /// One of a fixed handful, for the meter. Separate from <paramref name="why"/> because that one
+    /// is a sentence written for a person reading a log, and a tag value has to be a word this
+    /// service chose rather than a phrase somebody may reword later.
+    /// </param>
+    private async Task EndAsync(LiveStreamEntry entry, string reason, string why)
     {
         logger.LogInformation("Stream '{Name}' is gone because {Why}", entry.Name, why);
+
+        metrics.Ended(reason);
 
         await entry.DisposeAsync();
 
@@ -1109,6 +1227,13 @@ public sealed class LiveStreamCoordinator(
         // now" rather than "broken at some point". A stream with no socket - pulled, or between
         // connections - reports nothing rather than a stale figure from the connection before.
         var health = entry.Transport?.Health();
+
+        // Reported here because this is where the sample is taken. libsrt clears its interval
+        // counters on the read above, so whoever reads them owes the meter the figures or they are
+        // gone; the hub's packet and byte totals are turned into an interval by the entry, against
+        // what it last reported. Describing a stream more than once in a beat - a claim does, and so
+        // does a manual creation - therefore stays exact rather than double counting.
+        metrics.Fed(entry.TakeFeed(health?.Lost ?? 0, health?.Dropped ?? 0));
 
         return new LiveStream(
             entry.Name,
@@ -1208,6 +1333,8 @@ public sealed class LiveStreamCoordinator(
                 // down, while the hub can still be described.
                 await registry.UpsertAsync(Describe(entry, LiveStreamState.Interrupted), CancellationToken.None);
                 await entry.DisposeAsync();
+
+                metrics.Ended("shutdown");
             }
             catch (Exception ex)
             {

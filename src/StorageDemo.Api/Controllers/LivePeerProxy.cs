@@ -1,6 +1,7 @@
 using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.AspNetCore.Mvc;
+using StorageDemo.Api.Observability;
 using StorageDemo.Core.Streaming;
 using StorageDemo.Infrastructure.Streaming;
 
@@ -24,6 +25,7 @@ namespace StorageDemo.Api.Controllers;
 public sealed class LivePeerProxy(
     IHttpClientFactory clients,
     ILiveStreamService live,
+    ApiMetrics metrics,
     ILogger<LivePeerProxy> logger)
 {
     public string Owner => live.Owner;
@@ -33,6 +35,8 @@ public sealed class LivePeerProxy(
     {
         if (Address(stream, path) is not { } address)
         {
+            metrics.Peered("media", "no-address");
+
             return null;
         }
 
@@ -43,6 +47,8 @@ public sealed class LivePeerProxy(
                 HttpCompletionOption.ResponseHeadersRead,
                 cancellationToken);
 
+            metrics.Peered("media", response.IsSuccessStatusCode ? "ok" : "refused");
+
             return response.IsSuccessStatusCode
                 ? await response.Content.ReadAsStreamAsync(cancellationToken)
                 : null;
@@ -50,6 +56,12 @@ public sealed class LivePeerProxy(
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
         {
             logger.LogWarning(ex, "Could not read from {Address}", address);
+
+            // The registry can name a pod that is already gone - a force-killed replica leaves its
+            // entry behind until its heartbeat goes stale - so this is the count that says a
+            // cluster is carrying a dead owner rather than a failing network.
+            metrics.Peered("media", "unreachable");
+
             return null;
         }
     }
@@ -71,6 +83,8 @@ public sealed class LivePeerProxy(
     {
         if (Address(stream, path) is not { } address)
         {
+            metrics.Peered("fetch", "no-address");
+
             return null;
         }
 
@@ -91,6 +105,8 @@ public sealed class LivePeerProxy(
             using var response = await clients.CreateClient(LiveOptions.PeerClient)
                 .SendAsync(request, cancellationToken);
 
+            metrics.Peered("fetch", response.IsSuccessStatusCode ? "ok" : "refused");
+
             return response.IsSuccessStatusCode
                 ? await response.Content.ReadFromJsonAsync<T>(cancellationToken)
                 : null;
@@ -98,6 +114,9 @@ public sealed class LivePeerProxy(
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
         {
             logger.LogWarning(ex, "Could not read from {Address}", address);
+
+            metrics.Peered("fetch", "unreachable");
+
             return null;
         }
     }
@@ -117,6 +136,8 @@ public sealed class LivePeerProxy(
     {
         if (Address(stream, path) is not { } address)
         {
+            metrics.Peered("control", "no-address");
+
             return null;
         }
 
@@ -139,6 +160,11 @@ public sealed class LivePeerProxy(
 
             var content = await response.Content.ReadAsStringAsync(cancellationToken);
 
+            // A forwarded call is counted for having been forwarded and answered. Whether the
+            // owner's answer was a 404 is the caller's business and travels back untouched, which is
+            // why "refused" here means the hop failed rather than the request did.
+            metrics.Peered("control", response.IsSuccessStatusCode ? "ok" : "refused");
+
             return new ContentResult
             {
                 StatusCode = (int)response.StatusCode,
@@ -149,6 +175,9 @@ public sealed class LivePeerProxy(
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
         {
             logger.LogWarning(ex, "Could not reach {Address}", address);
+
+            metrics.Peered("control", "unreachable");
+
             return null;
         }
     }

@@ -5,6 +5,7 @@ using StorageDemo.Api.Administration.Streaming;
 using StorageDemo.Api.Grpc;
 using StorageDemo.Api.Controllers;
 using StorageDemo.Api.Middleware;
+using StorageDemo.Api.Observability;
 using StorageDemo.Api.Uploads;
 using StorageDemo.Core.Documents;
 using StorageDemo.Infrastructure;
@@ -16,6 +17,10 @@ builder.Host.UseSerilog((context, services, configuration) => configuration
     .ReadFrom.Configuration(context.Configuration)
     .ReadFrom.Services(services)
     .Enrich.FromLogContext());
+
+// The meters this service publishes, and the exporter that carries them off the pod when one is
+// configured. Before the rest, so a failure to start is measured as far as anything can be.
+builder.AddTelemetry();
 
 var maxUploadBytes = builder.Configuration.GetValue("Uploads:MaxBytes", 50L * 1024 * 1024);
 builder.Services.Configure<FormOptions>(o => o.MultipartBodyLengthLimit = maxUploadBytes);

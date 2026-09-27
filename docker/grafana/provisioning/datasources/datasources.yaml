@@ -1,0 +1,23 @@
+# Both datasources exist before anybody logs in, so the dashboards below resolve on first start.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    uid: storage-demo-prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    jsonData:
+      timeInterval: 5s
+      # Follows a trace from an exemplar or from a service name to Tempo. The service publishes
+      # both signals under one resource, which is what makes the jump work at all.
+      exemplarTraceIdDestinations:
+        - name: trace_id
+          datasourceUid: storage-demo-tempo
+
+  - name: Tempo
+    type: tempo
+    uid: storage-demo-tempo
+    access: proxy
+    url: http://tempo:3200
