@@ -3,15 +3,7 @@ namespace StorageDemo.Core.Streaming;
 /// <summary>
 /// The COCO class tables the two detector families emit, kept apart on purpose: RF-DETR's COCO
 /// checkpoints emit the sparse COCO category id (1..90, slot 0 background), YOLO emits a contiguous
-/// 0..79 index, and the same integer names a different animal in each. Neither project publishes an
-/// ontology URI, so the name is what a <see cref="VmtiDetection.OntologyClass"/> gets; the URI is a
-/// service decision (detection-plan.md, "What this plan deliberately does not do").
-///
-/// Sources: <c>roboflow/rf-detr</c> <c>src/rfdetr/assets/coco_classes.py</c> for the ids and
-/// names, read 2026-09-12; Ultralytics' <c>names</c> metadata is the same 80 names in the same
-/// order, 0-based (research/detector-models.md section 2, "Weights / label set"). A fine-tuned
-/// RF-DETR uses a contiguous index into its own list instead, and its ONNX does not say so:
-/// which table applies is configuration shipped beside the weights, never sniffed.
+/// 0..79 index, and the same integer names a different animal in each.
 /// </summary>
 public static class CocoClasses
 {
@@ -36,10 +28,7 @@ public static class CocoClasses
         (89, "hair drier"), (90, "toothbrush"),
     ];
 
-    /// <summary>
-    /// RF-DETR COCO checkpoint: logit slot to name. Slot 0 and the ten gaps (12, 26, 29, 30, 45,
-    /// 66, 68, 69, 71, 83) are absent, so a lookup miss means "not a class", not a bug.
-    /// </summary>
+    /// <summary>RF-DETR COCO checkpoint: logit slot to name.</summary>
     public static readonly IReadOnlyDictionary<int, string> RfDetr = Coco.ToDictionary(c => c.Id, c => c.Name);
 
     /// <summary>YOLO: class index to name, 0..79.</summary>
@@ -49,8 +38,8 @@ public static class CocoClasses
     public static IReadOnlyList<string> All => Yolo;
 
     /// <summary>
-    /// Canonicalises an operator-supplied filter, rejecting typos rather than silently producing
-    /// an empty stream. Empty means no filtering.
+    /// Canonicalises an operator-supplied filter, rejecting typos rather than silently producing an
+    /// empty stream.
     /// </summary>
     public static IReadOnlyList<string> Normalize(IEnumerable<string>? labels)
     {

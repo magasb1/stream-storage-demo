@@ -1,15 +1,10 @@
 # Lets the nodes pull from the temporary in-cluster registry over plain HTTP.
-#
 # Talos has no Docker and no local image store, so an image built on a laptop can only reach it
-# through a registry. That registry has no certificate, and containerd refuses plain HTTP unless
-# the host is named here.
-#
+# through a registry.
 # Apply to every node, one at a time:
-#
 #   talosctl patch mc -e <node> -n <node> --patch @k8s/talos/talos-registry-patch.yaml
 #
 # Revert when finished, which is the whole of the change:
-#
 #   talosctl patch mc -e <node> -n <node> --patch '[{"op":"remove","path":"/machine/registries"}]'
 #
 # This is a configuration change only. It needs no reboot: Talos restarts the kubelet's image

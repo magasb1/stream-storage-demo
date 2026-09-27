@@ -1,11 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk.Web">
   <PropertyGroup>
-    <!-- Workstation GC, deliberately, against the ASP.NET default of server GC. Measured on the
-         container rig at 100 streams, three replicates each: working set 971 to 1034 MB against
-         1152 to 1556 with server GC, every replicate below the control's minimum, with CPU inside
-         the control's spread and delivered bitrate identical. The workload is many small,
-         short-lived packets rather than throughput-bound allocation, and memory is what bounds a
-         pod. See .scratch/scale-to-1000/perf-ingest.md. -->
+    <!-- Workstation GC, deliberately, against the ASP.NET default: memory is what bounds a pod,
+         and the measurements are in .scratch/scale-to-1000/perf-ingest.md. -->
     <ServerGarbageCollection>false</ServerGarbageCollection>
     <UserSecretsId>storage-demo</UserSecretsId>
   </PropertyGroup>
@@ -14,14 +10,10 @@
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Grpc.AspNetCore" Version="2.71.0" />
-    <!-- Reads a file's real type from its magic bytes. Needs the ASP.NET framework reference,
-         which is why upload validation lives here rather than in Core. -->
+    <!-- Reads a file's real type from its magic bytes. -->
     <PackageReference Include="MagicBytesValidator" Version="2.2.1" />
     <!-- The exporter, and only the exporter: every instrument in this service is a plain
-         System.Diagnostics.Metrics instrument that works with none of these referenced. OTLP to a
-         collector rather than Prometheus.AspNetCore, which is still a beta package - see
-         Observability/Telemetry.cs. The ASP.NET Core and HTTP client packages are for tracing; the
-         metrics they would add are built into the framework and arrive through AddMeter. -->
+         System.Diagnostics.Metrics instrument that works with none of these referenced. -->
     <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.19.1" />
     <PackageReference Include="OpenTelemetry.Extensions.Hosting" Version="1.19.1" />
     <PackageReference Include="OpenTelemetry.Instrumentation.AspNetCore" Version="1.19.0" />

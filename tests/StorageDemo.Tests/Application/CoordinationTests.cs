@@ -4,9 +4,8 @@ using StorageDemo.Core.Documents;
 namespace StorageDemo.Tests.Application;
 
 /// <summary>
-/// The in-memory implementations of the two pieces that have to be shared once the service runs
-/// as more than one replica. The Redis versions are held to the same behaviour, which is why these
-/// assert semantics rather than mechanics.
+/// The in-memory implementations of the two pieces that have to be shared once the service runs as
+/// more than one replica.
 /// </summary>
 public sealed class CoordinationTests
 {
@@ -18,7 +17,8 @@ public sealed class CoordinationTests
         await using var first = await locks.TryAcquireAsync("scan", TimeSpan.FromMinutes(1));
         Assert.NotNull(first);
 
-        // The second caller is told no rather than made to wait: a skipped scan is the right answer.
+        // The second caller is told no rather than made to wait: a skipped scan is the right
+        // answer.
         Assert.Null(await locks.TryAcquireAsync("scan", TimeSpan.FromMinutes(1)));
     }
 
@@ -69,7 +69,8 @@ public sealed class CoordinationTests
         var received = await TakeAsync(queue, 1);
         Assert.Single(received);
 
-        // Nothing is left for a second reader, which is what stops two replicas doing the same work.
+        // Nothing is left for a second reader, which is what stops two replicas doing the same
+        // work.
         Assert.Empty(await TakeAsync(queue, 1, TimeSpan.FromMilliseconds(150)));
     }
 

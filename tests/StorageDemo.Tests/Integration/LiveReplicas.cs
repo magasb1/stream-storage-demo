@@ -11,12 +11,9 @@ using StorageDemo.Tests.Infrastructure;
 namespace StorageDemo.Tests.Integration;
 
 /// <summary>
-/// Two replicas in one process: the same application twice, each with its own ports and its own node
-/// name, sharing one <see cref="InMemoryLiveStreamRegistry"/> and one <see cref="InMemoryLock"/>.
-/// That is what two pods are, and no Redis is needed to prove it.
-///
-/// It is here rather than inside one test class because the two things that cannot be seen on a
-/// single host both need it: a name held on the other replica, and a viewer served from it.
+/// Two replicas in one process: the same application twice, each with its own ports and its own
+/// node name, sharing one <see cref="InMemoryLiveStreamRegistry"/> and one <see
+/// cref="InMemoryLock"/>.
 /// </summary>
 internal sealed class LiveReplicas : IAsyncDisposable
 {
@@ -44,15 +41,6 @@ internal sealed class LiveReplicas : IAsyncDisposable
     public static bool HasSrt() => FfmpegLibrary.InputProtocols().Contains("srt");
 
     /// <summary>One replica: its own ports, its own name, somebody else's registry.</summary>
-    /// <param name="peer">
-    /// The replica this one reaches over HTTP. A test server has no address anything can dial, so
-    /// its handler is handed over directly; a pod resolving a URL and this resolving a handler are
-    /// the same hop, and everything above the handler is the code under test.
-    /// </param>
-    /// <param name="maxStreams">
-    /// How many streams this replica accepts before refusing new names. Zero, the default, is
-    /// unlimited, which is what every test that is not about capacity wants.
-    /// </param>
     public WebApplicationFactory<Program> Start(
         string node,
         int ingestPort,
@@ -79,16 +67,11 @@ internal sealed class LiveReplicas : IAsyncDisposable
             builder.UseSetting("Live:MaxStreams", maxStreams.ToString());
 
             // One file under this fixture's own sandbox, not per node: a source is shared cluster
-            // state, the same reason pod-a and pod-b share one Registry below. Without this the
-            // default FileLiveSourceStore path is the real one a developer's own machine uses, and
-            // whatever that developer has configured on their own running instance - a real pull
-            // source, a real forward, a real passphrase - leaks into every test that reconciles
-            // sources, exactly as unrelated to this test's own scenario as it sounds.
+            // state, the same reason pod-a and pod-b share one Registry below.
             builder.UseSetting("Live:SourceFile", Path.Combine(_root, "sources.json"));
             builder.UseEnvironment("Production");
 
-            // Registered last, so these instances are what the application resolves. Sharing them is
-            // the whole fixture: two replicas differ only in what they hold locally.
+            // Registered last, so these instances are what the application resolves.
             builder.ConfigureServices(services =>
             {
                 services.AddSingleton(registry ?? Registry);
@@ -123,7 +106,6 @@ internal sealed class LiveReplicas : IAsyncDisposable
     /// <summary>Scratch space that goes with the fixture, for a file a sender is to push.</summary>
     public string Root => _root;
 
-    /// <inheritdoc cref="SrtSenders.StartSender" path="/param[@name='file']"/>
     public Process Send(int ingestPort, string name, string? file = null) => Track(
         SrtSenders.StartSender(ingestPort, $"#!::r={name},m=publish", file: file));
 

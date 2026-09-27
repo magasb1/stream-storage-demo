@@ -5,10 +5,7 @@ using Microsoft.Extensions.Logging;
 
 namespace StorageDemo.Infrastructure.Streaming;
 
-/// <summary>
-/// A connection that has been accepted and named, with the socket still open. Whoever handles it
-/// either takes the socket with <see cref="Release"/> or disposes it, which drops the caller.
-/// </summary>
+/// <summary>A connection that has been accepted and named, with the socket still open.</summary>
 public sealed class AcceptedSocket(int socket, string streamId, string name) : IDisposable
 {
     private int _socket = socket;
@@ -18,7 +15,7 @@ public sealed class AcceptedSocket(int socket, string streamId, string name) : I
 
     public string Name { get; } = name;
 
-    /// <summary>Hands the open socket over. The caller owns closing it from then on.</summary>
+    /// <summary>Hands the open socket over.</summary>
     public int Release()
     {
         var taken = _socket;
@@ -38,31 +35,14 @@ public sealed class AcceptedSocket(int socket, string streamId, string name) : I
 
 /// <summary>
 /// Everything known about a caller before a connection exists: the handshake carries the identifier
-/// and nothing else. A struct, because one is made on libsrt's receiver thread for every caller.
+/// and nothing else.
 /// </summary>
 public readonly record struct Admission(string Name, string StreamId, StreamIntent Intent);
 
-/// <summary>
-/// Whether this caller may connect. Null admits; anything else is an <c>SRT_REJX</c> code from
-/// <see cref="Srt"/>, which travels intact to the caller's own <c>srt_getrejectreason</c>.
-///
-/// It runs on libsrt's receiver worker thread, the one carrying every packet for every socket on
-/// the port, so it must not block, allocate a socket or wait on anything.
-/// </summary>
+/// <summary>Whether this caller may connect.</summary>
 public delegate int? Admit(Admission admission);
 
-/// <summary>
-/// One listening SRT port, owned outright rather than borrowed from libav.
-///
-/// libav's listener accepts a single caller per bind and only reveals the name afterwards, which
-/// capped this service at a couple of accepts a second and left nothing refusable before the
-/// connection existed. Calling libsrt directly buys both: a real backlog, and a handshake hook that
-/// sees the identifier while the answer can still be no.
-///
-/// The hook is the reason this class exists, and it is also the one place in the service that must
-/// never be slow. It parses a short string and asks <see cref="Admit"/>. Everything expensive -
-/// logging, claiming a name, starting a demultiplexer - happens on this thread, after the accept.
-/// </summary>
+/// <summary>One listening SRT port, owned outright rather than borrowed from libav.</summary>
 public sealed unsafe class SrtListener(
     StreamIntent intent,
     LiveOptions options,
@@ -78,27 +58,16 @@ public sealed unsafe class SrtListener(
     /// </summary>
     private sealed record Bound(SrtListener Listener, int Port);
 
-    /// <summary>
-    /// Deep enough that a cold start of a thousand encoders never meets a full queue. It costs a
-    /// pending-connection slot each, which is why it is not larger still.
-    /// </summary>
+    /// <summary>Deep enough that a cold start of a thousand encoders never meets a full queue.</summary>
     private const int Backlog = 128;
 
-    /// <summary>
-    /// How long a blocked read may sit before it looks up. Set on every accepted socket rather than
-    /// left to inheritance, because libsrt only promises that a timeout option is "usually derived",
-    /// and without it a shutdown waits out SRTO_PEERIDLETIMEO instead of a second.
-    /// </summary>
+    /// <summary>How long a blocked read may sit before it looks up.</summary>
     private const int ReceiveTimeoutMilliseconds = 1000;
 
     private string PortName => intent == StreamIntent.Publish ? "ingest" : "consumption";
 
     /// <summary>
-    /// Binds, listens and accepts until cancelled, handing every named caller to
-    /// <c>onAccepted</c>. Blocking, and meant for a thread of its own.
-    ///
-    /// The handler must not block: it is on the accept thread, and every millisecond spent there is
-    /// a millisecond the port is not accepting.
+    /// Binds, listens and accepts until cancelled, handing every named caller to <c>onAccepted</c>.
     /// </summary>
     public void Run(int port, CancellationToken cancellationToken)
     {
@@ -134,7 +103,7 @@ public sealed unsafe class SrtListener(
                 PortName);
 
             // srt_accept blocks, and libsrt documents closing the listening socket from another
-            // thread as what unblocks it, with SRT_ESCLOSED. There is no other handle on the call.
+            // thread as what unblocks it, with SRT_ESCLOSED.
             using (cancellationToken.Register(() => Srt.srt_close(listener)))
             {
                 Accept(listener, port, cancellationToken);
@@ -143,7 +112,7 @@ public sealed unsafe class SrtListener(
         finally
         {
             // Closed already when cancellation did it, and a second close is an error return and
-            // nothing more. The failure paths above have no other way out.
+            // nothing more.
             Srt.srt_close(listener);
 
             // Past the close no further handshake can reach the hook, so the handle it travels in
@@ -158,9 +127,7 @@ public sealed unsafe class SrtListener(
 
     private bool Open(int listener, int port, GCHandle self)
     {
-        // Pre-bind, so it has to be set before srt_bind rather than beside the others. Both media
-        // ports are bound in one process and sharing a multiplexer per port is what keeps each to
-        // one UDP socket and one receiver thread.
+        // Pre-bind, so it has to be set before srt_bind rather than beside the others.
         Srt.SetBool(listener, SRT_SOCKOPT.SRTO_REUSEADDR, true);
 
         // What makes a feed go interrupted instead of holding a socket nothing arrives on.
@@ -171,8 +138,7 @@ public sealed unsafe class SrtListener(
         // SRTO_LATENCY rather than SRTO_RCVLATENCY, because it sets the peer half too and the two
         // ports sit on opposite ends of the negotiation: ingest receives, consumption sends, and
         // per direction the effective figure is the larger of the receiver's own latency and the
-        // sender's peer latency. Set here, with the other pre-connect options, because an accepted
-        // socket inherits what the listener had before srt_listen and nothing set after it.
+        // sender's peer latency.
         Srt.SetInt32(listener, SRT_SOCKOPT.SRTO_LATENCY, options.SrtLatencyMs);
 
         // srt_bind wants the raw sockaddr, and a serialised endpoint is exactly that, laid out the
@@ -235,13 +201,12 @@ public sealed unsafe class SrtListener(
 
             if (Srt.LastErrorCode() == Srt.SRT_ETIMEOUT)
             {
-                // Whether srt_accept honours SRTO_RCVTIMEO is documented neither way. If it does,
-                // this is the quiet second it was; if it does not, this never runs.
+                // Whether srt_accept honours SRTO_RCVTIMEO is documented neither way.
                 continue;
             }
 
             // Nothing srt_accept reports on a listening socket is transient, so retrying would be a
-            // hot loop on a port that is gone. Readiness sees it through Stopped on the way out.
+            // hot loop on a port that is gone.
             logger.LogError(
                 "The {Which} port stopped accepting: {Error}",
                 PortName,
@@ -251,19 +216,7 @@ public sealed unsafe class SrtListener(
         }
     }
 
-    /// <summary>
-    /// Names an accepted socket and hands it over, or closes it and says why.
-    ///
-    /// The name is read off the socket and parsed a second time rather than stashed by the hook.
-    /// SRTO_STREAMID is the one option an accepted socket does not inherit, so it is already there
-    /// for the asking, and two parses of a short string cost less than a dictionary keyed by socket
-    /// that every rejected handshake would have to clean up.
-    ///
-    /// The two failures are deliberately distinct. No identifier at all means libsrt would not
-    /// answer for a socket it has just handed over, which is an operator's problem and would make
-    /// every stream arrive unnamed; an identifier that will not parse is a sender's problem, and
-    /// here it is also a surprise, because the hook parsed the same string and admitted it.
-    /// </summary>
+    /// <summary>Names an accepted socket and hands it over, or closes it and says why.</summary>
     private void Handle(int socket, int port)
     {
         var streamId = Srt.GetString(socket, SRT_SOCKOPT.SRTO_STREAMID);
@@ -292,7 +245,7 @@ public sealed unsafe class SrtListener(
 
         if (StreamName.CarriesSessionKey(streamId))
         {
-            // Never the value. It is the slot a push token will occupy.
+            // Never the value.
             logger.LogDebug("The identifier for '{Name}' carries a session key, which is ignored today", name);
         }
 
@@ -300,8 +253,7 @@ public sealed unsafe class SrtListener(
 
         // What the handshake settled on, not what was asked for: the larger of the two sides wins,
         // so a caller that knows its link can raise this and an operator should be able to see that
-        // it did. Whichever half describes the receiver of this port's direction is the one that
-        // means anything - ingest receives, consumption sends to a receiver at the far end.
+        // it did.
         var negotiated = Srt.GetInt32(
             socket,
             intent == StreamIntent.Publish ? SRT_SOCKOPT.SRTO_RCVLATENCY : SRT_SOCKOPT.SRTO_PEERLATENCY);
@@ -329,11 +281,6 @@ public sealed unsafe class SrtListener(
     /// <summary>
     /// libsrt's <c>srt_listen_callback_fn</c>, on libsrt's receiver worker thread, after the
     /// caller's conclusion handshake and before the connection exists.
-    ///
-    /// Nothing may escape into C: an exception crossing that boundary is undefined, and a caller
-    /// refused because the hook faulted retries, while a torn-down process does not. The bare -1
-    /// leaves libsrt its own rejection reason, which is the most a hook that does not know why it
-    /// failed can honestly say.
     /// </summary>
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     private static int OnHandshake(void* opaque, int socket, int handshakeVersion, void* peer, byte* streamId)
@@ -354,9 +301,7 @@ public sealed unsafe class SrtListener(
     {
         if (!StreamName.TryParse(streamId, out var name, out _, intent))
         {
-            // The rejection text is not logged here. This is the packet thread, and a caller who
-            // spells a name wrong retries, so the line would come a thousand at a time. It is
-            // counted instead, which is the same information without the thousand lines.
+            // The rejection text is not logged here.
             return Reject(socket, port, Srt.SRT_REJX_BAD_REQUEST);
         }
 
@@ -374,11 +319,7 @@ public sealed unsafe class SrtListener(
         return -1;
     }
 
-    /// <summary>
-    /// The rejection as a word, from a closed set. Never the identifier that was refused and never
-    /// the code as text: a tag whose values a caller can choose is a tag that can be made to cost
-    /// whatever the caller likes.
-    /// </summary>
+    /// <summary>The rejection as a word, from a closed set.</summary>
     private static string Reason(int code) => code switch
     {
         Srt.SRT_REJX_BAD_REQUEST => "bad-request",

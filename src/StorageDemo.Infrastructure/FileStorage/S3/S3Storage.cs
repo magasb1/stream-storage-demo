@@ -7,7 +7,7 @@ using StorageDemo.Core.Storage;
 
 namespace StorageDemo.Infrastructure.FileStorage.S3;
 
-/// <summary>Stores objects in an S3 bucket. Credentials come from the AWS provider chain.</summary>
+/// <summary>Stores objects in an S3 bucket.</summary>
 public sealed class S3Storage(IAmazonS3 client, IOptions<S3StorageOptions> options) : IFileStorage
 {
     private readonly string _bucket = options.Value.Bucket;
@@ -18,9 +18,7 @@ public sealed class S3Storage(IAmazonS3 client, IOptions<S3StorageOptions> optio
         string? contentType,
         CancellationToken cancellationToken = default)
     {
-        // The SDK checksums the body before sending, which means rewinding it. An upload arrives
-        // as a forward-only network stream, so it is spooled to disk first. Disk rather than
-        // memory because the alternative is holding a whole video in RAM per concurrent upload.
+        // The SDK checksums the body before sending, which means rewinding it.
         if (content.CanSeek)
         {
             await PutAsync(key, content, contentType, cancellationToken);
@@ -85,8 +83,8 @@ public sealed class S3Storage(IAmazonS3 client, IOptions<S3StorageOptions> optio
                 return whole.ResponseStream;
             }
 
-            // An open-ended range, which is a plain GET with a Range header rather than anything
-            // S3 has that a filesystem does not. Reading from an offset is table stakes for both.
+            // An open-ended range, which is a plain GET with a Range header rather than anything S3
+            // has that a filesystem does not.
             var response = await client.GetObjectAsync(
                 new GetObjectRequest
                 {

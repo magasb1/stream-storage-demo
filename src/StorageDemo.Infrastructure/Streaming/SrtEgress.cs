@@ -4,10 +4,10 @@ using System.Net.Sockets;
 namespace StorageDemo.Infrastructure.Streaming;
 
 /// <summary>
-/// Bytes actually put on the wire, the one fact <see cref="AvioWriter"/> and
-/// <see cref="SrtSocketStream"/> both keep for the same reason: a forward's own byte count is
-/// meant to answer "what left", not "what was muxed", and the two can differ by whatever a
-/// container's overhead is.
+/// Bytes actually put on the wire, the one fact <see cref="AvioWriter"/> and <see
+/// cref="SrtSocketStream"/> both keep for the same reason: a forward's own byte count is meant to
+/// answer "what left", not "what was muxed", and the two can differ by whatever a container's
+/// overhead is.
 /// </summary>
 internal interface IWireWriter
 {
@@ -73,20 +73,8 @@ internal readonly record struct SrtTarget(
 }
 
 /// <summary>
-/// Opens the direct-libsrt half of a forward: dials out as a caller, or waits as a listener,
-/// the two shapes an SRT forward target's URL describes.
-///
-/// The whole reason this exists rather than reusing <see cref="AvioWriter"/> for SRT the way UDP
-/// and RTP still do: libav's own SRT protocol handler never exposes the socket underneath it, so
-/// a forward going through libav can report bytes and nothing about the wire itself. This is the
-/// mirror of <see cref="SrtListener"/>, cut down to one socket instead of a whole port's worth - a
-/// forward has exactly one far end, so there is no backlog to size and no listen callback to
-/// refuse a name at, because there is only ever the one name this stream already has.
-///
-/// Blocking, like every other libsrt call in this service: a caller waits out a handshake against
-/// a far end that may be down, and a listener waits for somebody to pull it and may wait forever.
-/// Both are fine only because this always runs on the one thread already dedicated to this
-/// forward - see <see cref="StreamForwarder"/>, the only caller.
+/// Opens the direct-libsrt half of a forward: dials out as a caller, or waits as a listener, the
+/// two shapes an SRT forward target's URL describes.
 /// </summary>
 internal static unsafe class SrtEgress
 {
@@ -95,10 +83,8 @@ internal static unsafe class SrtEgress
     /// connection this service makes rather than falling back to libsrt's own default silently.
     /// </param>
     /// <param name="cancellationToken">
-    /// Honoured only while waiting for a puller in listener mode - the one libsrt call in this
-    /// path that can block indefinitely with nothing else to interrupt it. See
-    /// <see cref="OpenListener"/> for how; a caller's connect attempt is bounded by libsrt's own
-    /// connect timeout instead, the same as any other outbound connection this service makes.
+    /// Honoured only while waiting for a puller in listener mode - the one libsrt call in this path
+    /// that can block indefinitely with nothing else to interrupt it.
     /// </param>
     public static SrtSocketStream Open(string url, int defaultLatencyMs, CancellationToken cancellationToken)
     {
@@ -142,8 +128,8 @@ internal static unsafe class SrtEgress
         if (target.StreamId is { Length: > 0 } streamId)
         {
             // The one option that names this connection to a listener on the other end - the far
-            // end's own accept handler, our own ingest port included, reads this to decide what
-            // the stream is called.
+            // end's own accept handler, our own ingest port included, reads this to decide what the
+            // stream is called.
             Srt.SetString(socket, SRT_SOCKOPT.SRTO_STREAMID, streamId);
         }
 
@@ -163,8 +149,8 @@ internal static unsafe class SrtEgress
 
     /// <summary>
     /// Waits for the one puller this forward exists to serve, then closes the listening half: a
-    /// second caller reaching this port is not this forward's business to accept, so the backlog
-    /// is one and the socket stops listening the moment it has been used.
+    /// second caller reaching this port is not this forward's business to accept, so the backlog is
+    /// one and the socket stops listening the moment it has been used.
     /// </summary>
     private static SrtSocketStream OpenListener(int socket, SrtTarget target, CancellationToken cancellationToken)
     {
@@ -211,8 +197,7 @@ internal static unsafe class SrtEgress
                 $"Waiting for a puller on '{target.Host}:{target.Port}' failed: {error}");
         }
 
-        // One puller only. Closing the listening half now, rather than leaving it accepting a
-        // second one silently, is what makes "one forward, one far end" true of this shape too.
+        // One puller only.
         Srt.srt_close(socket);
 
         return new SrtSocketStream(accepted, writable: true);

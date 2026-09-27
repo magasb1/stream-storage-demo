@@ -1,5 +1,4 @@
 # Scenario C: S3-compatible storage plus PostgreSQL, no AWS account needed.
-# Run from the repository root: docker compose -f docker/docker-compose.yml up --build
 services:
   postgres:
     image: postgres:17-alpine
@@ -91,25 +90,18 @@ services:
       seaweedfs-init:
         condition: service_completed_successfully
     ports:
-      # Offset by one from the local ports, so this and a local dotnet run coexist and the
-      # desktop client can switch between them.
-      #
-      # Fixed, not a range. A range lets `--scale api=3` work, but Docker walks upward through it
-      # on every recreate rather than reusing the low end, so a rebuilt API quietly answers on
-      # 8082, then 8083. The saved client endpoint stops working and Live__PublicConsumptionUrl below
-      # advertises a port nothing listens on, which looks like a broken stream rather than a
-      # moved port. A stable address is worth more here; for several replicas, drop these three
-      # lines (the containers still reach each other) or use k8s/, which is the honest shape.
+      # Offset by one from the local ports, so this and a local dotnet run coexist and the desktop
+      # client can switch between them.
+      # Fixed, not a range. A range lets `--scale api=3` work, but Docker walks upward through it on
+      # every recreate rather than reusing the low end, so a rebuilt API quietly answers on 8082,
+      # then 8083.
       - "8081:8080"
       - "5081:5080"
-      # The two media ports, both SRT and therefore both UDP. Ingest is where encoders push;
-      # consumption is where players pull. Separate so a real deployment can put them on different
-      # networks, and separate here so the split is visible in the demo too.
+      # The two media ports, both SRT and therefore both UDP.
       - "9001:9000/udp"
       - "9011:9010/udp"
     environment:
-      # Development keeps Swagger and the sample seed. The level is pinned back to Information
-      # because the Development defaults log every EF command, which dominated the request time.
+      # Development keeps Swagger and the sample seed.
       ASPNETCORE_ENVIRONMENT: Development
       Serilog__MinimumLevel__Default: Information
 
@@ -133,13 +125,12 @@ services:
       # from the desktop client.
       Live__PublicConsumptionUrl: srt://127.0.0.1:9011
 
-      # Where the desktop client streams a long recording from, rather than downloading hours of
-      # it before the first frame. The published REST port, reachable from the host.
+      # Where the desktop client streams a long recording from, rather than downloading hours of it
+      # before the first frame.
       Documents__PublicBaseUrl: http://127.0.0.1:8081
 
       # How a sibling replica reaches this one, for a forwarded control call and for a relayed
-      # viewer's media alike. The container's own hostname, which Compose sets to the container name
-      # and also resolves on the shared network, so no identity has to be injected.
+      # viewer's media alike.
       Live__PeerBaseUrl: http://api:8080
 
       Database__Provider: Postgres
@@ -149,10 +140,8 @@ services:
       AWS_ACCESS_KEY_ID: seaweedadmin
       AWS_SECRET_ACCESS_KEY: seaweedpassword
 
-  # The detection worker (detection-plan.md D2): subscribes to streams the API is running,
-  # decodes them, and posts detections back. On by default, unlike srt-sender/srt-viewer below,
-  # because a worker with nothing to detect is inert - it costs nothing until a stream turns
-  # detection on - where a permanently running sender is traffic nobody asked to see.
+  # The detection worker (detection-plan.md D2): subscribes to streams the API is running, decodes
+  # them, and posts detections back.
   worker:
     build:
       context: ..
@@ -184,8 +173,6 @@ services:
     #           capabilities: [gpu]
 
   # A test pattern pushed in over SRT, so the live path can be demonstrated without an encoder.
-  # Off by default, because a permanently running stream is not what every `up` should mean:
-  #
   #   docker compose -f docker/docker-compose.yml --profile live up -d srt-sender
   #
   # Alpine's ffmpeg is built with libsrt, so no image has to be built for this.
@@ -199,8 +186,6 @@ services:
     entrypoint: ["/bin/sh", "/srt-sender.sh"]
 
   # A viewer, pulling the same stream back off the consumption port and measuring the gaps in it.
-  # Useful for watching what a pod restart actually costs somebody watching:
-  #
   #   docker compose -f docker/docker-compose.yml --profile live up srt-viewer
   srt-viewer:
     image: alpine:3.20

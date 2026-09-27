@@ -9,18 +9,12 @@ using StorageDemo.Grpc;
 
 namespace StorageDemo.Client;
 
-/// <summary>
-/// Everything this client knows about the server. gRPC only: no REST call is made from here,
-/// the REST surface exists for curl and Swagger.
-/// </summary>
+/// <summary>Everything this client knows about the server.</summary>
 public sealed class DocumentsApi : IDisposable
 {
     private const int ChunkSize = 64 * 1024;
 
-    /// <summary>
-    /// What the server's live interceptor reads, spelled the same as the REST header. Named here
-    /// rather than shared, because the client compiles the contract and not the service.
-    /// </summary>
+    /// <summary>What the server's live interceptor reads, spelled the same as the REST header.</summary>
     private const string TokenHeader = "x-storage-token";
 
     private readonly GrpcChannel _channel;
@@ -32,8 +26,7 @@ public sealed class DocumentsApi : IDisposable
         _channel = GrpcChannel.ForAddress(address);
 
         // On every call rather than on the guarded ones: the server ignores it elsewhere, and one
-        // invoker cannot forget a call site the way a per-call header argument can. With no token
-        // the channel is used raw, so a server that guards nothing sees exactly what it saw before.
+        // invoker cannot forget a call site the way a per-call header argument can.
         _client = new StorageDemo.Grpc.Documents.DocumentsClient(
             token.Length == 0
                 ? _channel.CreateCallInvoker()
@@ -100,10 +93,7 @@ public sealed class DocumentsApi : IDisposable
         return await call.ResponseAsync;
     }
 
-    /// <summary>
-    /// Streams a document to a local file and returns its path. WPF media playback and the system
-    /// PDF viewer both need a real file, and caching one per document keeps repeat views instant.
-    /// </summary>
+    /// <summary>Streams a document to a local file and returns its path.</summary>
     public async Task<string> DownloadToCacheAsync(
         DocumentMessage document,
         CancellationToken cancellationToken)
@@ -134,10 +124,7 @@ public sealed class DocumentsApi : IDisposable
         return path;
     }
 
-    /// <summary>
-    /// The server-rendered preview image. Returns null when the document has none, which is the
-    /// normal answer for a text file or a PDF.
-    /// </summary>
+    /// <summary>The server-rendered preview image.</summary>
     public async Task<byte[]?> DownloadThumbnailAsync(string id, CancellationToken cancellationToken)
     {
         using var call = _client.DownloadThumbnail(
@@ -170,7 +157,6 @@ public sealed class DocumentsApi : IDisposable
         }
         catch (RpcException ex) when (ex.StatusCode == StatusCode.Unimplemented)
         {
-            // An older server. Live simply does not exist as far as this client is concerned.
             return new LiveListResponse { Enabled = false };
         }
     }
@@ -207,7 +193,7 @@ public sealed class DocumentsApi : IDisposable
         return buffer.Length == 0 ? null : buffer.ToArray();
     }
 
-    /// <summary>Takes a picture of a stream now. Null when the server would not or could not.</summary>
+    /// <summary>Takes a picture of a stream now.</summary>
     public async Task<string?> SnapshotLiveAsync(string name, CancellationToken cancellationToken)
     {
         try
@@ -224,10 +210,7 @@ public sealed class DocumentsApi : IDisposable
         }
     }
 
-    /// <summary>
-    /// Starts a recording, or extends the one already running. It continues whether or not this
-    /// client stays connected, which is the point: closing the window does not stop it.
-    /// </summary>
+    /// <summary>Starts a recording, or extends the one already running.</summary>
     public async Task<LiveRecordingMessage?> RecordLiveAsync(
         string name,
         double seconds,
@@ -258,10 +241,7 @@ public sealed class DocumentsApi : IDisposable
         }
     }
 
-    /// <summary>
-    /// The newest KLV packet on a stream. Null when the stream carries none yet, and on a server
-    /// that predates the call, so the panel simply says nothing rather than the window failing.
-    /// </summary>
+    /// <summary>The newest KLV packet on a stream.</summary>
     public async Task<LiveKlvMessage?> GetLiveKlvAsync(string name, CancellationToken cancellationToken)
     {
         try
@@ -284,14 +264,7 @@ public sealed class DocumentsApi : IDisposable
             yield return call.ResponseStream.Current;
     }
 
-    /// <summary>
-    /// Switches detection on or off for a stream. Null when the stream is gone.
-    ///
-    /// Unlike its siblings this lets <c>Unimplemented</c> through, and so does
-    /// <see cref="GetLiveDetectionsAsync"/>: the window needs to tell "this server has no
-    /// detection" from "no frame yet", because the first disables the button with a reason and
-    /// the second is just a second's wait.
-    /// </summary>
+    /// <summary>Switches detection on or off for a stream.</summary>
     public async Task<LiveStreamMessage?> SetLiveDetectionAsync(
         string name,
         bool enabled,
@@ -319,7 +292,7 @@ public sealed class DocumentsApi : IDisposable
         }
     }
 
-    /// <summary>The newest VMTI frame on a stream. Null before a worker has posted one.</summary>
+    /// <summary>The newest VMTI frame on a stream.</summary>
     public async Task<LiveDetectionsMessage?> GetLiveDetectionsAsync(string name, CancellationToken cancellationToken)
     {
         try
@@ -345,10 +318,7 @@ public sealed class DocumentsApi : IDisposable
     public async Task DeleteAsync(string id, CancellationToken cancellationToken)
         => await _client.DeleteAsync(new DocumentId { Id = id }, cancellationToken: cancellationToken);
 
-    /// <summary>
-    /// Long-lived server stream. It reports uploads and deletes from any client, and the changes
-    /// the server's storage monitor picks up from outside the application entirely.
-    /// </summary>
+    /// <summary>Long-lived server stream.</summary>
     public async IAsyncEnumerable<ChangeEvent> WatchAsync(
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
     {
@@ -368,7 +338,6 @@ public sealed class DocumentsApi : IDisposable
             }
             catch (RpcException)
             {
-                // Connection lost. The caller reconnects rather than tearing down the window.
                 yield break;
             }
 

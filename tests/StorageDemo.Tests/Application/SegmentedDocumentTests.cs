@@ -4,10 +4,8 @@ using StorageDemo.Core.Documents;
 namespace StorageDemo.Tests.Application;
 
 /// <summary>
-/// A recording that runs for hours is written a piece at a time so that no pod holds it whole,
-/// and read back as one file so that nobody opening it can tell. These are the two halves of that
-/// claim: the pieces really are separate objects, and the thing that comes back out is one
-/// seekable stream of exactly the right bytes.
+/// A recording that runs for hours is written a piece at a time so that no pod holds it whole, and
+/// read back as one file so that nobody opening it can tell.
 /// </summary>
 public sealed class SegmentedDocumentTests
 {
@@ -63,10 +61,7 @@ public sealed class SegmentedDocumentTests
         Assert.Equal(2, _storage.Objects.Count);
     }
 
-    /// <summary>
-    /// One document, one name, one size. Whoever opens it has no way to tell it was written in
-    /// pieces, which is the point of the whole arrangement.
-    /// </summary>
+    /// <summary>One document, one name, one size.</summary>
     [Fact]
     public async Task The_pieces_read_back_as_one_file()
     {
@@ -88,9 +83,9 @@ public sealed class SegmentedDocumentTests
     }
 
     /// <summary>
-    /// Seeking is what makes a six hour recording usable from the document list, and it has to
-    /// land on the right byte wherever it is asked to: at a boundary, inside a piece, and at the
-    /// very end.
+    /// Seeking is what makes a six hour recording usable from the document list, and it has to land
+    /// on the right byte wherever it is asked to: at a boundary, inside a piece, and at the very
+    /// end.
     /// </summary>
     [Theory]
     [InlineData(0)]
@@ -159,10 +154,7 @@ public sealed class SegmentedDocumentTests
         Assert.Equal(0, await content.Stream.ReadAsync(new byte[8]));
     }
 
-    /// <summary>
-    /// Deleting has to take the pieces with it. They live outside the prefix the reconciler
-    /// scans, so nothing else would ever notice they had been left behind.
-    /// </summary>
+    /// <summary>Deleting has to take the pieces with it.</summary>
     [Fact]
     public async Task Deleting_removes_every_piece()
     {
@@ -189,8 +181,6 @@ public sealed class SegmentedDocumentTests
 
     /// <summary>
     /// The pieces live outside the prefix the storage monitor scans, exactly as thumbnails do.
-    /// Under it, each piece would be imported as a document of its own and one recording would
-    /// appear as a list of five-minute files.
     /// </summary>
     [Fact]
     public async Task The_pieces_are_kept_out_of_the_way_of_the_storage_monitor()
@@ -201,11 +191,7 @@ public sealed class SegmentedDocumentTests
         Assert.DoesNotContain(_storage.Objects.Keys, key => key.StartsWith("documents/", StringComparison.Ordinal));
     }
 
-    /// <summary>
-    /// The reconciler removes rows whose object has gone. A recording's bytes are not where it
-    /// looks, so without this a perfectly good recording, or one still being written, would be
-    /// deleted on the next pass.
-    /// </summary>
+    /// <summary>The reconciler removes rows whose object has gone.</summary>
     [Fact]
     public async Task The_reconciler_leaves_a_recording_alone()
     {

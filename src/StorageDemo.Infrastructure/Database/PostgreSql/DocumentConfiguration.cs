@@ -20,8 +20,7 @@ public sealed class DocumentConfiguration : IEntityTypeConfiguration<Document>
         builder.Property(d => d.CreatedAt);
         builder.Property(d => d.ThumbnailKey).HasMaxLength(1024);
 
-        // Media metadata is free-form, so it goes in one jsonb column rather than a column per
-        // key. Postgres can still index into it later if anything ever needs to query it.
+        // Media metadata is free-form, so it goes in one jsonb column rather than a column per key.
         builder.Property(d => d.Metadata)
             .HasColumnType("jsonb")
             .HasConversion(
@@ -32,9 +31,6 @@ public sealed class DocumentConfiguration : IEntityTypeConfiguration<Document>
                     metadata => DocumentMetadata.Serialize(metadata)!.GetHashCode(),
                     metadata => DocumentMetadata.Deserialize(DocumentMetadata.Serialize(metadata))));
 
-        // The pieces of a document written a piece at a time, in order. One jsonb value rather
-        // than a child table: nothing queries into them, they are always read with their document,
-        // and a table would buy a join for no benefit.
         builder.Property(d => d.Parts)
             .HasColumnType("jsonb")
             .HasConversion(

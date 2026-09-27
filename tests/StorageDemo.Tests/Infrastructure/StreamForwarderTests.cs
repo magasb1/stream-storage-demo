@@ -12,19 +12,7 @@ using StorageDemo.Tests.Application;
 
 namespace StorageDemo.Tests.Infrastructure;
 
-/// <summary>
-/// Forwarding, in the two halves it actually has.
-///
-/// One is bytes: a hub, a real MPEG-TS layout, a socket at the other end, and an assertion that
-/// what arrives is a transport stream. That is the only test that proves the whole path, since
-/// every part of it - the subscription, the muxer, the AVIOContext, the protocol - is something
-/// that can be wrong without any other test noticing.
-///
-/// The other is the decision, which has no bytes in it at all: <see cref="ForwardPlan"/> takes what
-/// was configured, what is running and the time, and says what to start and stop. Proving "a
-/// disabled forward stops" that way costs nothing, where proving it through a socket would cost a
-/// far end and a wait.
-/// </summary>
+/// <summary>Forwarding, in the two halves it actually has.</summary>
 public sealed class StreamForwarderTests
 {
     private static readonly TimeSpan Retry = TimeSpan.FromSeconds(5);
@@ -59,10 +47,6 @@ public sealed class StreamForwarderTests
     /// <summary>
     /// The whole path, with real bytes: packets into a hub, a forward pointed at a socket this test
     /// holds, and a transport stream coming out of it.
-    ///
-    /// The sync byte is the assertion worth making. Bytes arriving proves a socket was opened;
-    /// 0x47 at the start of a datagram proves the muxer built a transport stream and that the RTP
-    /// question - which container this scheme wants - was answered correctly for udp.
     /// </summary>
     [Fact]
     public async Task A_forward_pushes_a_transport_stream_to_the_far_end()
@@ -92,8 +76,8 @@ public sealed class StreamForwarderTests
         forwarder.Start(CancellationToken.None);
 
         // Published in a loop rather than all at once, because the forward subscribes at the live
-        // edge: anything sent before its thread has attached is gone, and the thread has a socket to
-        // open first.
+        // edge: anything sent before its thread has attached is gone, and the thread has a socket
+        // to open first.
         var received = far.ReceiveAsync(CancellationToken.None).AsTask();
         var pts = 0L;
 
@@ -133,11 +117,7 @@ public sealed class StreamForwarderTests
 
     /// <summary>
     /// An SRT forward, dialling out as a caller, through the real direct-libsrt path rather than
-    /// libav's: real bytes reach a real far end, exactly as the UDP test above proves. The far end
-    /// here is a second raw libsrt socket this test accepts on directly, for the same reason the
-    /// UDP test reads a raw datagram instead of asking something to decode it - the packets
-    /// published below are not a real bitstream, only a byte count and a sync byte a decoder would
-    /// never make sense of, and proving connectivity must not depend on it trying to.
+    /// libav's: real bytes reach a real far end, exactly as the UDP test above proves.
     /// </summary>
     [Fact]
     public async Task An_srt_forward_dials_out_and_reports_libsrts_own_link_stats()
@@ -223,9 +203,6 @@ public sealed class StreamForwarderTests
 
     /// <summary>
     /// The other shape a forward's SRT URL can ask for: this replica waits, and the far end pulls.
-    /// A real caller connects and reads real bytes, proving <c>?mode=listener</c> reaches
-    /// <see cref="SrtEgress"/>'s bind-listen-accept path rather than the caller path the test above
-    /// already covers.
     /// </summary>
     [Fact]
     public async Task An_srt_forward_can_wait_for_the_far_end_to_pull_it()
@@ -283,10 +260,10 @@ public sealed class StreamForwarderTests
 
         Assert.Equal(0x47, puller.FirstByte);
 
-        // Stop() has to unblock a listener parked in srt_accept with nobody having pulled it yet
-        // in the ordinary case; here somebody already has, so this instead proves the running
-        // thread actually exits once the accepted connection is asked to close, rather than
-        // hanging on a send to a peer this test is about to walk away from.
+        // Stop() has to unblock a listener parked in srt_accept with nobody having pulled it yet in
+        // the ordinary case; here somebody already has, so this instead proves the running thread
+        // actually exits once the accepted connection is asked to close, rather than hanging on a
+        // send to a peer this test is about to walk away from.
         forwarder.Stop();
 
         try
@@ -300,8 +277,8 @@ public sealed class StreamForwarderTests
     }
 
     /// <summary>
-    /// The far end for a listening forward's test: a raw libsrt caller, the mirror of
-    /// <see cref="RawSrtListener"/> for the other direction a forward's URL can ask for.
+    /// The far end for a listening forward's test: a raw libsrt caller, the mirror of <see
+    /// cref="RawSrtListener"/> for the other direction a forward's URL can ask for.
     /// </summary>
     private sealed unsafe class RawSrtCaller : IDisposable
     {
@@ -377,9 +354,7 @@ public sealed class StreamForwarderTests
     /// The far end for an SRT caller test, standing in for a real gateway with the same primitives
     /// <see cref="SrtEgress"/> uses to open one: bind, listen, accept, all blocking on a background
     /// thread since that is the one thing every libsrt call in this service assumes about its
-    /// caller. Reads just enough to prove a real transport stream arrived and stops - proving
-    /// content is <see cref="A_forward_pushes_a_transport_stream_to_the_far_end"/>'s job, on a
-    /// protocol where a raw datagram already says so without an accept loop in the way.
+    /// caller.
     /// </summary>
     private sealed unsafe class RawSrtListener : IDisposable
     {
@@ -461,9 +436,8 @@ public sealed class StreamForwarderTests
     }
 
     /// <summary>
-    /// A forward whose far end cannot be opened stops and says why, rather than retrying on its own.
-    /// The retry lives in the reconcile pass, which is the only place that knows whether the
-    /// operator still wants this forward at all.
+    /// A forward whose far end cannot be opened stops and says why, rather than retrying on its
+    /// own.
     /// </summary>
     [Fact]
     public async Task A_forward_that_cannot_open_stops_and_leaves_the_reason()
@@ -526,10 +500,7 @@ public sealed class StreamForwarderTests
         Assert.Equal("a", Assert.Single(stop));
     }
 
-    /// <summary>
-    /// Disabling is the same decision as removing, from here. The difference matters to the store,
-    /// which keeps the URL so switching it back on costs nobody a retype, and not to this.
-    /// </summary>
+    /// <summary>Disabling is the same decision as removing, from here.</summary>
     [Fact]
     public void A_forward_that_was_disabled_is_stopped()
     {
@@ -580,10 +551,7 @@ public sealed class StreamForwarderTests
         Assert.Empty(stop);
     }
 
-    /// <summary>
-    /// The back-off. A far end that is down is dialled on a schedule rather than on every beat,
-    /// which at a thousand streams is the difference between a retry and a flood.
-    /// </summary>
+    /// <summary>The back-off.</summary>
     [Fact]
     public void A_failed_forward_is_left_alone_until_its_retry_is_due()
     {
@@ -638,13 +606,7 @@ public sealed class StreamForwarderTests
             StringComparer.Ordinal);
 }
 
-/// <summary>
-/// The allowlist, on the output side.
-///
-/// It has always covered pulled inputs, and a forward is the same hazard pointed the other way: a
-/// URL an operator types that libav will happily open. "Write this local file" is as much a way out
-/// of this service as "read this local file" was a way in.
-/// </summary>
+/// <summary>The allowlist, on the output side.</summary>
 public sealed class ForwardTargetAllowlistTests : IAsyncDisposable
 {
     private readonly ServiceProvider _services = new ServiceCollection().BuildServiceProvider();
@@ -686,13 +648,7 @@ public sealed class ForwardTargetAllowlistTests : IAsyncDisposable
         Assert.Contains("file", forward.Error);
     }
 
-    /// <summary>
-    /// Parking a source stops this service dialling out.
-    ///
-    /// It is the only reading of "disabled" an operator who has just switched a source off will
-    /// accept. Leaving the pull running would make the toggle mean "stop trying again later", and
-    /// the row would sit there disabled while its camera carried on arriving.
-    /// </summary>
+    /// <summary>Parking a source stops this service dialling out.</summary>
     [Fact]
     public async Task A_pulled_stream_stops_when_its_source_is_switched_off()
     {
@@ -718,13 +674,7 @@ public sealed class ForwardTargetAllowlistTests : IAsyncDisposable
         Assert.Null(await coordinator.GetAsync(name));
     }
 
-    /// <summary>
-    /// Deliberately narrow, in the direction that matters: an absent row sweeps nothing.
-    ///
-    /// A stream created straight through the manual endpoint has no configured row at all, and
-    /// deleting a configuration is not a licence to yank a live feed away from its viewers. If this
-    /// ever fails, every manually created stream disappears two seconds after it starts.
-    /// </summary>
+    /// <summary>Deliberately narrow, in the direction that matters: an absent row sweeps nothing.</summary>
     [Fact]
     public async Task A_pulled_stream_with_no_configured_row_is_left_alone()
     {
@@ -743,11 +693,7 @@ public sealed class ForwardTargetAllowlistTests : IAsyncDisposable
         Assert.True(coordinator.Owns(name));
     }
 
-    /// <summary>
-    /// A real coordinator over fakes, kept for disposal. One per test: the coordinator owns threads
-    /// and a lifetime token, and sharing one between tests would let a stream from the first decide
-    /// what the second sees.
-    /// </summary>
+    /// <summary>A real coordinator over fakes, kept for disposal.</summary>
     private (LiveStreamCoordinator Coordinator, FakeLiveSourceStore Sources) Coordinator()
     {
         var sources = new FakeLiveSourceStore();
@@ -786,7 +732,7 @@ public sealed class ForwardTargetAllowlistTests : IAsyncDisposable
     }
 }
 
-/// <summary>The configuration half, with no store behind it. Reads are all the coordinator makes.</summary>
+/// <summary>The configuration half, with no store behind it.</summary>
 internal sealed class FakeLiveSourceStore : ILiveSourceStore
 {
     private readonly Dictionary<string, LiveSource> _sources = new(StringComparer.Ordinal);

@@ -12,7 +12,7 @@ public sealed class S3StorageOptions
     [Required(AllowEmptyStrings = false)]
     public string Region { get; init; } = string.Empty;
 
-    /// <summary>Set only for S3-compatible systems such as SeaweedFS. Leave null for AWS.</summary>
+    /// <summary>Set only for S3-compatible systems such as SeaweedFS.</summary>
     public string? ServiceUrl { get; init; }
 
     public bool ForcePathStyle { get; init; }

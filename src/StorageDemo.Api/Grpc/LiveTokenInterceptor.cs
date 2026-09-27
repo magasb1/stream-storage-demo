@@ -9,11 +9,7 @@ namespace StorageDemo.Api.Grpc;
 
 /// <summary>
 /// The same guard the REST live routes apply, for the live RPCs: the configured token, carried as
-/// metadata under the header's name, compared in fixed time. Document RPCs pass untouched, and so
-/// does the preview, which is open on both surfaces because it is a picture.
-///
-/// Nothing is checked while live streaming is off: the service answers NOT_FOUND then, as REST
-/// answers 404, rather than advertising what is switched off by demanding a token for it.
+/// metadata under the header's name, compared in fixed time.
 /// </summary>
 public sealed class LiveTokenInterceptor(IOptions<LiveOptions> options) : Interceptor
 {

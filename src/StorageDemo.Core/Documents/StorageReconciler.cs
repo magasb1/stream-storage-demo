@@ -11,11 +11,8 @@ public sealed record ReconciliationResult(int Added, int Updated, int Removed)
 }
 
 /// <summary>
-/// Brings the metadata database back in line with what is actually in the store, so files
-/// added, replaced or deleted by something other than this application still show up.
-///
-/// Storage is the source of truth here: an object with no row is imported, a row whose object
-/// is gone is removed, and a changed size or timestamp updates the row.
+/// Brings the metadata database back in line with what is actually in the store, so files added,
+/// replaced or deleted by something other than this application still show up.
 /// </summary>
 public sealed class StorageReconciler(
     IFileStorage fileStorage,
@@ -28,9 +25,7 @@ public sealed class StorageReconciler(
         string prefix,
         CancellationToken cancellationToken = default)
     {
-        // Documents written in pieces are left alone. Their bytes live outside the prefix being
-        // scanned, so this pass can neither find them nor judge them: it would see no object at
-        // their storage key and remove a recording that is perfectly intact, or still running.
+        // Documents written in pieces are left alone.
         var known = (await repository.GetAllAsync(cancellationToken))
             .Where(d => !d.Segmented)
             .ToDictionary(d => d.StorageKey, StringComparer.Ordinal);
@@ -41,9 +36,6 @@ public sealed class StorageReconciler(
 
         // The listing is drained before anything is written, because importing an object writes a
         // thumbnail back to the same store and mutating a store mid-scan is asking for trouble.
-        //
-        // ponytail: holds one entry per object in memory. Page through the listing instead if a
-        // store ever grows past what a single pass can hold.
         var objects = new List<StorageObject>();
         await foreach (var obj in fileStorage.ListAsync(prefix, cancellationToken))
         {
@@ -156,10 +148,7 @@ public sealed class StorageReconciler(
         };
     }
 
-    /// <summary>
-    /// Keys this application wrote already carry their id. Anything else gets an id derived from
-    /// the key, so re-scanning the same object never produces a second row.
-    /// </summary>
+    /// <summary>Keys this application wrote already carry their id.</summary>
     private static Guid IdFor(string key)
     {
         var segments = key.Split('/');

@@ -1,32 +1,12 @@
 namespace StorageDemo.Core.Streaming;
 
-/// <summary>
-/// How a frame becomes a model input and how a model's box comes back out, as one object. The
-/// forward resize and its inverse are one formula read in two directions, and the failure the
-/// detection plan fears most is the two drifting apart when they are written in different places:
-/// every box then lands plausibly and wrongly, and nothing throws.
-///
-/// Pure arithmetic. It says where the frame's pixels land on the model canvas so that swscale can
-/// do the resize later, and it turns model-space boxes into <see cref="VmtiDetection"/>
-/// coordinates, which are 1-based and inclusive (see Misb0903.cs). Model space is the
-/// <see cref="InputSize"/> x <see cref="InputSize"/> canvas with (0, 0) at the outer corner of the
-/// top-left pixel, the edge convention both families' box outputs use. Square only, because every
-/// export in research/detector-models.md is (RF-DETR fixes H = W = resolution at export; YOLO
-/// defaults imgsz to one number).
-///
-/// Sources are cited per formula below; all were read from the repositories on 2026-09-12.
-/// </summary>
+/// <summary>How a frame becomes a model input and how a model's box comes back out, as one object.</summary>
 public abstract record DetectorGeometry(int InputSize)
 {
-    /// <summary>
-    /// Where the frame's pixels land on the canvas. The rest of the canvas, if any, is padding.
-    /// The pixel resize into that rectangle must be bilinear with half-pixel centres, which is what
-    /// swscale does by default and what both references do (RF-DETR's <c>_resize.py</c>, OpenCV's
-    /// <c>INTER_LINEAR</c>); a corner-aligned or antialiased resize shifts content sub-pixel.
-    /// </summary>
+    /// <summary>Where the frame's pixels land on the canvas.</summary>
     public abstract (int Left, int Top, int Width, int Height) Place(int frameWidth, int frameHeight);
 
-    /// <summary>A frame box onto the canvas, edges in canvas pixels. The forward direction.</summary>
+    /// <summary>A frame box onto the canvas, edges in canvas pixels.</summary>
     public (double X1, double Y1, double X2, double Y2) ToModel(VmtiDetection box, int frameWidth, int frameHeight)
         // 1-based inclusive columns L..R cover the continuous span [L - 1, R).
         => Forward(box.Left - 1, box.Top - 1, box.Right, box.Bottom, frameWidth, frameHeight);
@@ -38,9 +18,7 @@ public abstract record DetectorGeometry(int InputSize)
 
         // Continuous edges to ST 0903's pixels: a left edge at 100.0 makes 0-based column 100 the
         // first inside, which is column 101; a right edge at 140.0 makes 139 the last, which is
-        // 140. Nearest edge, so a value a rounding error past an integer does not grow the box.
-        // Clipping happens here for both strategies: scale_boxes clips (cited in Letterbox), RF-DETR
-        // does not, and VmtiDetection rejects a pixel outside the frame either way.
+        // 140.
         var left = Math.Clamp((int)Math.Round(x1) + 1, 1, frameWidth);
         var top = Math.Clamp((int)Math.Round(y1) + 1, 1, frameHeight);
 
@@ -54,9 +32,7 @@ public abstract record DetectorGeometry(int InputSize)
 
     /// <summary>
     /// RF-DETR's <c>dets</c> box: centre, width and height, each 0..1 of the canvas
-    /// (research/detector-models.md section 1, "Output"). Scaled to canvas pixels and handed to
-    /// <see cref="ToFrame"/>, so the two families share one inverse and one rounding. A raw YOLO
-    /// xywh box is the same shape in canvas pixels; convert it in model space, then ToFrame.
+    /// (research/detector-models.md section 1, "Output").
     /// </summary>
     public VmtiDetection ToFrameNormalised(int id, (double Cx, double Cy, double W, double H) box, int frameWidth, int frameHeight)
         => ToFrame(
@@ -72,10 +48,6 @@ public abstract record DetectorGeometry(int InputSize)
 
     /// <summary>
     /// RF-DETR: the whole frame resized onto the whole canvas, aspect ratio destroyed, no padding.
-    /// <c>src/rfdetr/detr.py</c> (predict): <c>F.resize(t, [resolution, resolution], antialias=False)</c>,
-    /// a two-element size forcing both dimensions. Bilinear, half-pixel centres, no antialias:
-    /// <c>src/rfdetr/export/_resize.py</c> exists purely to reproduce that torch-free, and says
-    /// PIL's resize diverges on both counts.
     /// </summary>
     public sealed record Stretch(int InputSize) : DetectorGeometry(InputSize)
     {
@@ -83,24 +55,19 @@ public abstract record DetectorGeometry(int InputSize)
             => (0, 0, InputSize, InputSize);
 
         // Half-pixel centres (align_corners=False) mean frame edge to canvas edge, so a pixel's
-        // centre i + 0.5 lands at (i + 0.5) * InputSize / frameWidth. Corner alignment would send
-        // centre 0.5 to 0.5 instead; that is the sub-pixel shift _resize.py warns about.
+        // centre i + 0.5 lands at (i + 0.5) * InputSize / frameWidth.
         protected override (double X1, double Y1, double X2, double Y2) Forward(double x1, double y1, double x2, double y2, int frameWidth, int frameHeight)
             => (x1 * InputSize / frameWidth, y1 * InputSize / frameHeight, x2 * InputSize / frameWidth, y2 * InputSize / frameHeight);
 
-        // src/rfdetr/models/postprocess.py, PostProcess._gather_and_scale_boxes: the normalised
-        // box times [W0, H0, W0, H0] of the ORIGINAL image, no gain, no pad, per axis. Dividing by
-        // InputSize first undoes the scaling ToFrame(cxcywh) applied, so this is that formula.
+        // src/rfdetr/models/postprocess.py, PostProcess._gather_and_scale_boxes: the normalised box
+        // times [W0, H0, W0, H0] of the ORIGINAL image, no gain, no pad, per axis.
         protected override (double X1, double Y1, double X2, double Y2) Inverse(double x1, double y1, double x2, double y2, int frameWidth, int frameHeight)
             => (x1 / InputSize * frameWidth, y1 / InputSize * frameHeight, x2 / InputSize * frameWidth, y2 / InputSize * frameHeight);
     }
 
     /// <summary>
-    /// YOLO: the frame scaled uniformly by the long side and centred on a canvas of
-    /// <paramref name="PadValue"/>. <c>ultralytics/data/augment.py</c>, <c>class LetterBox</c>,
-    /// defaults <c>auto=False, scale_fill=False, scaleup=True, center=True, padding_value=114,
-    /// interpolation=cv2.INTER_LINEAR</c>; a static ONNX export always pads to the full square
-    /// (research/detector-models.md section 3).
+    /// YOLO: the frame scaled uniformly by the long side and centred on a canvas of <paramref
+    /// name="PadValue"/>.
     /// </summary>
     public sealed record Letterbox(int InputSize, int PadValue = 114) : DetectorGeometry(InputSize)
     {
@@ -113,8 +80,8 @@ public abstract record DetectorGeometry(int InputSize)
             //   top, bottom = round(dh - 0.1), round(dh + 0.1)
             //   left, right = round(dw - 0.1), round(dw + 0.1)
             // The 0.1 makes an x.5 pad round down on the leading edge and up on the trailing one,
-            // so the two always sum to the whole gap; ordinary rounding would give x.5 to the
-            // same side twice on odd gaps. Python's round is half-to-even, as is Math.Round.
+            // so the two always sum to the whole gap. Python's round is half-to-even, as is
+            // Math.Round.
             var gain = Gain(frameWidth, frameHeight);
             var width = (int)Math.Round(frameWidth * gain);
             var height = (int)Math.Round(frameHeight * gain);
@@ -126,10 +93,7 @@ public abstract record DetectorGeometry(int InputSize)
                 height);
         }
 
-        // Frame pixels times the gain, plus the pad. Note the reference resizes to the ROUNDED
-        // new_unpad but scales boxes by the unrounded gain, so on a frame like 1280x721 the pixels
-        // end half a canvas row short of where the boxes say; that is Ultralytics' behaviour and
-        // matching it is the point, not fixing it.
+        // Frame pixels times the gain, plus the pad.
         protected override (double X1, double Y1, double X2, double Y2) Forward(double x1, double y1, double x2, double y2, int frameWidth, int frameHeight)
         {
             var gain = Gain(frameWidth, frameHeight);

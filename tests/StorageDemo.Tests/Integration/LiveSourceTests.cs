@@ -19,10 +19,6 @@ namespace StorageDemo.Tests.Integration;
 /// <summary>
 /// The configuration surface, through the real application: a source is written, read back with
 /// what it is doing beside it, edited, and forgotten.
-///
-/// No encoder and no SRT anywhere here, which is the point of the seam. A source is what somebody
-/// asked for, and asking for it has to work whether or not a single packet has ever arrived - a
-/// test that needed a live feed to prove the configuration round-trips would be testing ingest.
 /// </summary>
 public sealed class LiveSourceTests : IAsyncLifetime
 {
@@ -38,12 +34,7 @@ public sealed class LiveSourceTests : IAsyncLifetime
     private GrpcChannel _channel = null!;
     private StorageDemo.Grpc.Documents.DocumentsClient _grpc = null!;
 
-    /// <summary>
-    /// The store, in the test's own memory rather than whatever the deployment configures. Every
-    /// implementation of it is read-heavy and unclever by design, so which one is underneath says
-    /// nothing about the routes above it, and the one this repository ships in production is backed
-    /// by Redis, which this suite deliberately does not need.
-    /// </summary>
+    /// <summary>The store, in the test's own memory rather than whatever the deployment configures.</summary>
     private sealed class MemorySourceStore : ILiveSourceStore
     {
         private readonly ConcurrentDictionary<string, LiveSource> _sources = new(StringComparer.Ordinal);
@@ -122,9 +113,7 @@ public sealed class LiveSourceTests : IAsyncLifetime
 
     /// <summary>
     /// The whole row survives the trip, forwards included, and the listing pairs it with what it is
-    /// doing without a second call. Nothing is on air, so the stream half is null, and the row is
-    /// still listed: a source only appearing once its feed works would hide exactly the source an
-    /// operator came to look at.
+    /// doing without a second call.
     /// </summary>
     [Fact]
     public async Task A_source_and_its_forwards_round_trip_through_the_configuration()
@@ -176,10 +165,7 @@ public sealed class LiveSourceTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// An operator adding a forward types a URL, not an identifier, so the server mints one. The
-    /// second half is the one that matters: the id has to survive an edit, because that is what
-    /// makes a forward whose URL changed the same forward rather than a new one, and it is what
-    /// the reported status of a running copy is keyed by.
+    /// An operator adding a forward types a URL, not an identifier, so the server mints one.
     /// </summary>
     [Fact]
     public async Task A_forward_saved_without_an_id_is_given_one_and_keeps_it_across_an_edit()
@@ -214,11 +200,7 @@ public sealed class LiveSourceTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.BadRequest, collided.StatusCode);
     }
 
-    /// <summary>
-    /// Both directions are held to the allowlist, and both refusals matter. A source URL outside it
-    /// makes the service read anywhere libav can reach; a forward URL outside it makes the service
-    /// write there, which is the same hole pointed the other way.
-    /// </summary>
+    /// <summary>Both directions are held to the allowlist, and both refusals matter.</summary>
     [Fact]
     public async Task A_source_may_not_name_a_transport_outside_the_allowed_list()
     {
@@ -247,13 +229,6 @@ public sealed class LiveSourceTests : IAsyncLifetime
     /// encoder presents a name at the handshake and a source claims one here, and a name only one
     /// of them would accept is a name the other could never serve.
     /// </summary>
-    /// <remarks>
-    /// The names here are ones that survive the trip. A name like <c>../../etc/passwd</c> is
-    /// normalised away by the client before the request is sent and never reaches the route at all,
-    /// so asserting on it would prove something about <see cref="HttpClient"/> rather than about
-    /// this service; the rule refuses it either way, and <c>StreamNameTests</c> is where that is
-    /// pinned.
-    /// </remarks>
     [Fact]
     public async Task A_source_whose_name_is_not_a_usable_stream_name_is_refused()
     {
@@ -329,9 +304,6 @@ public sealed class LiveSourceTests : IAsyncLifetime
     /// The same three operations over gRPC, which is the surface the desktop client actually uses:
     /// a source is saved with a forward that has no id, comes back with one, appears on the listing
     /// with no stream beside it because none is on air, and is then forgotten.
-    ///
-    /// Both surfaces exist on purpose - REST for a command-line tool or an agent, gRPC for the
-    /// client - so a feature that worked on one of them would be half delivered.
     /// </summary>
     [Fact]
     public async Task The_same_source_is_saved_listed_and_deleted_over_grpc()
@@ -365,10 +337,7 @@ public sealed class LiveSourceTests : IAsyncLifetime
         Assert.Empty((await _grpc.ListLiveSourcesAsync(new Empty(), Metadata())).Sources);
     }
 
-    /// <summary>
-    /// The allowlist and the token are properties of the service, not of REST. A second surface
-    /// that enforced neither would be a way round both.
-    /// </summary>
+    /// <summary>The allowlist and the token are properties of the service, not of REST.</summary>
     [Fact]
     public async Task The_grpc_surface_enforces_the_same_allowlist_and_the_same_token()
     {

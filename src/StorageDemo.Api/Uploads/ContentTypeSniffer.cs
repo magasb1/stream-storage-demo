@@ -6,12 +6,7 @@ namespace StorageDemo.Api.Uploads;
 
 /// <summary>
 /// Decides what an upload actually is, from its leading bytes rather than from what the client
-/// claimed. A browser sends whatever content type it likes and an extension is just part of a
-/// name, so neither is evidence. The stored type is what gets served back later, which is exactly
-/// why it should not be attacker-chosen.
-///
-/// Formats with no signature, plain text most of all, are left to the declared type: absence of a
-/// magic number is not evidence of lying.
+/// claimed.
 /// </summary>
 public sealed class ContentTypeSniffer(ILogger<ContentTypeSniffer> logger)
 {

@@ -1,18 +1,12 @@
 #!/usr/bin/env bash
 # Produces models/yolo26-nano.onnx: YOLO26 Nano, COCO weights, with uint8 input and /255
-# normalisation baked into the graph. See models/README.md for the tensor contract.
-#
+# normalisation baked into the graph.
 # **Separate from fetch-rfdetr.sh on purpose.** RF-DETR Nano is Apache-2.0 and is the default;
 # ultralytics is AGPL-3.0 or a paid Ultralytics Enterprise licence, and the vendor lists hosted
-# services and proprietary models under the commercial one. Installing it should be a thing
-# somebody chose to run, not a side effect of fetching the default model. models/README.md states
-# the position; it is not legal advice.
-#
+# services and proprietary models under the commercial one.
 # Shares .venv/ with fetch-rfdetr.sh: ultralytics 8.4.150 resolves against the pins rfdetr already
-# fixed (torch 2.14.0+cpu, torchvision 0.29.0+cpu, onnx 1.22.0, onnxruntime 1.30.0) with no
-# upgrade or downgrade of any of them - it only adds opencv-python, polars, psutil and its own
-# packages. If that ever stops being true, build a second venv rather than moving rfdetr's pins.
-#
+# fixed (torch 2.14.0+cpu, torchvision 0.29.0+cpu, onnx 1.22.0, onnxruntime 1.30.0) with no upgrade
+# or downgrade of any of them - it only adds opencv-python, polars, psutil and its own packages.
 # The venv itself comes from fetch-rfdetr.sh so the pins live in exactly one file; it also fetches
 # models/dog-2.jpeg, which export-yolo.py proves this model on.
 set -euo pipefail

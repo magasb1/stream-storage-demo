@@ -5,11 +5,7 @@ namespace StorageDemo.Core.Streaming;
 
 /// <summary>
 /// The MISB ST 0902 Motion Imagery Sensor Minimum Metadata Set, decoded from one ST 0601 UAS
-/// Datalink Local Set packet. Everything the packet carries beyond that stays raw in
-/// <see cref="Unparsed"/>, keyed by tag.
-///
-/// Angles are degrees, distances metres, latitude and longitude WGS84. A field is null when the
-/// packet did not carry it, carried it at the wrong length, or sent the standard's error value.
+/// Datalink Local Set packet.
 /// </summary>
 public sealed record Misb0601Set
 {
@@ -56,8 +52,7 @@ public sealed record Misb0601Set
 
     /// <summary>
     /// The ST 0102 classification marking from the nested security set, or null when the packet
-    /// carried none. Null is a meaningful answer: a client shows it as unmarked, which is not the
-    /// same as an empty marking.
+    /// carried none.
     /// </summary>
     public string? Classification { get; init; }
 
@@ -68,30 +63,7 @@ public sealed record Misb0601Set
     public IReadOnlyDictionary<int, byte[]> Unparsed { get; init; } = new Dictionary<int, byte[]>();
 }
 
-/// <summary>
-/// Decodes the ST 0902 minimum set out of an ST 0601 packet, and nothing more.
-///
-/// Sources, so the scaling can be checked against a document rather than against this file:
-/// - STANAG 4609 Ed. 5 adopts MISP-2019.1, whose normative references are MISB ST 0601.14 (UAS
-///   Datalink LS), ST 0902.8 (Minimum Metadata Set), ST 0102.12 (Security LS), ST 1402.2 (KLV in
-///   MPEG-2 TS) and ST 1201.3 (IMAPB).
-/// - Every scale below was read from ST 0601.8 Table 1, which is the latest revision published
-///   outside the NGA registry. ST 0601 has never changed the encoding of an existing item, so
-///   these hold for 0601.14; none of the minimum set uses ST 1201 IMAPB, which 0601 adopted only
-///   for items added later. The checksum is ST 0601.8 section 6.8.
-/// - ST 0902.8 itself sits behind the NGA registry's CAPTCHA and could not be fetched, so the
-///   membership of the set was taken from the project owner. Esri's public FMV sample stream
-///   carries every one of these items and nothing is missing from it, which corroborates the
-///   membership without proving it; see Misb0601RealStreamTests.
-/// - Every scale here is checked against that stream: over its 711 packets the slant range agrees
-///   with the distance computed from the sensor and frame centre positions and elevations to
-///   within four metres, which it cannot do if any of those five scales is wrong.
-/// - ST 0102 tag numbers and classification codes are as implemented by jmisb (WestRidgeSystems),
-///   which tracks ST 0102.12: local set tag 1, one byte, 1 UNCLASSIFIED through 5 TOP SECRET.
-///
-/// ponytail: the full ST 0601 table is about 140 items. Adding one is a case in <see cref="Decode"/>
-/// and a property; a table-driven parser is the upgrade if that ever becomes routine.
-/// </summary>
+/// <summary>Decodes the ST 0902 minimum set out of an ST 0601 packet, and nothing more.</summary>
 public static class Misb0601
 {
     /// <summary>ST 0601.8-18: the UAS Datalink LS 16-byte universal key.</summary>
@@ -107,11 +79,7 @@ public static class Misb0601
     public static bool IsUasDatalink(ReadOnlySpan<byte> packet)
         => packet.Length > Key.Length && packet[..Key.Length].SequenceEqual(Key);
 
-    /// <summary>
-    /// Null when the packet is not a UAS Datalink LS, is malformed, or fails its checksum. ST
-    /// 0601.8-08 says a packet whose checksum does not match is discarded, and a discarded packet
-    /// is better than a platform placed a hemisphere away by a flipped bit.
-    /// </summary>
+    /// <summary>Null when the packet is not a UAS Datalink LS, is malformed, or fails its checksum.</summary>
     public static Misb0601Set? Decode(ReadOnlySpan<byte> packet)
     {
         if (!IsUasDatalink(packet))
@@ -190,7 +158,10 @@ public static class Misb0601
         return checksumSeen ? set with { Unparsed = unparsed } : null;
     }
 
-    /// <summary>ST 0601.8 section 6.8: a running 16-bit big-endian word sum, odd trailing byte in the high half.</summary>
+    /// <summary>
+    /// ST 0601.8 section 6.8: a running 16-bit big-endian word sum, odd trailing byte in the high
+    /// half.
+    /// </summary>
     public static ushort Checksum(ReadOnlySpan<byte> bytes)
     {
         ushort sum = 0;
@@ -210,9 +181,8 @@ public static class Misb0601
     }
 
     /// <summary>
-    /// Only the classification is read out of the ST 0102 local set; the rest of the security
-    /// items ride along raw inside the packet. An unknown code is reported as such rather than
-    /// dropped, because a marking a client cannot show is not the same as no marking.
+    /// Only the classification is read out of the ST 0102 local set; the rest of the security items
+    /// ride along raw inside the packet.
     /// </summary>
     private static string? ClassificationOf(ReadOnlySpan<byte> security)
     {

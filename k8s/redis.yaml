@@ -1,12 +1,8 @@
 # A demo Redis.
-#
 # It carries the change feed, the analysis queue and the scan lock, which is what lets the
-# Deployment run more than one replica without every pod scanning the store and without a pod
-# being the only one able to finish work it accepted.
-#
-# Production Redis belongs on a managed service or under an operator. Nothing here is persisted:
-# for this workload that is defensible, since losing the feed costs a client one refresh and losing
-# queued work costs one thumbnail, but decide it deliberately rather than inheriting it.
+# Deployment run more than one replica without every pod scanning the store and without a pod being
+# the only one able to finish work it accepted.
+# Production Redis belongs on a managed service or under an operator.
 apiVersion: v1
 kind: Service
 metadata:
@@ -51,9 +47,7 @@ spec:
             limits:
               memory: 256Mi
           securityContext:
-            # Started as the image's own redis user rather than as root dropping to it. Its
-            # entrypoint uses setpriv to make that switch, which needs a capability this drops,
-            # so a container that starts as root here fails before redis ever runs.
+            # Started as the image's own redis user rather than as root dropping to it.
             runAsNonRoot: true
             runAsUser: 999
             runAsGroup: 999

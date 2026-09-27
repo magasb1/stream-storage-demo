@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Starts N senders at once against the ingest port, so the accept rate is a measured number rather
-# than a guess. Every phase of the scale-out plan is judged against what this produces.
-#
-# Usage: scripts/load-senders.sh [N] [HOST] [PORT]   defaults 50 localhost 9000; Ctrl-C stops them all.
+# than a guess.
+# Usage: scripts/load-senders.sh [N] [HOST] [PORT] defaults 50 localhost 9000; Ctrl-C stops them
+# all.
 set -euo pipefail
 
 N="${1:-50}"
@@ -10,20 +10,14 @@ HOST="${2:-localhost}"
 PORT="${3:-9000}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-# The fetched build is the one with libsrt in it. The machine's own ffmpeg is the last resort and
-# usually has no SRT at all. FFMPEG overrides all of it, which is what a container needs, where the
-# repository is not the parent of this script.
+# The fetched build is the one with libsrt in it.
 FFMPEG="${FFMPEG:-}"
 [ -n "$FFMPEG" ] || FFMPEG="$ROOT/ffmpeg/linux-x64/ffmpeg"
 [ -f "$FFMPEG" ] || FFMPEG="$ROOT/ffmpeg/win-x64/ffmpeg.exe"
 [ -f "$FFMPEG" ] || FFMPEG=ffmpeg
 
-# Encoding the pattern inside every sender costs about a third of a core each, so past roughly
-# fifty senders this measures the rig's own processor and not the listener. Pre-encode the same
-# pattern once and set PATTERN, and each sender replays it with -c copy for about a twentieth of
-# that. Identical bytes on the wire; the file wants to be longer than the measurement, because
-# -re stops pacing at the loop point.
-#
+# Encoding the pattern inside every sender costs about a third of a core each, so past roughly fifty
+# senders this measures the rig's own processor and not the listener.
 #   "$FFMPEG" -f lavfi -i "testsrc2=size=640x360:rate=25" -t 120 -c:v libx264 -preset ultrafast \
 #     -tune zerolatency -g 25 -keyint_min 25 -sc_threshold 0 -b:v 500k -f mpegts /tmp/pattern.ts
 #   PATTERN=/tmp/pattern.ts scripts/load-senders.sh 250 localhost 9000

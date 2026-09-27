@@ -3,13 +3,7 @@ using StorageDemo.Infrastructure.Streaming;
 
 namespace StorageDemo.Tests.Infrastructure;
 
-/// <summary>
-/// The arithmetic behind a stream's contribution to the meter.
-///
-/// It is the one part of the measurement that can be wrong rather than merely absent: the hub keeps
-/// running totals, because that is what survives a reconnect, and a counter wants the interval. Add
-/// a total every beat and a stream that ran for an hour reports its traffic eighteen hundred times.
-/// </summary>
+/// <summary>The arithmetic behind a stream's contribution to the meter.</summary>
 public sealed class LiveStreamEntryTests
 {
     [Fact]
@@ -39,8 +33,7 @@ public sealed class LiveStreamEntryTests
 
     /// <summary>
     /// Describing a stream twice inside one beat is ordinary - a claim describes it, and so does a
-    /// manual creation - and it must not count the same packets twice. Nothing arrived in between,
-    /// so the second reading is nothing.
+    /// manual creation - and it must not count the same packets twice.
     /// </summary>
     [Fact]
     public async Task Asking_twice_in_one_beat_reports_nothing_the_second_time()

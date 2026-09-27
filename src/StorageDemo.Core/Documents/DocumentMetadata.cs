@@ -56,7 +56,7 @@ public static class DocumentMetadata
         }
         catch (JsonException)
         {
-            // A row written by an older version, or hand-edited. Losing metadata beats failing a read.
+            // A row written by an older version, or hand-edited.
             return new Dictionary<string, string>();
         }
     }

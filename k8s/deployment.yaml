@@ -5,7 +5,6 @@ metadata:
   namespace: storage-demo
   annotations:
     # IRSA: the pod assumes this role and the AWS SDK picks the credentials up on its own.
-    # No access keys anywhere in this repository.
     eks.amazonaws.com/role-arn: arn:aws:iam::000000000000:role/storage-demo
 ---
 # Migrations run once here rather than in every replica, so concurrent starts cannot race.
@@ -25,8 +24,7 @@ spec:
       containers:
         - name: migrate
           image: storage-demo:latest
-          # Applies migrations and reference data, then exits. The Deployment below starts only
-          # after this succeeds, so no replica ever migrates.
+          # Applies migrations and reference data, then exits.
           args: ["--migrate-only"]
           envFrom:
             - configMapRef:
@@ -57,8 +55,7 @@ spec:
         runAsNonRoot: true
         runAsUser: 64198
         fsGroup: 64198
-        # Required by the restricted Pod Security standard, which some clusters enforce by
-        # default. Without it the pod is refused and the Deployment never scales up.
+        # Required by the restricted Pod Security standard, which some clusters enforce by default.
         seccompProfile:
           type: RuntimeDefault
       containers:
@@ -75,7 +72,6 @@ spec:
             - secretRef:
                 name: storage-demo-secrets
           # S3 plus PostgreSQL means the pod holds no state and needs no volume.
-          # Switching to Filesystem or LiteDb would require a PersistentVolumeClaim here.
           livenessProbe:
             httpGet:
               path: /health/live

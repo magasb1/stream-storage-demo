@@ -4,29 +4,18 @@ using System.Text;
 namespace StorageDemo.Core.Streaming;
 
 /// <summary>
-/// One detection in one frame, in the terms a detector actually produces: an identifier, a
-/// bounding box in pixels, and optionally how sure it is and what it thinks the thing is.
-///
-/// Pixel coordinates are the standard's, not a tensor library's: 1-based, column then row, with
-/// (1, 1) the top left pixel (ST 0903.4 section 11.15, Tag 1). A detector counting from zero adds
-/// one before it gets here, and doing that conversion at the boundary is why this record says so.
-/// The box is inclusive of both corners.
+/// One detection in one frame, in the terms a detector actually produces: an identifier, a bounding
+/// box in pixels, and optionally how sure it is and what it thinks the thing is.
 /// </summary>
-/// <param name="Id">
-/// VTarget Pack Target ID Number, 1 to 2,097,151. ST 0903.4-28 asks that it identify a given
-/// target uniquely, which is what makes a track out of a series of detections.
-/// </param>
-/// <param name="ConfidencePercent">
-/// VTarget Pack tag 5, 0 to 100. The standard's unit is a percentage, not a probability, so a
-/// model's 0..1 score is scaled by the caller rather than silently here.
-/// </param>
+/// <param name="Id">VTarget Pack Target ID Number, 1 to 2,097,151.</param>
+/// <param name="ConfidencePercent">VTarget Pack tag 5, 0 to 100.</param>
 /// <param name="OntologyClass">
-/// VObject LS tag 2, the class name as it appears in the ontology named by
-/// <see cref="VmtiFrame.Ontology"/>. Null when the detector reports a box but no class.
+/// VObject LS tag 2, the class name as it appears in the ontology named by <see
+/// cref="VmtiFrame.Ontology"/>.
 /// </param>
 /// <param name="Track">
 /// VTarget Pack tag 104, the VTracker LS: present when a tracker, not just a detector, produced
-/// this box. Null for a bare detection.
+/// this box.
 /// </param>
 public sealed record VmtiDetection(
     int Id,
@@ -40,7 +29,7 @@ public sealed record VmtiDetection(
 
 /// <summary>
 /// ST 0903.4 Table 16, the VTracker LS Detection Status values, numbered as the standard numbers
-/// them so the enum casts straight onto the wire. The descriptions are the standard's, paraphrased.
+/// them so the enum casts straight onto the wire.
 /// </summary>
 public enum VmtiTrackStatus
 {
@@ -58,25 +47,15 @@ public enum VmtiTrackStatus
 }
 
 /// <summary>
-/// What a track adds to a detection, in the terms of ST 0903.4 Table 6 (VTracker LS): who the
-/// track is, what state it is in, and when it was first and last actually observed. Everything
-/// else in that table (bounding box, locus, velocity, acceleration) is in geodetic Location packs,
-/// which a pixel-space tracker cannot fill, so it is not here.
+/// What a track adds to a detection, in the terms of ST 0903.4 Table 6 (VTracker LS): who the track
+/// is, what state it is in, and when it was first and last actually observed.
 /// </summary>
-/// <param name="Id">
-/// Tag 1, Track ID. ST 0903.4-53: a 16-byte UUID per ISO/IEC 9834-8, which is why it is a
-/// <see cref="Guid"/> and not the VTarget Pack's 21-bit integer.
-/// </param>
+/// <param name="Id">Tag 1, Track ID.</param>
 /// <param name="Started">Tag 3, first observation, microseconds (ST 0603 clock).</param>
-/// <param name="LastSeen">
-/// Tag 4, the most recent observation. On a frame where the box is a prediction this is older
-/// than the frame's own timestamp, and that difference is how a consumer tells a coasted box
-/// from a seen one.
-/// </param>
+/// <param name="LastSeen">Tag 4, the most recent observation.</param>
 /// <param name="Algorithm">Tag 6, a name that identifies the tracker uniquely.</param>
 /// <param name="ConfidencePercent">
-/// Tag 7, 0 to 100: certainty that the sequence of detections is one object. Distinct from the
-/// detection's own confidence, and null when the tracker has no such estimate.
+/// Tag 7, 0 to 100: certainty that the sequence of detections is one object.
 /// </param>
 public sealed record VmtiTrack(
     Guid Id,
@@ -87,26 +66,13 @@ public sealed record VmtiTrack(
     int? ConfidencePercent = null);
 
 /// <summary>
-/// One frame's detections, with the frame-level facts a consumer needs to make sense of them. A
-/// frame with no detections is a legitimate instance: it says the detector ran and found nothing,
-/// which is not the same as a gap in the metadata.
+/// One frame's detections, with the frame-level facts a consumer needs to make sense of them.
 /// </summary>
-/// <param name="Timestamp">
-/// VMTI LS tag 2, the frame this describes. Same clock as ST 0601 tag 2 (MISB ST 0603 microseconds
-/// since the UNIX epoch), which is the whole point: it is what pairs a detection with the platform
-/// and sensor state that lets a worker geo-reference it later.
-/// </param>
-/// <param name="FrameWidth">
-/// VMTI LS tag 8. Not decoration: every pixel position in the packet is a single number computed
-/// from it, so a consumer cannot turn a detection back into a column and row without it.
-/// </param>
-/// <param name="SourceSensor">
-/// VMTI LS tag 10, which imagery the detector ran on. ST 0903.4-24 wants it repeated periodically,
-/// and every packet is the simplest way to satisfy that.
-/// </param>
+/// <param name="Timestamp">VMTI LS tag 2, the frame this describes.</param>
+/// <param name="FrameWidth">VMTI LS tag 8.</param>
+/// <param name="SourceSensor">VMTI LS tag 10, which imagery the detector ran on.</param>
 /// <param name="Ontology">
-/// VObject LS tag 1, the URI of the OWL ontology the class names come from (ST 0903.4-45). Null
-/// when no detection carries a class.
+/// VObject LS tag 1, the URI of the OWL ontology the class names come from (ST 0903.4-45).
 /// </param>
 public sealed record VmtiFrame(
     DateTimeOffset Timestamp,
@@ -117,76 +83,31 @@ public sealed record VmtiFrame(
     string? Ontology = null);
 
 /// <summary>
-/// One VMTI frame as a worker posted it to the stream's owner and as the owner serves it: the
-/// typed frame beside the packet it encodes to. Both travel because nothing in this service reads
-/// ST 0903 back; the worker already has the typed frame, so carrying it costs a few hundred bytes
-/// and spares the owner a decoder that would exist only to undo the worker's encoder.
+/// One VMTI frame as a worker posted it to the stream's owner and as the owner serves it: the typed
+/// frame beside the packet it encodes to.
 /// </summary>
 public sealed record VmtiSample(VmtiFrame Frame, byte[] Raw);
 
 /// <summary>
 /// Which detection caused a capture: the three things that identify one uniquely on the wire, and
-/// there is no fourth. The stream it was seen on, the VMTI precision timestamp of the frame
-/// (<see cref="VmtiFrame.Timestamp"/>), and the target id within that frame
-/// (<see cref="VmtiDetection.Id"/>).
-///
-/// It never travels as a detection; it travels as a reference to one. A recording or a snapshot
-/// carries it in the document's metadata beside the stream name, the capture time and the
-/// classification, which is what lets a document name the detection that caused it and a detection
-/// find every document it produced.
+/// there is no fourth.
 /// </summary>
 public sealed record DetectionReference(string Stream, DateTimeOffset Timestamp, int TargetId)
 {
-    /// <summary>
-    /// Where it lands, beside "Live stream", "Captured" and "Classification". One entry rather
-    /// than three, so that finding documents by detection is one exact comparison rather than a
-    /// three-way match, and so that the retention sweeper's keys are untouched.
-    /// </summary>
+    /// <summary>Where it lands, beside "Live stream", "Captured" and "Classification".</summary>
     public const string MetadataKey = "Detection";
 
     /// <summary>
-    /// The whole reference as one line a person can read in a document's properties without
-    /// knowing this format exists: stream, at a moment, target number.
-    ///
-    /// Microseconds because that is the resolution of the precision timestamp (MISB ST 0603).
-    /// Rounding it would name a different frame, and the frame is half of what makes the target id
-    /// mean anything.
+    /// The whole reference as one line a person can read in a document's properties without knowing
+    /// this format exists: stream, at a moment, target number.
     /// </summary>
     public override string ToString()
         => $"{Stream}@{Timestamp.ToUniversalTime():yyyy-MM-ddTHH:mm:ss.ffffff}Z#{TargetId}";
 }
 
 /// <summary>
-/// Encodes a standalone MISB ST 0903 VMTI Local Set: the detections from one frame, as a KLV
-/// packet a STANAG 4609 consumer already knows how to read.
-///
-/// Sources, so every choice below can be checked against a document rather than against this file:
-/// - MISP-2019.1, which STANAG 4609 Ed. 5 adopts, normatively references MISB ST 0903.4 Video
-///   Moving Target Indicator and Track Metadata, Oct 2014 (reference [57] of that document, read
-///   from the MISP-2019.1 PDF itself). So .4 is the revision this encoder writes, and VMTI LS tag
-///   4 carries the value 4 to say so.
-/// - Every tag, key, format and requirement number cited below was read from the ST 0903.4 PDF
-///   dated 23 October 2014, tables 1, 2 and 4 and sections 8.3, 9.3 and 11. NSGREG sits behind a
-///   CAPTCHA and gwg.nga.mil now refuses the file, so the copy used was the Internet Archive's
-///   capture of the MISB's own distribution at gwg.nga.mil/misb/docs/standards/ST0903.4.pdf. That
-///   is the MISB document, not a third party's summary, but it is a mirror rather than the
-///   registry, which is worth knowing if a clause number here ever looks wrong.
-/// - Later revisions exist (.5 adds the VTrack LS, .6 reworks pixel addressing) and were NOT
-///   consulted; nothing here should be assumed to hold for them. A consumer reading tag 4 learns
-///   which revision it got, which is what that tag is for.
-///
-/// ponytail: this encodes what a detection carries and nothing else. Left out deliberately, each a
-/// TLV away: VMTI LS tags 3 (system name), 5 (total detected, required only when culling makes it
-/// differ from tag 6, per ST 0903.4-18), 7 (frame number), 11/12 (VMTI sensor FOV, needed only
-/// when detection ran on different imagery than the video), 13 (MIIS core identifier); VTarget
-/// tags 4 (priority), 6 (target history), 7-9 (pixel share, colour, intensity), 10-18 (all the
-/// geo-space forms, which are the worker's job once it has ST 0601 platform data), 19/20 (centroid
-/// as row and column, a redundant spelling of tag 1), 21 (FPA index); and the VMask, VFeature
-/// and VChip local sets. The VTracker LS (tag 104) is encoded, but only its pixel-free half: tags
-/// 5, 8, 9, 10 and 11 (bounding box, locus, velocity, acceleration) are geodetic Location packs
-/// (section 9.12) and wait for the worker to have ST 0601 platform data. Section 10 of the same
-/// document already defines the track-centric VTrack LS and says it is preferred over VTracker;
-/// that is a separate packet type with its own key and is not started here.
+/// Encodes a standalone MISB ST 0903 VMTI Local Set: the detections from one frame, as a KLV packet
+/// a STANAG 4609 consumer already knows how to read.
 /// </summary>
 public static class Misb0903
 {
@@ -199,12 +120,7 @@ public static class Misb0903
     /// <summary>The revision this encoder writes, sent as VMTI LS tag 4 (ST 0903.4 section 11.4).</summary>
     public const int Version = 4;
 
-    /// <summary>
-    /// The packet, ready to hand to a KLV carriage. Throws <see cref="ArgumentOutOfRangeException"/>
-    /// rather than emitting a conforming-looking packet with nonsense in it: a box outside the
-    /// frame or a zero target id is a bug in the detector wiring, and a consumer has no way to
-    /// notice either.
-    /// </summary>
+    /// <summary>The packet, ready to hand to a KLV carriage.</summary>
     public static byte[] Encode(VmtiFrame frame)
     {
         ArgumentNullException.ThrowIfNull(frame);
@@ -225,7 +141,7 @@ public static class Misb0903
 
         // ST 0903.4-10 requires at least one TLV after a VTarget Pack's id, so an empty frame says
         // "nothing detected" with tag 6 alone; Table 1 tag 5 agrees that no targets is expressed by
-        // no value at all. An empty VTargetSeries would be a series of nothing, which is not a thing.
+        // no value at all.
         if (frame.Detections.Count > 0)
         {
             Item(body, 101, Series(frame));
@@ -272,9 +188,7 @@ public static class Misb0903
         // ST 0903.4-09: the target id comes first, BER-OID encoded, with no tag and no length.
         var pack = new List<byte>(Oid(detection.Id));
 
-        // ST 0903.4-29: a centroid must be present. The box's centre is it: ST 0903.4 section
-        // 11.15 Tag 1 footnote 13 says the centroid of a simple bounding box may be adequate.
-        // ponytail: a segmentation model knows better; add explicit centroid fields when one lands.
+        // ST 0903.4-29: a centroid must be present.
         Item(pack, 1, Variable(Pixel(frame, (detection.Left + detection.Right) / 2, (detection.Top + detection.Bottom) / 2)));
         Item(pack, 2, Variable(Pixel(frame, detection.Left, detection.Top)));
         Item(pack, 3, Variable(Pixel(frame, detection.Right, detection.Bottom)));
@@ -300,26 +214,21 @@ public static class Misb0903
         return [.. pack];
     }
 
-    /// <summary>
-    /// Table 6: the VTracker LS, nested under VTarget Pack tag 104 (Table 2). The tags and formats
-    /// are Table 6's; the wording of each is section 11's VTracker pages.
-    /// </summary>
+    /// <summary>Table 6: the VTracker LS, nested under VTarget Pack tag 104 (Table 2).</summary>
     private static byte[] VTracker(VmtiTrack track)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(track.LastSeen, track.Started);
 
         var set = new List<byte>();
 
-        // Tag 1, F16, ST 0903.4-53: a UUID. The section 11 example writes F81D4FAE-7DEC-11D0-...
-        // as the bytes F8 1D 4F AE 7D EC 11 D0 in that order, which is RFC 4122 network order,
-        // not the little-endian layout Guid.ToByteArray() gives by default.
+        // Tag 1, F16, ST 0903.4-53: a UUID.
         Item(set, 1, track.Id.ToByteArray(bigEndian: true));
 
         // Tag 2, F1: Table 16's enumeration, whose numbering the enum reproduces.
         Item(set, 2, [(byte)track.Status]);
 
-        // Tags 3 and 4 are V8 ("Variable up to 8 Bytes"), unlike the VMTI LS's own tag 2, which
-        // is a fixed eight. Same ST 0603 microsecond clock.
+        // Tags 3 and 4 are V8 ("Variable up to 8 Bytes"), unlike the VMTI LS's own tag 2, which is
+        // a fixed eight.
         Item(set, 3, Variable(Microseconds(track.Started)));
         Item(set, 4, Variable(Microseconds(track.LastSeen)));
 
@@ -343,12 +252,7 @@ public static class Misb0903
         return [.. set];
     }
 
-    /// <summary>
-    /// Table 4: the VObject LS, which is where ST 0903 puts what a target is. The ontology URI is
-    /// repeated in every pack rather than sent once: ST 0903.4-46 requires it to precede any class
-    /// that uses it and ST 0903.4-47 makes it periodic, and a consumer that joins a live stream
-    /// mid-flight has not seen an earlier packet.
-    /// </summary>
+    /// <summary>Table 4: the VObject LS, which is where ST 0903 puts what a target is.</summary>
     private static byte[] VObject(string? ontology, string target)
     {
         var set = new List<byte>();
@@ -365,8 +269,7 @@ public static class Misb0903
 
     /// <summary>
     /// ST 0903.4 section 11.15 Tag 1: pixel number is Column + (Row - 1) x Frame Width, counting
-    /// from 1 at the top left, row-major. One number instead of two is the standard's bandwidth
-    /// saving, and it is why Frame Width has to be in the packet.
+    /// from 1 at the top left, row-major.
     /// </summary>
     private static ulong Pixel(VmtiFrame frame, int column, int row)
     {

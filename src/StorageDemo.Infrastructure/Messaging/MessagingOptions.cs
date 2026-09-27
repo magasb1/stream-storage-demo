@@ -6,7 +6,7 @@ public sealed class MessagingOptions
 {
     public const string SectionName = "Messaging";
 
-    /// <summary>"InMemory" or "Redis". In-memory is fine until there is more than one replica.</summary>
+    /// <summary>"InMemory" or "Redis".</summary>
     [Required(AllowEmptyStrings = false)]
     public string Provider { get; init; } = "InMemory";
 

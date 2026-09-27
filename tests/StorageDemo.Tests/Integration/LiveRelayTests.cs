@@ -9,9 +9,6 @@ namespace StorageDemo.Tests.Integration;
 /// <summary>
 /// A viewer on the replica that does not own the stream, which is what the load balancer produces
 /// most of the time and what nothing on one host can show.
-///
-/// The hop between the two replicas is HTTP; only the last hop, to the player, is SRT. Two
-/// applications in one process, sharing a registry and a lock; see <see cref="LiveReplicas"/>.
 /// </summary>
 public sealed class LiveRelayTests : IAsyncLifetime
 {
@@ -32,7 +29,7 @@ public sealed class LiveRelayTests : IAsyncLifetime
 
     /// <summary>
     /// The whole hop, end to end: an encoder on A, a player on B's consumption port, pictures out
-    /// of the player. Fails if the route, the peer client, the token or the copy breaks.
+    /// of the player.
     /// </summary>
     [Fact]
     public async Task A_viewer_on_the_pod_that_does_not_own_the_stream_receives_it()
@@ -60,14 +57,7 @@ public sealed class LiveRelayTests : IAsyncLifetime
             () => $"the relayed viewer decoded nothing: {SrtSenders.Complaints([viewer])}");
     }
 
-    /// <summary>
-    /// A rollback survives the hop. Asked of the owner's peer route directly, because that is where
-    /// the figure is resolved and it is the one thing a query string can silently drop: a viewer
-    /// asking for five seconds and quietly getting the live edge looks exactly like success.
-    ///
-    /// At least what was asked for, never exactly: a stream can only be joined where a decoder can
-    /// start, so five seconds back is rounded out to the keyframe before it.
-    /// </summary>
+    /// <summary>A rollback survives the hop.</summary>
     [Fact]
     public async Task A_viewer_following_a_rollback_gets_at_least_what_it_asked_for()
     {
@@ -103,8 +93,7 @@ public sealed class LiveRelayTests : IAsyncLifetime
 
     /// <summary>
     /// What the relay leans on: handed a point to continue from, the muxer starts there rather than
-    /// at the incoming stream's own zero. A viewer whose stream moves replicas mid-connection is
-    /// otherwise asked to accept timestamps jumping backwards, which is what a player breaks on.
+    /// at the incoming stream's own zero.
     /// </summary>
     [Fact]
     public void The_timeline_does_not_go_backwards_across_a_re_attach()

@@ -5,31 +5,13 @@ using StorageDemo.Core.Streaming;
 
 namespace StorageDemo.Infrastructure.Streaming;
 
-/// <summary>
-/// Configured sources in a JSON file, which is what standalone runs on.
-///
-/// Deliberately not the in-memory shape <see cref="InMemoryLiveStreamRegistry"/> takes. That
-/// registry may live in a dictionary because it holds a reading, and a reading that is lost on
-/// restart was going to be replaced by the next one anyway. A source is a setting somebody typed,
-/// and losing it because a pod moved would be a bug rather than a stale view, so the single-process
-/// shape still has to reach a disk.
-///
-/// The file is read once and then served from memory, because a thousand heartbeats a minute must
-/// not each open a file, and this process is the only writer. Every save rewrites the whole file.
-///
-/// ponytail: whole-file rewrite, which costs one serialisation of every row per save. The list is
-/// tens of rows written by hand, so the rewrite is microseconds and the alternative - a per-row file
-/// or an append log with compaction - buys nothing and adds a recovery path to get wrong. If sources
-/// ever become machine-generated in the thousands, move to Redis rather than making this cleverer:
-/// that scale has replicas, and replicas need the shared store anyway.
-/// </summary>
+/// <summary>Configured sources in a JSON file, which is what standalone runs on.</summary>
 public sealed class FileLiveSourceStore : ILiveSourceStore
 {
     private readonly string _path;
     private readonly ILogger<FileLiveSourceStore> _logger;
 
-    // One lock over both the load and every save. A reader-writer split would be free concurrency
-    // in theory, but the contended case here is two operators clicking save at the same second.
+    // One lock over both the load and every save.
     private readonly SemaphoreSlim _gate = new(1, 1);
 
     private Dictionary<string, LiveSource>? _sources;
@@ -118,11 +100,7 @@ public sealed class FileLiveSourceStore : ILiveSourceStore
         }
     }
 
-    /// <summary>
-    /// The in-memory copy, read from disk the first time anything asks. Lazy rather than in the
-    /// constructor so a bad path fails the operation that touches it rather than the container's
-    /// startup, where it would read as "the service is broken" instead of "this store is".
-    /// </summary>
+    /// <summary>The in-memory copy, read from disk the first time anything asks.</summary>
     private Dictionary<string, LiveSource> Load()
     {
         if (_sources is not null)
@@ -137,7 +115,6 @@ public sealed class FileLiveSourceStore : ILiveSourceStore
     {
         if (!File.Exists(_path))
         {
-            // Nobody has configured a source yet, which is the ordinary state of a fresh install.
             return [];
         }
 
@@ -149,9 +126,7 @@ public sealed class FileLiveSourceStore : ILiveSourceStore
         {
             // Starting empty rather than throwing, because refusing to start over an unreadable
             // configuration file takes the whole service down - including every stream an encoder
-            // is pushing, which needs no source at all. The cost is that the next save overwrites
-            // whatever was in there, so the file is moved aside first and the operator can put its
-            // rows back by hand.
+            // is pushing, which needs no source at all.
             var quarantine = _path + ".corrupt";
 
             try
@@ -169,21 +144,7 @@ public sealed class FileLiveSourceStore : ILiveSourceStore
         }
     }
 
-    /// <summary>
-    /// Writes the new list, and only then adopts it in memory.
-    ///
-    /// That order is the whole point. A caller mutating the cached dictionary and then writing it
-    /// would, on a full disk or a cancelled save, leave this process believing a change that the
-    /// file does not contain - and the file is the authority, so the disagreement would last until
-    /// a restart silently undid the operator's edit. Building a copy, writing it, and swapping on
-    /// success means a failed save changes nothing at all, which is what a caller receiving an
-    /// exception is entitled to assume.
-    ///
-    /// Writes through a temporary file in the same directory, so a crash or a full disk halfway
-    /// through leaves the previous list intact rather than a half-written one that the next start
-    /// would quarantine. Same directory because <see cref="File.Move(string, string, bool)"/> is
-    /// only atomic within a volume.
-    /// </summary>
+    /// <summary>Writes the new list, and only then adopts it in memory.</summary>
     private async Task CommitAsync(
         Dictionary<string, LiveSource> sources,
         CancellationToken cancellationToken)

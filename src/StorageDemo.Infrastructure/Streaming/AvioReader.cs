@@ -2,28 +2,11 @@ using FFmpeg.AutoGen.Abstractions;
 
 namespace StorageDemo.Infrastructure.Streaming;
 
-/// <summary>
-/// An ordinary .NET stream, as a libav transport.
-///
-/// The same trick <see cref="PacketMuxer"/> plays for writing, mirrored:
-/// an <c>avio_alloc_context</c> whose callback crosses the boundary, so the demultiplexer keeps
-/// taking an <c>AVIOContext*</c> and never learns that the accept was done by libsrt rather than by
-/// libav.
-///
-/// Ownership is split, because <see cref="StreamDemuxer.Run(AVIOContext*, StreamHub, System.Threading.CancellationToken)"/>
-/// already closes the context it is handed: the demuxer frees the <c>AVIOContext</c> and its buffer,
-/// and this class disposes only the managed <see cref="Stream"/>.
-///
-/// Reads block, so this is only ever used from a thread already dedicated to one connection.
-/// </summary>
+/// <summary>An ordinary .NET stream, as a libav transport.</summary>
 public sealed unsafe class AvioReader : IDisposable
 {
     /// <summary>
     /// libav's buffer between the read callback and the demuxer, the same size the muxer uses.
-    ///
-    /// It is also a floor: the callback hands this buffer straight to the stream underneath, and an
-    /// <see cref="SrtSocketStream"/> refuses a read smaller than one SRT payload (1316 bytes by
-    /// default), because libsrt delivers whole messages or nothing.
     /// </summary>
     private const int IoBufferSize = 64 * 1024;
 
@@ -45,9 +28,7 @@ public sealed unsafe class AvioReader : IDisposable
             buffer,
             IoBufferSize,
             write_flag: 0,
-            // Null, and the stream is reached through the captured delegate instead. avio_close
-            // treats a non-null opaque as a URLContext of its own and closes it, which for a
-            // pointer libav did not hand out is a crash on the way to a clean shutdown.
+            // Null, and the stream is reached through the captured delegate instead.
             opaque: null,
             read_packet: _read,
             write_packet: null,
@@ -60,8 +41,7 @@ public sealed unsafe class AvioReader : IDisposable
             throw new InvalidOperationException("Could not allocate an IO context for the demuxer.");
         }
 
-        // Not seekable. An accepted socket cannot be rewound, and a live container must not need to
-        // be: MPEG-TS is chosen precisely because a receiver can join mid-stream.
+        // Not seekable.
         _io->seekable = 0;
     }
 
@@ -69,13 +49,6 @@ public sealed unsafe class AvioReader : IDisposable
     /// The transport to hand to <see cref="StreamDemuxer"/>, which takes ownership of it and closes
     /// it; disposing this reader closes the underlying <see cref="Stream"/> and nothing else.
     /// </summary>
-    ///
-    /// <remarks>
-    /// ponytail: the context leaks if it is allocated and then never handed to the demuxer. There
-    /// is one caller and it always runs, so the alternative - a handover flag, or freeing here and
-    /// teaching the demuxer not to - is bookkeeping for a path that does not exist. Give this class
-    /// a second caller and it needs one of the two.
-    /// </remarks>
     public AVIOContext* Context => _io;
 
     private int OnRead(void* opaque, byte* buffer, int size)
@@ -92,16 +65,13 @@ public sealed unsafe class AvioReader : IDisposable
         {
             // A sender that vanished mid-read is the common case and is not an error here; the
             // demuxer has to be told to stop either way, and it reports the feed as ended.
-            //
-            // EIO. The bindings expose AVERROR but not errno, so the number is spelled out.
             return ffmpeg.AVERROR(5);
         }
     }
 
     public void Dispose()
     {
-        // The context and its buffer are the demuxer's to free, by way of avio_closep. Only the
-        // pointer is dropped here, so a reader disposed twice cannot hand out a freed transport.
+        // The context and its buffer are the demuxer's to free, by way of avio_closep.
         _io = null;
 
         _source.Dispose();

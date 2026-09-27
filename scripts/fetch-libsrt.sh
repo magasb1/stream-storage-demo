@@ -1,16 +1,11 @@
 #!/usr/bin/env bash
 # Puts a Windows libsrt next to the FFmpeg that scripts/fetch-ffmpeg.sh fetches, so
 # [DllImport("srt")] resolves from the application's own folder and no machine-wide install is
-# involved. Linux developers and the container image take libsrt from the distro package instead
-# (libsrt1.5-openssl, see docker/Dockerfile), so this script is Windows only.
-#
+# involved.
 # It copies rather than downloads: upstream publishes no usable Windows archive, only a 136 MB
-# installer, so vcpkg is the route. Nothing here builds anything; if libsrt is missing it says
-# which command to run and stops.
-#
+# installer, so vcpkg is the route.
 # The version floor is 1.5 for the same kind of reason fetch-ffmpeg.sh pins FFmpeg: the listener
-# depends on srt_listen_callback and the SRT_REJX_* rejection codes, both of which arrived in
-# 1.5.0. An older srt.dll loads fine and then fails at the first callback install.
+# depends on srt_listen_callback and the SRT_REJX_* rejection codes, both of which arrived in 1.5.0.
 set -euo pipefail
 
 MIN_VERSION="1.5"
@@ -37,8 +32,8 @@ if [ ! -f "$BIN/srt.dll" ]; then
   exit 1
 fi
 
-# vcpkg records the installed version only in this file name: libsrt_1.5.6_x64-windows.list, with
-# an optional #port-revision suffix on the version.
+# vcpkg records the installed version only in this file name: libsrt_1.5.6_x64-windows.list, with an
+# optional #port-revision suffix on the version.
 VERSION="$(basename "$(ls "$VCPKG_ROOT"/installed/vcpkg/info/libsrt_*_"$TRIPLET".list | head -1)" .list)"
 VERSION="${VERSION#libsrt_}"
 VERSION="${VERSION%_$TRIPLET}"
@@ -49,8 +44,7 @@ if [ "$(printf '%s\n%s\n' "$MIN_VERSION" "$VERSION" | sort -V | head -1)" != "$M
 fi
 
 mkdir -p "$TARGET"
-# srt.dll links OpenSSL dynamically, so its two DLLs travel with it. Globbed rather than named so
-# an OpenSSL major bump does not break this script.
+# srt.dll links OpenSSL dynamically, so its two DLLs travel with it.
 cp "$BIN/srt.dll" "$BIN"/libcrypto-*.dll "$BIN"/libssl-*.dll "$TARGET/"
 
 echo "Installed libsrt $VERSION to $TARGET"

@@ -2,13 +2,7 @@ using System.Collections.Concurrent;
 
 namespace StorageDemo.Core.Streaming;
 
-/// <summary>
-/// One replica's view, which is the whole cluster when there is only one.
-///
-/// This is what standalone runs on: one process owns every stream, so the registry it shares with
-/// itself is a dictionary. The behaviour is identical to the Redis one, which is the property
-/// worth protecting - the cluster shape is configuration, not a different program.
-/// </summary>
+/// <summary>One replica's view, which is the whole cluster when there is only one.</summary>
 public sealed class InMemoryLiveStreamRegistry : ILiveStreamRegistry
 {
     private readonly ConcurrentDictionary<string, LiveStream> _streams = new(StringComparer.Ordinal);

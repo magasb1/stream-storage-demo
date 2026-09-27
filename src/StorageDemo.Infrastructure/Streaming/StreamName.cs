@@ -13,38 +13,17 @@ public enum StreamIntent
     Subscribe,
 }
 
-/// <summary>
-/// Reads the stream's name out of the SRT stream identifier.
-///
-/// The identifier is a name, optionally wrapped in a standard envelope. The envelope is the SRT
-/// Access Control convention, <c>#!::r=name,m=publish</c>, which Haivision wrote and Wowza,
-/// Flussonic and SRS all speak. The bare form is what OBS and Teradek produce, because their boxes
-/// are a single free-text field and the structured form has to be hand-typed with percent escapes.
-/// SRT's own reference listener falls back to the whole string, so this does too.
-///
-/// Names are rejected rather than cleaned up. The name is the identity: two names that normalised
-/// to the same string would let one encoder take over another's stream, silently.
-/// </summary>
+/// <summary>Reads the stream's name out of the SRT stream identifier.</summary>
 public static partial class StreamName
 {
     /// <summary>The handshake extension caps here, in bytes of UTF-8 rather than characters.</summary>
     public const int MaxIdentifierBytes = 512;
 
-    /// <summary>
-    /// What may become a stream name, a registry key and part of a document name. Deliberately
-    /// narrow: everything outside it is either structural in the convention, awkward in a URL, or
-    /// dangerous in a path.
-    /// </summary>
+    /// <summary>What may become a stream name, a registry key and part of a document name.</summary>
     [GeneratedRegex(@"^[A-Za-z0-9._/-]{1,128}$")]
     private static partial Regex Allowed { get; }
 
-    /// <summary>
-    /// The rollback position a viewer asked for, in seconds, or null for the live edge.
-    ///
-    /// It rides in <c>user_from</c>. The convention reserves the <c>user_*</c> prefix for exactly
-    /// this, so carrying a position needs no extension to the format and no second field: a player
-    /// pointed at <c>#!::r=camera1,user_from=20,m=request</c> starts twenty seconds back.
-    /// </summary>
+    /// <summary>The rollback position a viewer asked for, in seconds, or null for the live edge.</summary>
     public static double? Position(string? streamId)
     {
         if (streamId is null || !streamId.StartsWith("#!::", StringComparison.Ordinal))
@@ -62,11 +41,7 @@ public static partial class StreamName
     /// <param name="streamId">The raw identifier as it came off the socket.</param>
     /// <param name="name">The stream name, when this returns true.</param>
     /// <param name="rejection">Why the connection should be dropped, when this returns false.</param>
-    /// <param name="intent">
-    /// Which port this arrived on. Ingest refuses an explicit request to receive; consumption
-    /// refuses an explicit offer to publish. Absent mode means whatever the port is for, because
-    /// the convention makes it optional and vendors leave it out.
-    /// </param>
+    /// <param name="intent">Which port this arrived on.</param>
     public static bool TryParse(
         string? streamId,
         out string name,
@@ -97,8 +72,7 @@ public static partial class StreamName
         }
 
         // An FFmpeg older than 7.0 does not percent-decode the streamid it was given, so a sender
-        // on one of those presents the escape it typed into a URL. One line turns a silently wrong
-        // name into a working connection.
+        // on one of those presents the escape it typed into a URL.
         if (value.StartsWith("%23!::", StringComparison.Ordinal))
         {
             value = string.Concat("#!::", value.AsSpan("%23!::".Length));
@@ -124,9 +98,6 @@ public static partial class StreamName
         name = string.Empty;
         var pairs = Pairs(content);
 
-        // Absent mode means whatever this port is for. The convention says it is optional, and
-        // Haivision's own documented example omits it, so requiring it would refuse the vendor
-        // that wrote the format. Only an explicit mismatch is refused.
         var refused = intent == StreamIntent.Publish ? "request" : "publish";
 
         if (pairs.TryGetValue("m", out var mode) && mode == refused)
@@ -147,11 +118,7 @@ public static partial class StreamName
         return Validate(resource, out name, out rejection);
     }
 
-    /// <summary>
-    /// Splits the convention's content. Unknown keys are ignored rather than refused: the format
-    /// reserves <c>user_*</c> and <c>companyname_*</c> for vendor extensions, and breaking on a
-    /// vendor's extras would refuse working encoders.
-    /// </summary>
+    /// <summary>Splits the convention's content.</summary>
     private static Dictionary<string, string> Pairs(string content)
     {
         var pairs = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -162,8 +129,7 @@ public static partial class StreamName
 
             if (separator > 0)
             {
-                // First '=' only. No escaping is defined, so a value cannot contain one anyway,
-                // but splitting on the first keeps a malformed one from losing its key.
+                // First '=' only.
                 pairs[part[..separator]] = part[(separator + 1)..];
             }
         }

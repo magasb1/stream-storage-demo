@@ -13,19 +13,13 @@ namespace StorageDemo.Api.Controllers;
 /// <param name="Url">Where to listen or connect, for a protocol that cannot name itself.</param>
 public sealed record CreateManualStreamRequest(string Name, string Url);
 
-/// <param name="Seconds">
-/// How long to record for. Omitted means the configured default, and a further trigger extends
-/// whatever is running rather than starting a second recording.
-/// </param>
-/// <param name="Detection">
-/// The detection that asked for it, when one did. Omitted by a person pressing record, and the
-/// document is then exactly what it was before.
-/// </param>
+/// <param name="Seconds">How long to record for.</param>
+/// <param name="Detection">The detection that asked for it, when one did.</param>
 public sealed record RecordRequest(double? Seconds, DetectionReference? Detection = null);
 
-/// <param name="Rate">Detections per second. Zero means the worker's default.</param>
+/// <param name="Rate">Detections per second.</param>
 /// <param name="Model">rf-detr, yolo26, or null for the worker default.</param>
-/// <param name="Labels">COCO labels to retain. Empty means all labels.</param>
+/// <param name="Labels">COCO labels to retain.</param>
 public sealed record DetectRequest(
     bool Enabled,
     int Rate = 0,
@@ -39,21 +33,7 @@ public sealed record LiveStatusResponse(
     IReadOnlyList<string> Transports,
     IReadOnlyList<LiveStream> Streams);
 
-/// <summary>
-/// Control plane for live streaming. REST rather than gRPC on purpose: these are a handful of
-/// administrative calls.
-///
-/// Every call names a stream. Any replica answers the ones the registry can satisfy; the ones that
-/// need the stream's actual bytes are forwarded to the replica that holds them, so a caller never
-/// has to know which pod took the connection. Playback is not here - it is on the consumption port,
-/// which is what keeps the firewall statement one sentence per port. The one route that does carry
-/// media, <see cref="PeerView"/>, is how one pod fetches a stream from another and never answers a
-/// player.
-///
-/// The verb comes before the name in every route, which reads oddly and is deliberate. A stream
-/// name is a resource path and may contain slashes, so it has to be the trailing catch-all; put it
-/// first and "live/camera1/record" is ambiguous with a stream called "live/camera1/record".
-/// </summary>
+/// <summary>Control plane for live streaming.</summary>
 [ApiController]
 [Route("api/live")]
 public sealed class LiveStreamsController(
@@ -62,12 +42,7 @@ public sealed class LiveStreamsController(
     ApiMetrics metrics,
     IOptions<LiveOptions> options) : ControllerBase
 {
-    /// <summary>
-    /// A preview is counted with the document downloads, tagged as what it is. One instrument answers
-    /// "how much is this API serving" for files and for live tiles, and the tag is what keeps either
-    /// number meaningful: a wall of a thousand tiles refreshing is the heaviest read this surface
-    /// takes and it is not a file download.
-    /// </summary>
+    /// <summary>A preview is counted with the document downloads, tagged as what it is.</summary>
     private const string Surface = "rest";
 
     private const string PreviewKind = "preview";
@@ -101,14 +76,7 @@ public sealed class LiveStreamsController(
         return await live.GetAsync(name, cancellationToken) is { } stream ? stream : NotFound();
     }
 
-    /// <summary>
-    /// Creates a stream by request, for a protocol that cannot name itself. It shares one
-    /// namespace and one claim with automatic streams: a manual stream is simply one that claimed
-    /// its name early, and an encoder presenting that name is the same conflict as any other.
-    ///
-    /// A live name is locked, so asking for one somebody else is publishing is a conflict rather
-    /// than a take-over. An encoder meets the same rule as a refused handshake.
-    /// </summary>
+    /// <summary>Creates a stream by request, for a protocol that cannot name itself.</summary>
     [HttpPost("manual")]
     [ProducesResponseType(StatusCodes.Status202Accepted)]
     [ProducesResponseType(StatusCodes.Status409Conflict)]
@@ -152,8 +120,8 @@ public sealed class LiveStreamsController(
         {
             Response.Headers.XContentTypeOptions = "nosniff";
 
-            // A cached live preview is a still picture of a moving stream, which is the one
-            // failure this endpoint exists to avoid. Set on both branches.
+            // A cached live preview is a still picture of a moving stream, which is the one failure
+            // this endpoint exists to avoid.
             Response.Headers.CacheControl = "no-store";
 
             metrics.Downloaded(Surface, PreviewKind, "served");
@@ -178,8 +146,6 @@ public sealed class LiveStreamsController(
 
     /// <summary>
     /// The newest MISB KLV packet, decoded to the ST 0902 minimum set with the raw bytes alongside.
-    /// Forwarded to the owner like the preview, because only the owner has the packets; the
-    /// answer is JSON, so it rides the control-call relay rather than the byte proxy.
     /// </summary>
     [HttpGet("klv/{*name}")]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
@@ -202,11 +168,7 @@ public sealed class LiveStreamsController(
             method: HttpMethod.Get);
     }
 
-    /// <summary>
-    /// Switches detection on or off for a stream, at a rate. Set through the owner like record,
-    /// because the owner is what publishes the stream's entry and a worker reads it from there;
-    /// nothing here touches a worker.
-    /// </summary>
+    /// <summary>Switches detection on or off for a stream, at a rate.</summary>
     [HttpPut("detect/{*name}")]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<IActionResult> Detect(
@@ -248,7 +210,6 @@ public sealed class LiveStreamsController(
 
     /// <summary>
     /// The newest VMTI frame a worker posted, decoded with the raw ST 0903 packet beside it.
-    /// Forwarded to the owner like KLV, because the ring lives with the stream's bytes.
     /// </summary>
     [HttpGet("detections/{*name}")]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
@@ -271,12 +232,7 @@ public sealed class LiveStreamsController(
             method: HttpMethod.Get);
     }
 
-    /// <summary>
-    /// A worker handing the owner one VMTI frame, typed and raw. Owner-only like the peer view:
-    /// a worker addresses the owner directly, having read its address from the listing. The raw
-    /// packet has to be what the frame encodes to, or the two answers this route feeds would
-    /// disagree with each other.
-    /// </summary>
+    /// <summary>A worker handing the owner one VMTI frame, typed and raw.</summary>
     [HttpPost("peer/detections/{*name}")]
     [ProducesResponseType(StatusCodes.Status202Accepted)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
@@ -305,10 +261,7 @@ public sealed class LiveStreamsController(
         return live.PostDetections(name, sample) ? Accepted() : NotFound();
     }
 
-    /// <summary>
-    /// A worker taking or renewing its hold on a stream. Conflict when another worker's lease is
-    /// live, which is the answer that makes claiming a listing's free streams safe to race.
-    /// </summary>
+    /// <summary>A worker taking or renewing its hold on a stream.</summary>
     [HttpPut("peer/detector/{*name}")]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     [ProducesResponseType(StatusCodes.Status409Conflict)]
@@ -352,14 +305,7 @@ public sealed class LiveStreamsController(
         return await live.ReleaseDetectorAsync(name, worker, cancellationToken) ? Accepted() : NotFound();
     }
 
-    /// <summary>
-    /// Takes a picture now and stores it as a document. Served while a stream is interrupted, so
-    /// the button still works while the tile shows the gap, and refused once the stream is gone.
-    /// </summary>
-    /// <param name="detection">
-    /// The detection that asked for it, as a body, when one did. A person pressing the button posts
-    /// nothing at all, exactly as before.
-    /// </param>
+    /// <summary>Takes a picture now and stores it as a document.</summary>
     [HttpPost("snapshot/{*name}")]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<IActionResult> Snapshot(
@@ -384,10 +330,7 @@ public sealed class LiveStreamsController(
             body: detection);
     }
 
-    /// <summary>
-    /// Starts a recording, or extends the one already running. A person pressing record and a
-    /// detector firing arrive here identically, which is what makes detection free to add later.
-    /// </summary>
+    /// <summary>Starts a recording, or extends the one already running.</summary>
     [HttpPost("record/{*name}")]
     [ProducesResponseType(StatusCodes.Status202Accepted)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
@@ -412,8 +355,6 @@ public sealed class LiveStreamsController(
             token,
             async () =>
             {
-                // Accepted, not Ok: the recording is running and has no further relationship with
-                // this call. The document appears when there is a file.
                 var status = await live.RecordAsync(
                     name,
                     duration,
@@ -470,22 +411,7 @@ public sealed class LiveStreamsController(
             method: HttpMethod.Delete);
     }
 
-    /// <summary>
-    /// The stream's bytes, for another replica rather than for a player.
-    ///
-    /// A viewer's SRT connection lands on whichever pod the load balancer picked; when that is not
-    /// the owner, that pod calls this and pumps the answer into the viewer's socket. HTTP rather
-    /// than a second SRT hop, which cost a handshake, a second latency window and a second libav
-    /// probe for something the player cannot see: it speaks SRT to one address either way.
-    ///
-    /// Guarded like every other call here, and not a playback route. A player is on the consumption
-    /// port, which is the whole reason the ports are split.
-    /// </summary>
-    /// <param name="from">How far back to start, in seconds. Zero is the live edge.</param>
-    /// <param name="continue">
-    /// Where the viewer's timeline has already reached, so a stream that moves between replicas
-    /// mid-connection does not ask the player to accept timestamps jumping back to zero.
-    /// </param>
+    /// <summary>The stream's bytes, for another replica rather than for a player.</summary>
     [HttpGet("peer/view/{*name}")]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<IActionResult> PeerView(
@@ -507,14 +433,10 @@ public sealed class LiveStreamsController(
 
         Response.ContentType = "video/mp2t";
 
-        // Asking for twenty seconds and receiving twenty-six is normal, since a stream can only be
-        // joined where a decoder can start. The SRT path has to log this because that transport has
-        // no way to say it back; here there is one, and the relaying replica logs what it was told.
         Response.Headers["X-Live-Preroll"] = live
             .ResolvePreroll(name, from)
             .ToString("0.###", CultureInfo.InvariantCulture);
 
-        // A live stream that only flushes at the end is not a live stream.
         HttpContext.Features.Get<IHttpResponseBodyFeature>()?.DisableBuffering();
 
         // libav writes through a synchronous callback and has no asynchronous form of it, so this
@@ -522,8 +444,7 @@ public sealed class LiveStreamsController(
         HttpContext.Features.Get<IHttpBodyControlFeature>()!.AllowSynchronousIO = true;
 
         await live.WriteToViewerAsync(
-            // Relayed by definition: only a replica that does not own the stream calls this route,
-            // and the viewer on the other end of it reached the cluster somewhere else.
+            // Relayed by definition: only a replica that does not own the stream calls this route.
             new ViewerRequest(name, from, Relayed: true),
             Response.Body,
             @continue,
@@ -534,8 +455,7 @@ public sealed class LiveStreamsController(
 
     /// <summary>
     /// Runs the call here when this replica owns the stream, and forwards it to the owner when it
-    /// does not. Only the owner can act on a stream, so a caller reaching the wrong replica is
-    /// routed rather than refused.
+    /// does not.
     /// </summary>
     private async Task<IActionResult> ForwardOrRun(
         string name,
@@ -594,7 +514,6 @@ public sealed class LiveStreamsController(
     {
         if (!_options.Enabled)
         {
-            // Not enabled means not here; do not advertise what is switched off.
             return NotFound(new ProblemDetails { Status = 404, Title = "Live streaming is disabled." });
         }
 

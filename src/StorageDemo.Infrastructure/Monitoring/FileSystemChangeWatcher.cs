@@ -8,13 +8,6 @@ namespace StorageDemo.Infrastructure.Monitoring;
 /// <summary>
 /// Turns local file changes into a nudge for the monitor, so a file dropped into the storage
 /// directory shows up in about a second instead of at the next scheduled scan.
-///
-/// It deliberately ignores which file changed. FileSystemWatcher silently drops events when its
-/// buffer overflows and reports moves and copies inconsistently across platforms, so treating it
-/// as a hint to rescan is the only reading of it that is always right.
-///
-/// Registered only when the filesystem provider is active. S3 has its own notifications; see
-/// StorageEventsController.
 /// </summary>
 public sealed class FileSystemChangeWatcher(
     IOptions<FileSystemStorageOptions> storageOptions,

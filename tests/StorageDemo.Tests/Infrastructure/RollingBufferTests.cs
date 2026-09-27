@@ -4,10 +4,7 @@ namespace StorageDemo.Tests.Infrastructure;
 
 /// <summary>
 /// The buffer does three jobs with one answer: where a viewer joins, how far a viewer may roll
-/// back, and where a recording's pre-roll is cut. All three are "which segment", so the behaviour
-/// worth pinning down is which segment it picks and what it throws away.
-///
-/// No libav here. The buffer holds copied packets and a clock, which is deliberately all it needs.
+/// back, and where a recording's pre-roll is cut.
 /// </summary>
 public sealed class RollingBufferTests
 {
@@ -50,8 +47,7 @@ public sealed class RollingBufferTests
 
     /// <summary>
     /// A pre-roll starts at the segment boundary at or before the point asked for, so a recording
-    /// routinely begins earlier than requested. That is harmless and is the promise: at least the
-    /// seconds asked for, never exactly them.
+    /// routinely begins earlier than requested.
     /// </summary>
     [Fact]
     public void A_position_resolves_to_the_segment_at_or_before_it()
@@ -65,16 +61,13 @@ public sealed class RollingBufferTests
 
         Assert.NotNull(from);
 
-        // At or before, never after: a segment starting later than asked would drop the very
-        // moment the caller reached back for.
+        // At or before, never after: a segment starting later than asked would drop the very moment
+        // the caller reached back for.
         Assert.True(buffer.SecondsBackTo(from) >= 3.5, $"gave only {buffer.SecondsBackTo(from)}s");
         Assert.True(buffer.SecondsBackTo(from) < 5, "reached back further than one segment too far");
     }
 
-    /// <summary>
-    /// The cost of segments is granularity, and it is the sender's to control. A ten second
-    /// keyframe interval leaves two or three coarse steps where a one second interval leaves thirty.
-    /// </summary>
+    /// <summary>The cost of segments is granularity, and it is the sender's to control.</summary>
     [Fact]
     public void A_coarse_sender_gives_a_coarse_window()
     {
@@ -85,8 +78,7 @@ public sealed class RollingBufferTests
 
         Assert.NotNull(from);
 
-        // Asked for five seconds and given nine, because that is where the segment begins. The
-        // promise is at least the seconds asked for, and the step is the sender's to choose.
+        // Asked for five seconds and given nine, because that is where the segment begins.
         Assert.True(coarse.SecondsBackTo(from) >= 5, $"gave only {coarse.SecondsBackTo(from)}s");
         Assert.True(coarse.SecondsBackTo(from) >= 8, $"the step was finer than the sender's keyframes");
     }
@@ -118,8 +110,7 @@ public sealed class RollingBufferTests
 
     /// <summary>
     /// The ceiling is what stops one careless encoder evicting the service, so it binds even when
-    /// the time window would have kept more. An operator has to be able to see that, because it
-    /// silently shortens every pre-roll and nobody finds out until an event is missing.
+    /// the time window would have kept more.
     /// </summary>
     [Fact]
     public void The_byte_ceiling_binds_before_the_window_and_says_so()
@@ -133,10 +124,7 @@ public sealed class RollingBufferTests
         Assert.True(buffer.HeldSeconds < 60);
     }
 
-    /// <summary>
-    /// The edge the design left open. A feed that runs a long way with no keyframe has nowhere to
-    /// start, and the honest answer is to say so rather than hand out a position that is not one.
-    /// </summary>
+    /// <summary>The edge the design left open.</summary>
     [Fact]
     public void A_feed_with_no_keyframe_reports_that_it_cannot_be_started()
     {
@@ -150,8 +138,8 @@ public sealed class RollingBufferTests
         // Memory stays bounded: the open segment is discarded rather than grown past the ceiling.
         Assert.True(buffer.Bytes <= 10_000, $"held {buffer.Bytes} bytes");
 
-        // And nothing pretends to be a start point, so a viewer joins live, a pre-roll is empty
-        // and a snapshot falls back to the preview.
+        // And nothing pretends to be a start point, so a viewer joins live, a pre-roll is empty and
+        // a snapshot falls back to the preview.
         Assert.NotNull(buffer.NotStartableSince);
         Assert.Null(buffer.Newest());
         Assert.Null(buffer.StartingFrom(5));
@@ -176,8 +164,7 @@ public sealed class RollingBufferTests
     }
 
     /// <summary>
-    /// A viewer joining gets everything from its segment onward, in order and with no hole. That
-    /// is the whole of "joining", "rolling back" and "cutting a pre-roll".
+    /// A viewer joining gets everything from its segment onward, in order and with no hole.
     /// </summary>
     [Fact]
     public void Packets_are_handed_over_in_order_from_the_chosen_segment()
@@ -211,9 +198,7 @@ public sealed class RollingBufferTests
 
     /// <summary>
     /// An encoder that drops and reconnects presents its clock from the beginning again, and the
-    /// buffer it rejoins is four seconds along. Left alone the newest position would be older than
-    /// the oldest: the span goes negative, eviction by time stops happening, and rolling back picks
-    /// whichever clock happens to match.
+    /// buffer it rejoins is four seconds along.
     /// </summary>
     [Fact]
     public void A_feed_that_reconnects_carries_on_the_clock_it_rejoined()

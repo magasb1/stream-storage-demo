@@ -1,14 +1,10 @@
 # The detection workers (detection-plan.md D2): a separate Deployment from the ingest pods.
-#
 #   kubectl apply -f k8s/ -f k8s/live/   # first
 #   kubectl apply -f k8s/workers/        # then this
 #
 # A worker lists the streams, claims any whose detection toggle is set and which no worker holds,
 # subscribes to each over the owner's peer route, decodes at the detection rate, and posts VMTI
-# frames back to the owner. Nothing pushes work to it: the claim is a lease it renews every beat
-# and loses when it stops, so replicas here can be added, removed and replaced freely, and a
-# stream simply moves to whichever worker claims it next.
-#
+# frames back to the owner.
 # Nothing here is a Service. A worker answers no request; it makes them.
 apiVersion: apps/v1
 kind: Deployment
@@ -39,12 +35,12 @@ spec:
           # docker build -f docker/Dockerfile --target worker -t storage-demo-worker .
           image: storage-demo-worker:latest
           env:
-            # Where streams are listed: the API Service. Each stream's owner is then reached at
-            # the pod address it recorded in its registry entry, not through the Service.
+            # Where streams are listed: the API Service. Each stream's owner is then reached at the
+            # pod address it recorded in its registry entry, not through the Service.
             - name: Worker__ApiBaseUrl
               value: http://storage-demo
-            # The same token the API guards its live routes with; the peer routes a worker
-            # writes through are guarded by it too.
+            # The same token the API guards its live routes with; the peer routes a worker writes
+            # through are guarded by it too.
             - name: Worker__Token
               valueFrom:
                 secretKeyRef:
@@ -59,27 +55,23 @@ spec:
               value: /models/rf-detr-nano.onnx
             - name: Worker__ExecutionProvider
               value: auto
-          # No GPU requested, on purpose: this is the processor path, which is also what a
-          # developer machine runs. When a GPU node exists, three things change and nothing else:
-          #
+          # No GPU requested, on purpose: this is the processor path, which is also what a developer
+          # machine runs.
           #   resources.limits: { nvidia.com/gpu: 1 }   # with the NVIDIA device plugin installed
           #   the image's base becomes an NVIDIA CUDA runtime image (docker/Dockerfile, "base")
           #   the runner logs "on the CUDA execution provider" instead of "using the processor"
           #
           # The CUDA publish carries that provider; selection and warm-up are probes at load time.
-          # Then re-measure the frame rate and raise
-          # replicas or the batch size from a number rather than a guess (detection-plan.md D3).
-          #
-          # Two cores because inference runs one frame at a time and the demultiplexers and
-          # decoders beside it want a core of their own; the memory is the model, the runtime and
-          # a few streams' packet buffers.
+          # Two cores because inference runs one frame at a time and the demultiplexers and decoders
+          # beside it want a core of their own; the memory is the model, the runtime and a few
+          # streams' packet buffers.
           resources:
             requests:
               cpu: "2"
               memory: 2Gi
             limits:
-              # Memory only, for the same reason as the API: a CPU limit throttles, and a
-              # throttled worker does not detect more slowly, it drops frames.
+              # Memory only, for the same reason as the API: a CPU limit throttles, and a throttled
+              # worker does not detect more slowly, it drops frames.
               memory: 3Gi
           securityContext:
             allowPrivilegeEscalation: false
@@ -92,7 +84,6 @@ spec:
               readOnly: true
       volumes:
         # The model is not in the image: it is 108 MB and produced by scripts/fetch-rfdetr.sh.
-        # Populate this claim with the contents of models/ once; every worker reads it.
         - name: models
           persistentVolumeClaim:
             claimName: storage-demo-models

@@ -16,8 +16,7 @@ data:
   Database__Provider: Postgres
 
   # The Deployment runs several replicas, so the change feed, the analysis queue and the scan lock
-  # all have to be shared. With InMemory here, every pod would scan the bucket on its own schedule
-  # and a client would only hear about uploads that happened to land on its own pod.
+  # all have to be shared.
   Messaging__Provider: Redis
   Messaging__Redis__ConnectionString: redis:6379
 
@@ -27,73 +26,50 @@ data:
   # Telemetry. The meters exist whether or not this is on - `dotnet-counters monitor -n
   # StorageDemo.Api --counters StorageDemo.Live` reads every one of them with no package and no
   # collector - so this decides export and nothing else.
-  #
   # Off here because the endpoint below is a guess about somebody else's cluster: it names the
   # OpenTelemetry Operator's default collector Service, and a cluster running Grafana Alloy, the
-  # Datadog agent or a collector in another namespace wants a different address. Set both and the
-  # dashboards in docker/grafana/dashboards apply unchanged; docs/observability.md says what they
-  # read and what to alert on.
+  # Datadog agent or a collector in another namespace wants a different address.
   Telemetry__Enabled: "false"
   OTEL_EXPORTER_OTLP_ENDPOINT: http://opentelemetry-collector.observability:4317
 
-  # A tenth of the requests, against every one of them in Compose. The live wall is a request per
-  # client per second and a relayed viewer is a request per pod it passes through, so full sampling
-  # in a cluster buys volume rather than insight. Metrics are unsampled and answer "how often";
-  # traces answer "what happened to this one", and a tenth of them still answers it.
+  # A tenth of the requests, against every one of them in Compose.
   Telemetry__TraceSampleRatio: "0.1"
 
   # Live streaming. Off here: k8s/live/deployment.yaml switches it on and exposes the two media
-  # ports. The token belongs in the Secret next to the others.
+  # ports.
   Live__Enabled: "false"
 
-  # Only manual streams name a transport, and only these are allowed. Automatic ingest needs no
-  # list: it is one port and one protocol, and nobody chooses a URL.
+  # Only manual streams name a transport, and only these are allowed.
   Live__AllowedSchemes: "udp,srt"
 
   # Thirty seconds of recent stream per replica-owned stream, bounded by a per-stream byte ceiling
-  # so one careless encoder cannot evict the service. Memory per replica is this times the streams
-  # it owns, which is what makes the request in the Deployment a calculation rather than a guess.
+  # so one careless encoder cannot evict the service.
   Live__BufferWindowSeconds: "30"
   Live__BufferByteCeiling: "100663296"
 
-  # How long an interrupted stream is kept before it is considered gone: still claimed, still
-  # shown, hub and buffer and any recording all still alive. Long enough to cover an encoder
-  # reconnecting onto another replica after a pod is replaced.
+  # How long an interrupted stream is kept before it is considered gone: still claimed, still shown,
+  # hub and buffer and any recording all still alive.
   Live__GracePeriodSeconds: "30"
 
   # Dead time between a camera connecting and its stream being on air, which after a reconnect is
-  # what somebody watching experiences as downtime. libav's own defaults are five seconds and five
-  # megabytes; MPEG-TS repeats its tables every hundred milliseconds, so this is generous for a
-  # camera that presents everything at once. Raise it for one that starts its audio late: the
-  # symptom is a stream, and recordings from it, with no sound.
+  # what somebody watching experiences as downtime.
   Live__ProbeSeconds: "1"
   Live__ProbeBytes: "1048576"
 
   # How much of a recording is written to a pod's disk before it is stored and the file deleted.
-  # This is what bounds disk for a recording of any length, and how much is lost if the pod goes:
-  # everything up to the last completed segment is already in storage.
   Live__RecordingPartMinutes: "5"
 
-  # The ceiling on one recording, so a camera nobody stops still ends somewhere. It bounds the
-  # document rather than the disk, which segments already bound.
+  # The ceiling on one recording, so a camera nobody stops still ends somewhere.
   Live__MaxRecordingMinutes: "720"
 
   # Retention. Off here, because nothing else in this service deletes a document by itself and
-  # switching it on deletes somebody's recordings. A thousand camera-rate streams record about
-  # 43 TB a day, so a real deployment sets an age; this one leaves the decision to whoever has it.
-  #
+  # switching it on deletes somebody's recordings.
   # Only what live streaming produced is expired - recordings and snapshots - never an upload.
-  # MaxAgeDays of 0 keeps documents forever and sweeps only the registry, which is the setting for
-  # a deployment that wants the leak fixed and nothing deleted.
   Retention__Enabled: "false"
   Retention__MaxAgeDays: "0"
   Retention__IntervalSeconds: "3600"
 
-  # How stale an owner's heartbeat may be before its registry entry is treated as abandoned. A
-  # force-killed pod leaks one entry per stream and nothing else ever removes them. Far longer than
-  # the two-second beat and the thirty-second grace period on purpose: removing a living stream's
-  # entry would unlock its name to a second publisher, which is much worse than a dead entry
-  # surviving another pass.
+  # How stale an owner's heartbeat may be before its registry entry is treated as abandoned.
   Retention__AbandonedEntryMinutes: "10"
 ---
 apiVersion: v1
@@ -104,6 +80,5 @@ metadata:
 type: Opaque
 stringData:
   # Replace before applying, or better, have an external secret operator populate this.
-  # No AWS keys belong here: the service account below carries the S3 identity.
   Database__Postgres__ConnectionString: >-
     Host=postgres;Database=storagedemo;Username=storagedemo;Password=CHANGE_ME;SSL Mode=Require;Trust Server Certificate=true

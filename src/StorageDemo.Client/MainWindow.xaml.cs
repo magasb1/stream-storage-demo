@@ -36,26 +36,16 @@ public partial class MainWindow : Window
     private readonly ServerList _servers = ServerList.Load();
     private readonly CancellationTokenSource _closing = new();
 
-    /// <summary>Drives the position readout. Polling beats binding here: one place to suspend
-    /// while the user is dragging the scrub bar.</summary>
+    /// <summary>Drives the position readout.</summary>
     private readonly DispatcherTimer _positionTimer = new() { Interval = TimeSpan.FromMilliseconds(200) };
 
-    /// <summary>
-    /// Live sessions are polled rather than pushed. They are few, they change constantly while
-    /// running, and a stream that ends has nothing to announce on the document change feed.
-    /// </summary>
+    /// <summary>Live sessions are polled rather than pushed.</summary>
     private readonly DispatcherTimer _liveTimer = new() { Interval = TimeSpan.FromSeconds(2) };
 
-    /// <summary>
-    /// The sensor set for the one stream being watched. It runs only while a stream with KLV is
-    /// playing: it is a per-watched-stream fetch and nothing about it belongs on a grid of tiles.
-    /// </summary>
+    /// <summary>The sensor set for the one stream being watched.</summary>
     private readonly DispatcherTimer _klvTimer = new() { Interval = TimeSpan.FromSeconds(1) };
 
-    /// <summary>
-    /// The newest VMTI frame for the stream being watched, while detection is on for it. Same
-    /// shape as the KLV poll: per watched stream, never per tile.
-    /// </summary>
+    /// <summary>The newest VMTI frame for the stream being watched, while detection is on for it.</summary>
     private readonly DispatcherTimer _detectionTimer = new() { Interval = TimeSpan.FromSeconds(1) };
     private CancellationTokenSource? _detectionWatch;
     private CancellationTokenSource? _liveWatch;
@@ -65,11 +55,8 @@ public partial class MainWindow : Window
     private bool _refreshingDetections;
 
     /// <summary>
-    /// One colour per track for as long as the stream is watched, so a person can follow one
-    /// target across polls. Keyed by track id, or by target id for a detector with no tracker.
-    ///
-    /// ponytail: grows for the life of a selection and is cleared on the next; bound it if a
-    /// stream is watched for days.
+    /// One colour per track for as long as the stream is watched, so a person can follow one target
+    /// across polls.
     /// </summary>
     private readonly Dictionary<string, Brush> _trackBrushes = new(StringComparer.Ordinal);
 
@@ -92,16 +79,10 @@ public partial class MainWindow : Window
     /// <summary>The SRT address the server hands out for its consumption port, when it knows one.</summary>
     private string _consumptionUrl = string.Empty;
 
-    /// <summary>Where the server's REST surface is, when it knows. Empty means download instead.</summary>
+    /// <summary>Where the server's REST surface is, when it knows.</summary>
     private string _contentBaseUrl = string.Empty;
 
-    /// <summary>
-    /// Above this, a video is streamed and seeked rather than downloaded first.
-    ///
-    /// A camera recording is hours long and gigabytes big; waiting for all of it before the first
-    /// frame is not watching it. Below this a download is the better trade, because it is quick
-    /// and every later view of the same file is instant.
-    /// </summary>
+    /// <summary>Above this, a video is streamed and seeked rather than downloaded first.</summary>
     private const long StreamRatherThanDownloadBytes = 64L * 1024 * 1024;
 
     /// <summary>False until the constructor has finished wiring everything up.</summary>
@@ -124,7 +105,7 @@ public partial class MainWindow : Window
 
         // WPF wraps any bound collection in a view; filtering through it leaves the collection
         // alone, so a hidden tile keeps its thumbnail and comes straight back when the filter
-        // clears. Only documents are filtered: a stream is either running or gone.
+        // clears.
         _view = CollectionViewSource.GetDefaultView(_documents);
         _view.Filter = MatchesFilters;
         HudToggle.IsChecked = ClientPreferences.Hud;
@@ -139,8 +120,8 @@ public partial class MainWindow : Window
 
         PreviewKeyDown += OnShortcut;
 
-        // Last, so anything that fires while the window is being built sees a half-built window
-        // and stands down rather than reaching for a control that is not there.
+        // Last, so anything that fires while the window is being built sees a half-built window and
+        // stands down rather than reaching for a control that is not there.
         _ready = true;
 
         Loaded += async (_, _) => await ConnectAsync(initialAddress);
@@ -160,15 +141,12 @@ public partial class MainWindow : Window
         };
     }
 
-    /// <summary>
-    /// Switches the client to another server. Nothing below the transport changes, which is the
-    /// point of the demo: one client against any storage and database combination.
-    /// </summary>
+    /// <summary>Switches the client to another server.</summary>
     private async Task ConnectAsync(string address)
     {
         address = address.Trim();
 
-        // A list entry renders as "Name  -  http://host"; recover the address behind the label.
+        // A list entry renders as "Name - http://host"; recover the address behind the label.
         var selected = _servers.Entries.FirstOrDefault(entry => entry.ToString() == address);
         if (selected is not null)
         {
@@ -231,14 +209,10 @@ public partial class MainWindow : Window
         _liveWatch = CancellationTokenSource.CreateLinkedTokenSource(_connection.Token, _closing.Token);
         _ = WatchLiveStreamsAsync(_liveWatch.Token);
 
-        // Fire and forget: the watch loop lives until the next connect or the window closes.
         _ = WatchAsync(_api, _connection.Token);
     }
 
-    /// <summary>
-    /// Whatever is selected, in either tab. Selecting in one list clears the other, so at most one
-    /// of them ever has a selection and the preview always has a single subject.
-    /// </summary>
+    /// <summary>Whatever is selected, in either tab.</summary>
     private DocumentItem? Selected =>
         (StreamList.SelectedItem ?? DocumentList.SelectedItem) as DocumentItem;
 
@@ -294,7 +268,7 @@ public partial class MainWindow : Window
     {
         // A ComboBox with SelectedIndex set in XAML raises SelectionChanged while the window is
         // still being built, before the collection view exists and before the other controls this
-        // handler reads have been created. There is nothing to filter yet either way.
+        // handler reads have been created.
         if (!_ready)
         {
             return;
@@ -354,8 +328,7 @@ public partial class MainWindow : Window
 
     /// <summary>
     /// Applies changes the server pushes, including ones its storage monitor found on disk or in
-    /// the bucket. Each event touches a single tile: reloading the whole list would throw away
-    /// every thumbnail and make the grid flicker each time an analysis finishes.
+    /// the bucket.
     /// </summary>
     private async Task WatchAsync(DocumentsApi api, CancellationToken cancellationToken)
     {
@@ -420,7 +393,6 @@ public partial class MainWindow : Window
 
         if (existing is null)
         {
-            // Uploaded by another client, or found in the store by the monitor.
             var item = new DocumentItem(document);
             InsertSorted(item);
             _ = LoadThumbnailAsync(item);
@@ -432,7 +404,6 @@ public partial class MainWindow : Window
         var hadThumbnail = existing.Thumbnail is not null;
         existing.Apply(document);
 
-        // An Updated event is usually the analysis finishing, so this is the thumbnail arriving.
         if (document.HasThumbnail && !hadThumbnail)
         {
             _ = LoadThumbnailAsync(existing);
@@ -445,9 +416,8 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// Brings the live tiles in line with what the server reports: new streams appear, running
-    /// ones update in place, and anything that has stopped is removed. A live tile is transient by
-    /// nature, so it is never left behind as a stale entry.
+    /// Brings the live tiles in line with what the server reports: new streams appear, running ones
+    /// update in place, and anything that has stopped is removed.
     /// </summary>
     private async Task RefreshLiveAsync(LiveListResponse? supplied = null)
     {
@@ -486,7 +456,6 @@ public partial class MainWindow : Window
         {
             if (ReferenceEquals(StreamList.SelectedItem, stale))
             {
-                // The stream being watched is gone; stop playing something that is over.
                 StopPlayback();
                 StreamList.SelectedItem = null;
             }
@@ -524,9 +493,6 @@ public partial class MainWindow : Window
                     : $"Live stream resumed: {stream.Name}");
             }
 
-            // Refetched every tick, not just the first time. The server keeps a fresh picture on
-            // the same cadence, so a tile that kept its first frame would show a stream that has
-            // been running for an hour as it looked in its first second.
             if (stream.HasPreview)
             {
                 _ = LoadLivePreviewAsync(existing);
@@ -571,18 +537,10 @@ public partial class MainWindow : Window
         }
         catch (Exception)
         {
-            // A preview is decoration; the tile keeps its icon.
         }
     }
 
-    /// <summary>
-    /// Where this server's consumption port is.
-    ///
-    /// Configuration wins, because only it knows about a load balancer or an ingress in front. With
-    /// nothing configured, the host this client already reached plus the port the server reports is
-    /// a better answer than refusing to play: it is right for a local run and for Compose, which is
-    /// where nobody has configured anything.
-    /// </summary>
+    /// <summary>Where this server's consumption port is.</summary>
     private string ConsumptionAddress(LiveListResponse live)
     {
         if (live.ConsumptionUrl is { Length: > 0 } configured)
@@ -598,11 +556,7 @@ public partial class MainWindow : Window
         return $"srt://{server.Host}:{live.ConsumptionPort}";
     }
 
-    /// <summary>
-    /// Where a player pulls a live stream: the consumption port, over SRT. The stream it wants is
-    /// named separately, as a demuxer option rather than in this URL; see
-    /// <see cref="FlyleafEngine.TuneFor"/> for why that distinction matters.
-    /// </summary>
+    /// <summary>Where a player pulls a live stream: the consumption port, over SRT.</summary>
     private string? PlaybackUrl()
         => string.IsNullOrWhiteSpace(_consumptionUrl)
             ? null
@@ -678,7 +632,6 @@ public partial class MainWindow : Window
         }
         catch (Exception)
         {
-            // A thumbnail is decoration. The tile keeps its type icon and the list stays usable.
         }
     }
 
@@ -698,8 +651,7 @@ public partial class MainWindow : Window
     private async void OnSelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         // Selecting in one list clears the other, which raises this again with nothing selected
-        // there. Acting only on the list that gained a selection keeps that second pass from
-        // immediately wiping the preview the first one just set up.
+        // there.
         if (e.AddedItems.Count > 0)
         {
             if (ReferenceEquals(sender, StreamList))
@@ -739,8 +691,6 @@ public partial class MainWindow : Window
 
             if (PlaybackUrl() is not { } url)
             {
-                // The server has not been told its own consumption address, so it cannot hand out
-                // one a player could reach. Saying so beats a player failing on an empty address.
                 ShowFallback(
                     "This server has no consumption address configured, so the stream cannot be "
                     + "played from here. Set Live:PublicConsumptionUrl.");
@@ -762,9 +712,6 @@ public partial class MainWindow : Window
         PreviewTitle.Text = $"{item.FileName}   ({DocumentItem.HumanSize(item.Size)})";
         ShowMetadata(item);
 
-        // A long recording is streamed rather than fetched. The content endpoint serves byte
-        // ranges and a recording written in pieces is seekable end to end, so scrubbing through
-        // six hours costs one ranged read rather than six hours of downloading.
         if (StreamUrl(item) is { } streaming)
         {
             StartPlayback(streaming);
@@ -785,12 +732,7 @@ public partial class MainWindow : Window
         }
     }
 
-    /// <summary>
-    /// Where to stream a document from, or null when downloading it is the better answer.
-    ///
-    /// Null unless the server has been told its own address, since a URL a player cannot reach is
-    /// worse than a slow download.
-    /// </summary>
+    /// <summary>Where to stream a document from, or null when downloading it is the better answer.</summary>
     private string? StreamUrl(DocumentItem item)
         => item.Kind is DocumentKind.Video or DocumentKind.Audio
             && item.Size >= StreamRatherThanDownloadBytes
@@ -799,8 +741,8 @@ public partial class MainWindow : Window
                 : null;
 
     /// <summary>
-    /// Turns the sensor panel on for a stream that carries KLV and off for one that does not,
-    /// which is also what a server too old to answer <c>GetLiveKlv</c> reports.
+    /// Turns the sensor panel on for a stream that carries KLV and off for one that does not, which
+    /// is also what a server too old to answer <c>GetLiveKlv</c> reports.
     /// </summary>
     private void SyncKlv(DocumentItem item)
     {
@@ -860,8 +802,8 @@ public partial class MainWindow : Window
             return;
         }
 
-        // The selection can move while a call is in flight, and the rows belong to the stream
-        // they were asked for.
+        // The selection can move while a call is in flight, and the rows belong to the stream they
+        // were asked for.
         if (!ReferenceEquals(Selected, item))
         {
             return;
@@ -897,14 +839,6 @@ public partial class MainWindow : Window
     /// <summary>
     /// The sensor heads-up display over the picture: the corner blocks, the frame-centre reticle
     /// and the north arrow, from the newest KLV packet and nothing else.
-    ///
-    /// Absent is drawn as absent. A field the packet did not carry is two dashes, a packet that
-    /// was not an ST 0601 local set gets no display at all, and the arrow disappears rather than
-    /// pointing somewhere plausible when the items it is computed from are missing.
-    ///
-    /// ponytail: this redraws on the once-a-second KLV poll, so the arrow steps rather than sweeps
-    /// while the platform turns. Interpolating between two polls, or polling faster, is the
-    /// upgrade if a demo ever looks bad because of it.
     /// </summary>
     private void UpdateHud(LiveKlvMessage? klv)
     {
@@ -933,7 +867,7 @@ public partial class MainWindow : Window
             $"PLT {Str(fields.HasPlatformDesignation, fields.PlatformDesignation)}");
 
         // The client already knows how old the set is, so it says so rather than letting a frozen
-        // readout look live. Two polls' worth of slack, because one late poll is not a stale set.
+        // readout look live.
         var age = klv!.ReceivedAt is { } received
             ? (DateTimeOffset.UtcNow - received.ToDateTimeOffset()).TotalSeconds
             : double.NaN;
@@ -968,8 +902,7 @@ public partial class MainWindow : Window
             $"ELEV {Number(Opt(fields.HasFrameCenterElevation, fields.FrameCenterElevation), 0)} M");
 
         // The coordinate pairs describe the actual horizontal look bearing and therefore include
-        // the effect of platform attitude. Heading + relative azimuth is the fallback for sets
-        // that do not carry both positions.
+        // the effect of platform attitude.
         var bearing = SensorGeometry.BearingBetween(
             sensorLatitude, sensorLongitude, frameLatitude, frameLongitude)
             ?? SensorGeometry.SensorBearing(heading, azimuth);
@@ -1018,9 +951,6 @@ public partial class MainWindow : Window
             Math.Max(0, DetectionCanvas.ActualWidth - left - width),
             Math.Max(0, DetectionCanvas.ActualHeight - top - height));
 
-        // Keep the authored size in a normal window and shrink only when the actual video becomes
-        // genuinely small. Scale each anchored group independently, so compact graphics do not
-        // pull corner readouts away from their edges or move the reticle off the frame centre.
         var scale = Math.Clamp(Math.Min(width / 1000, height / 562.5), 0.60, 1.15);
 
         foreach (var transform in new[]
@@ -1104,13 +1034,10 @@ public partial class MainWindow : Window
                 PlayerHost.Player = _player;
 
                 // Opening is asynchronous and reports failure through this and nowhere else.
-                // Without it a stream the player cannot reach, or a codec it cannot decode, is a
-                // black rectangle and no explanation at all.
                 _player.OpenCompleted += OnOpenCompleted;
 
                 // The renderer says where the picture sits inside the host, and says so again
-                // whenever letterboxing, zoom or fullscreen move it; the boxes follow. Raised off
-                // the UI thread, hence the dispatch.
+                // whenever letterboxing, zoom or fullscreen move it; the boxes follow.
                 if (_player.Renderer is { } renderer)
                 {
                     renderer.ViewportChanged += (_, _) => Dispatcher.BeginInvoke(() =>
@@ -1146,12 +1073,7 @@ public partial class MainWindow : Window
         PlayPauseButton.Content = "Pause";
     }
 
-    /// <summary>
-    /// Says why playback did not start, on the UI thread.
-    ///
-    /// The player raises this from its own thread, and a failure is the one case where the video
-    /// area stays empty, so it is also the one case where saying nothing is worst.
-    /// </summary>
+    /// <summary>Says why playback did not start, on the UI thread.</summary>
     private void OnOpenCompleted(object? sender, OpenCompletedArgs e)
     {
         if (e.Success)
@@ -1221,8 +1143,10 @@ public partial class MainWindow : Window
         SeekToSliderPosition();
     }
 
-    /// <summary>Fires while dragging too, so the picture follows the thumb rather than jumping
-    /// only once it is released.</summary>
+    /// <summary>
+    /// Fires while dragging too, so the picture follows the thumb rather than jumping only once it
+    /// is released.
+    /// </summary>
     private void OnSeekValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
         if (_suppressSeek || _player is null)
@@ -1416,8 +1340,6 @@ public partial class MainWindow : Window
             return;
         }
 
-        // Uploads land among the documents, so show that tab rather than leaving the tiles
-        // appearing behind a tab the user is not looking at.
         SidebarTabs.SelectedItem = DocumentsTab;
 
         // Every tile appears at once, before a single byte has been sent.
@@ -1451,14 +1373,7 @@ public partial class MainWindow : Window
 
     private async void OnRefresh(object sender, RoutedEventArgs e) => await RefreshAsync();
 
-    /// <summary>
-    /// Starts a recording, or stops the one running.
-    ///
-    /// It reaches back into the server's buffer, so what lands begins a few seconds before this
-    /// click: an event already under way when somebody noticed it is still caught. A second click
-    /// while one is running stops it; a further trigger from anywhere else would extend it rather
-    /// than start a second file.
-    /// </summary>
+    /// <summary>Starts a recording, or stops the one running.</summary>
     private async void OnRecord(object sender, RoutedEventArgs e)
     {
         if (_api is null || Selected is not { IsLive: true } item)
@@ -1475,8 +1390,7 @@ public partial class MainWindow : Window
             }
             else
             {
-                // Zero means the server's default duration. It keeps running whether or not this
-                // client is here, so nothing has to be held open.
+                // Zero means the server's default duration.
                 var recording = await _api.RecordLiveAsync(item.Id, 0, _connection.Token);
 
                 SetStatus(recording is null
@@ -1493,10 +1407,7 @@ public partial class MainWindow : Window
         }
     }
 
-    /// <summary>
-    /// Stores a full-resolution picture of the stream as a document. Decoded fresh on the server
-    /// rather than lifted from the tile, which is both smaller and several seconds older.
-    /// </summary>
+    /// <summary>Stores a full-resolution picture of the stream as a document.</summary>
     private async void OnSnapshot(object sender, RoutedEventArgs e)
     {
         if (_api is null || Selected is not { IsLive: true } item)
@@ -1535,8 +1446,8 @@ public partial class MainWindow : Window
         SnapshotButton.IsEnabled = stream is not null;
         RecordButton.Content = stream?.IsRecording == true ? "Stop recording" : "Record";
 
-        // Off with a reason against a server that has no detection, so the rest of the client
-        // keeps working against it exactly as before.
+        // Off with a reason against a server that has no detection, so the rest of the client keeps
+        // working against it exactly as before.
         var supported = _detectionSupported != false;
         DetectButton.IsEnabled = stream is not null && supported;
         DetectRateBox.IsEnabled = DetectButton.IsEnabled;
@@ -1556,9 +1467,8 @@ public partial class MainWindow : Window
         => SelectedLabel(DetectRateBox) is { } label ? int.Parse(label.TrimEnd('/', 's')) : 5;
 
     /// <summary>
-    /// Learns once per connection whether the server has the detection calls, so the button can
-    /// say so before anyone selects a stream. Any answer but Unimplemented means they exist;
-    /// no answer at all leaves the question open for the first real call.
+    /// Learns once per connection whether the server has the detection calls, so the button can say
+    /// so before anyone selects a stream.
     /// </summary>
     private async Task ProbeDetectionAsync(DocumentsApi api, CancellationToken cancellationToken)
     {
@@ -1586,11 +1496,7 @@ public partial class MainWindow : Window
         UpdateLiveButtons();
     }
 
-    /// <summary>
-    /// Turns detection on for the selected stream, or off. Like a recording it is the server's
-    /// state and outlives this window; the returned stream is applied at once rather than waiting
-    /// for the next list poll to say the same thing.
-    /// </summary>
+    /// <summary>Turns detection on for the selected stream, or off.</summary>
     private async void OnDetect(object sender, RoutedEventArgs e)
     {
         if (_api is null || Selected is not { IsLive: true } item)
@@ -1603,8 +1509,6 @@ public partial class MainWindow : Window
 
         try
         {
-            // This client changes the toggle/rate only. Preserve model and COCO filter selected in
-            // the web console instead of accidentally resetting them to worker-default/all.
             var stream = await _api.SetLiveDetectionAsync(
                 item.Id,
                 enable,
@@ -1643,9 +1547,7 @@ public partial class MainWindow : Window
         }
     }
 
-    /// <summary>
-    /// Watches detection updates for the selected stream. Older servers use bounded-rate polling.
-    /// </summary>
+    /// <summary>Watches detection updates for the selected stream.</summary>
     private void SyncDetection(DocumentItem item)
     {
         if (_detectionSupported == false || item.Live?.DetectionEnabled != true)
@@ -1683,8 +1585,7 @@ public partial class MainWindow : Window
                         KlvList.ItemsSource = DocumentItem.KlvRows(klv);
                         KlvHint.Visibility = Visibility.Hidden;
                         // Keep the streaming and polling paths identical: UpdateHud applies the
-                        // user's toggle before changing visibility. Setting Visible directly here
-                        // used to turn the HUD straight back on with every incoming packet.
+                        // user's toggle before changing visibility.
                         UpdateHud(klv);
                     }
                 }
@@ -1755,7 +1656,6 @@ public partial class MainWindow : Window
                 }
                 catch (RpcException) when (!cancellationToken.IsCancellationRequested)
                 {
-                    // Reconnect after a transient transport failure.
                 }
                 await Task.Delay(500, cancellationToken);
             }
@@ -1820,17 +1720,7 @@ public partial class MainWindow : Window
         LayoutDetections();
     }
 
-    /// <summary>
-    /// The panel under the player: how many, how old, and one row per target.
-    ///
-    /// The age is wall clock minus the frame's ST 0603 time, so it holds the worker's decode and
-    /// detection time, both network hops, and any clock skew between the worker and this machine.
-    /// The boxes over the picture trail it by about this much, and nothing here pretends
-    /// otherwise. Frame-accurate alignment would take the frame's presentation timestamp on the
-    /// message, the player's current position on the same clock (FlyleafLib's CurTime is relative
-    /// to the demuxer's start, so the start's PTS has to be known too), and a short ring of frames
-    /// on this side to draw the one nearest the picture showing. None of that mapping exists yet.
-    /// </summary>
+    /// <summary>The panel under the player: how many, how old, and one row per target.</summary>
     private void ShowDetections(LiveDetectionsMessage? frame)
     {
         if (frame is null)
@@ -1874,7 +1764,9 @@ public partial class MainWindow : Window
         return text;
     }
 
-    /// <summary>The picture needs the fact, not database/debug identities already available below it.</summary>
+    /// <summary>
+    /// The picture needs the fact, not database/debug identities already available below it.
+    /// </summary>
     private static string OverlayLabel(VmtiTargetMessage target)
     {
         var text = target.HasOntologyClass ? target.OntologyClass : "object";
@@ -1894,8 +1786,10 @@ public partial class MainWindow : Window
         return brush;
     }
 
-    /// <summary>The overlay's size changes when the host does, and going fullscreen is the case
-    /// that matters: both the boxes and the heads-up display are measured off the picture.</summary>
+    /// <summary>
+    /// The overlay's size changes when the host does, and going fullscreen is the case that
+    /// matters: both the boxes and the heads-up display are measured off the picture.
+    /// </summary>
     private void OnDetectionCanvasSizeChanged(object sender, SizeChangedEventArgs e)
     {
         LayoutDetections();
@@ -1904,9 +1798,7 @@ public partial class MainWindow : Window
 
     /// <summary>
     /// Draws the current frame's boxes over the picture, in the host's overlay so they go
-    /// fullscreen with it. Frame pixels are scaled to the rectangle the renderer actually painted
-    /// the video in, which is smaller than the host whenever the aspect ratios differ; scaling to
-    /// the host instead puts every box beside its object rather than on it.
+    /// fullscreen with it.
     /// </summary>
     private void LayoutDetections()
     {
@@ -1952,9 +1844,7 @@ public partial class MainWindow : Window
 
         }
 
-        // Labels are laid out after boxes, strongest first. A compact neutral pill avoids the
-        // confetti effect of solid per-track backgrounds, and a pill is omitted when all three
-        // sensible positions would cover a stronger label. The full ids remain in the panel.
+        // Labels are laid out after boxes, strongest first.
         var occupied = new List<Rect>();
         foreach (var target in _detections.Targets.OrderByDescending(target =>
                      target.HasConfidencePercent ? target.ConfidencePercent : 100))
@@ -2010,17 +1900,7 @@ public partial class MainWindow : Window
         }
     }
 
-    /// <summary>
-    /// Where the picture sits inside the overlay, in the overlay's own units.
-    ///
-    /// The renderer reports the rectangle it painted the video in (<c>Viewport</c>) inside the
-    /// surface it paints on (<c>ControlWidth</c> by <c>ControlHeight</c>), letterboxing, zoom
-    /// and pan included, in the surface's pixels. The overlay window covers that surface exactly,
-    /// so a ratio maps one onto the other and the display's DPI cancels out. Before the first
-    /// frame the renderer has nothing to report, and the fallback fits the video's own dimensions
-    /// into the overlay the way the renderer will, uniformly and centred, which is right until
-    /// somebody zooms.
-    /// </summary>
+    /// <summary>Where the picture sits inside the overlay, in the overlay's own units.</summary>
     private (double Left, double Top, double Width, double Height) VideoRectangle(Renderer renderer)
     {
         var overlayWidth = DetectionCanvas.ActualWidth;

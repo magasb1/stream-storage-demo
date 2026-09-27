@@ -3,25 +3,7 @@ using StorageDemo.Infrastructure.Media;
 
 namespace StorageDemo.Infrastructure.Streaming;
 
-/// <summary>
-/// A libav transport opened from a URL, as an ordinary .NET stream.
-///
-/// The mirror of <see cref="AvioReader"/>, and for the same reason: <see cref="PacketMuxer"/>
-/// already writes a container into any <see cref="Stream"/>, so handing it one of these makes one
-/// unchanged muxer serve an SRT caller, an SRT listener, UDP and RTP alike. libav opens all four
-/// from a URL, which is the whole argument against a hand-rolled socket per protocol - each would
-/// need its own connect, its own retry and its own idea of what a send failure means, and none of
-/// them would be shared with the ingest side that already speaks these protocols.
-///
-/// Ownership is not split here, unlike the reader. Nothing downstream frees this context: the muxer
-/// is told the destination is a <see cref="Stream"/> and knows nothing about libav underneath it,
-/// so <see cref="Dispose"/> closes the context and there is no second owner to agree with.
-///
-/// Opening blocks, sometimes for a long time. <c>srt://...?mode=listener</c> waits for a client to
-/// connect and may never be connected to at all; an SRT caller waits out a handshake with a far end
-/// that may be down. That is acceptable only because this is constructed on a thread dedicated to
-/// one forward and nothing else waits on it - see <see cref="StreamForwarder"/>.
-/// </summary>
+/// <summary>A libav transport opened from a URL, as an ordinary .NET stream.</summary>
 public sealed unsafe class AvioWriter : Stream, IWireWriter
 {
     private readonly string _url;
@@ -39,7 +21,8 @@ public sealed unsafe class AvioWriter : Stream, IWireWriter
         if (opened < 0 || io is null)
         {
             // Closed rather than abandoned: libav can have allocated the context and then failed
-            // inside the protocol's own open, and on that path it hands the half-built context back.
+            // inside the protocol's own open, and on that path it hands the half-built context
+            // back.
             if (io is not null)
             {
                 ffmpeg.avio_closep(&io);
@@ -85,9 +68,7 @@ public sealed unsafe class AvioWriter : Stream, IWireWriter
         }
 
         // avio_write reports nothing, so a far end that has gone away is invisible until the
-        // context is asked. Without this a forward to a dead peer counts bytes forever and reads as
-        // healthy; raising it here turns it into the muxer's Fault, which ends the forward and
-        // leaves the reason on its status.
+        // context is asked.
         if (_io->error < 0)
         {
             throw new IOException($"Writing to '{_url}' failed: {FfmpegLibrary.Describe(_io->error)}.");

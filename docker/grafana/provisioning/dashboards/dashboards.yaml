@@ -5,9 +5,8 @@ providers:
     orgId: 1
     folder: Storage Demo
     type: file
-    # Editable in the browser, because a dashboard is a thing people fiddle with while they are
-    # looking for something. Changes live in the container and are lost on recreate; the files in
-    # this directory are the ones that are kept, so a panel worth keeping is worth committing.
+    # Editable in the browser, but changes live in the container and are lost on recreate: the
+    # files in this directory are the ones that are kept.
     allowUiUpdates: true
     options:
       path: /var/lib/grafana/dashboards

@@ -3,13 +3,7 @@ using StorageDemo.Infrastructure.Streaming;
 
 namespace StorageDemo.Tests.Infrastructure;
 
-/// <summary>
-/// What this pod says about itself, as whatever is reading the meter would see it.
-///
-/// The per-stream half of Phase 9 is tested against a real socket in <see cref="SrtListenerTests"/>
-/// and through the API in the integration suite; this is the aggregate half, which has no network
-/// in it at all.
-/// </summary>
+/// <summary>What this pod says about itself, as whatever is reading the meter would see it.</summary>
 public sealed class LiveMetricsTests
 {
     [Fact]
@@ -61,10 +55,7 @@ public sealed class LiveMetricsTests
         Assert.Equal(3, meters.Value("live.streams.interrupted"));
     }
 
-    /// <summary>
-    /// Both counters carry the port, and a reject carries why. Neither carries a stream name, which
-    /// is the difference between four time series and four thousand.
-    /// </summary>
+    /// <summary>Both counters carry the port, and a reject carries why.</summary>
     [Fact]
     public void Accepts_and_rejects_are_tagged_by_port_and_by_reason_and_by_nothing_else()
     {
@@ -138,11 +129,7 @@ public sealed class LiveMetricsTests
         Assert.Empty(meters.Of("live.packets.dropped"));
     }
 
-    /// <summary>
-    /// Every outcome tag is a word this class chose. None of them can be reached from anything a
-    /// caller sent, which is the rule that keeps a public port from choosing this meter's
-    /// cardinality.
-    /// </summary>
+    /// <summary>Every outcome tag is a word this class chose.</summary>
     [Fact]
     public void Outcomes_are_tagged_from_a_fixed_vocabulary()
     {
@@ -184,7 +171,6 @@ public sealed class LiveMetricsTests
 
     /// <summary>
     /// The one thing on the fan-out path counted where it happens rather than sampled by the beat.
-    /// It goes through the hub, because a subscription is not something a caller builds.
     /// </summary>
     [Fact]
     public void A_subscriber_that_falls_behind_is_counted_through_the_hub()
@@ -228,11 +214,6 @@ public sealed class LiveMetricsTests
 
     /// <summary>
     /// The counter that catches what never reached libsrt, on a machine that has no such counter.
-    ///
-    /// A developer's Windows box has no /proc, and this is the path where a health signal is most
-    /// tempting to fake: reporting zero would read as "no packets were lost" on a machine that
-    /// cannot know. It has to be absent instead, and above all it must not throw, because it is
-    /// read from a metrics callback that nothing is catching exceptions for.
     /// </summary>
     [Fact]
     public void The_kernel_udp_counter_is_absent_rather_than_fatal_where_proc_is_not()

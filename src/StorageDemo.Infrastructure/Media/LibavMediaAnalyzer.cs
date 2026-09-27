@@ -7,14 +7,8 @@ using StorageDemo.Core.Documents;
 namespace StorageDemo.Infrastructure.Media;
 
 /// <summary>
-/// Probes media and renders a thumbnail by calling libav in this process, through the FFmpeg.AutoGen
-/// bindings, against the libraries bundled with the application.
-///
-/// One open of the file answers both questions. The previous implementation launched ffprobe and
-/// then ffmpeg, which meant two process starts and two reads of the same bytes.
-///
-/// Everything unmanaged is allocated and freed in the same method, in a finally, and no pointer
-/// outlives the call. That discipline is the whole reason this file is as verbose as it is.
+/// Probes media and renders a thumbnail by calling libav in this process, through the
+/// FFmpeg.AutoGen bindings, against the libraries bundled with the application.
 /// </summary>
 public sealed class LibavMediaAnalyzer(
     IOptions<MediaOptions> options,
@@ -57,12 +51,7 @@ public sealed class LibavMediaAnalyzer(
         CancellationToken cancellationToken = default)
         => OnAFileAsync(content, fileName, LatestFrame, cancellationToken);
 
-    /// <summary>
-    /// Spills the content to a temp file and runs libav over it off the request thread.
-    ///
-    /// The file is not an optimisation to remove later: libav seeks its input, an upload and an
-    /// in-memory mux both hand back a forward-only stream, and decoding is blocking CPU work.
-    /// </summary>
+    /// <summary>Spills the content to a temp file and runs libav over it off the request thread.</summary>
     private async Task<T> OnAFileAsync<T>(
         Stream content,
         string fileName,
@@ -95,19 +84,11 @@ public sealed class LibavMediaAnalyzer(
             }
             catch (IOException)
             {
-                // A leftover temp file is not worth failing an upload over.
             }
         }
     }
 
-    /// <summary>
-    /// The last picture in the media, at source resolution.
-    ///
-    /// Distinct from the thumbnail above, which is the picture a fixed number of seconds in. A
-    /// preview and a snapshot ask "what does this look like now"; a poster frame asks "what does
-    /// this piece of media look like". Answering both with one verb is what let a live preview
-    /// serve a fixed frame for minutes while every component reported success.
-    /// </summary>
+    /// <summary>The last picture in the media, at source resolution.</summary>
     private unsafe byte[]? LatestFrame(string path)
     {
         AVFormatContext* format = null;
@@ -320,7 +301,7 @@ public sealed class LibavMediaAnalyzer(
         {
             case "video":
                 // A corrupt file can still be opened with a codec guessed from the extension, and
-                // then reports no dimensions. Showing "0 x 0" is worse than showing nothing.
+                // then reports no dimensions.
                 if (parameters->width > 0 && parameters->height > 0)
                 {
                     MediaMetadataFormat.Add(
@@ -432,7 +413,6 @@ public sealed class LibavMediaAnalyzer(
                 continue;
             }
 
-            // Language already has its own row on a subtitle stream.
             if (prefix.Length > 0 && key.Equals("language", StringComparison.OrdinalIgnoreCase))
             {
                 continue;
@@ -464,7 +444,6 @@ public sealed class LibavMediaAnalyzer(
 
         if (streamIndex < 0 || decoder is null)
         {
-            // Audio with no cover art, or a file with no picture in it at all.
             return null;
         }
 
@@ -511,8 +490,6 @@ public sealed class LibavMediaAnalyzer(
             if (moved)
             {
                 // The seek landed somewhere undecodable, so start over from the beginning.
-                // Only rewind if we actually moved: a single-image demuxer does not take kindly
-                // to being seeked at all, and rewinding one left it with nothing to read.
                 ffmpeg.av_seek_frame(format, streamIndex, 0, ffmpeg.AVSEEK_FLAG_BACKWARD);
                 ffmpeg.avcodec_flush_buffers(codec);
             }
@@ -553,11 +530,6 @@ public sealed class LibavMediaAnalyzer(
     /// <summary>
     /// Moves to the poster frame: <see cref="MediaOptions.VideoFrameSeconds"/> into the media,
     /// measured from where the media actually starts.
-    ///
-    /// Relative, not absolute. A recording cut from a rolling buffer begins at whatever timestamp
-    /// the encoder had reached, which is a large number, and an absolute target below that clamps
-    /// to the first frame. Every such document would then show its opening frame and report
-    /// success, which is precisely the failure that hid the live preview freeze for months.
     /// </summary>
     private unsafe bool Seek(
         AVFormatContext* format,

@@ -2,21 +2,7 @@ using Microsoft.Extensions.Logging;
 
 namespace StorageDemo.Infrastructure.Streaming;
 
-/// <summary>
-/// The per-stream fan-out point. One demultiplexer feeds one hub; packets flow one way through it.
-///
-/// Two tiers hang off this. The packet tier is the fan-out itself: subscribers receive
-/// demultiplexed packets filtered by stream index, with no decoding anywhere near them, which is
-/// what keeps a stream cheap when nobody is watching. The recorder, the viewer and a future KLV
-/// extractor all live there, and KLV needs no special path because it is a subscriber on a
-/// different stream index. The frame tier hangs off the packet tier as one decoder that is itself
-/// a packet subscriber, so a stream is decoded once however many things want pictures and
-/// consumers that only move bytes never pay for it.
-///
-/// The hub outlives the demultiplexer that feeds it. A feed that stops arriving keeps its hub, its
-/// buffer and any recording alive through the grace period, and a reconnect under the same name
-/// resumes into this same hub rather than creating a second stream.
-/// </summary>
+/// <summary>The per-stream fan-out point.</summary>
 public sealed class StreamHub : IDisposable
 {
     private readonly ILogger _logger;
@@ -28,19 +14,12 @@ public sealed class StreamHub : IDisposable
 
     private StreamLayout? _layout;
 
-    /// <summary>
-    /// Layouts this stream has had. They are kept rather than freed on replacement because a
-    /// decoder or a muxer may still be holding one: freeing underneath a consumer would be a
-    /// use-after-free for the sake of a few hundred bytes per reconnect.
-    /// </summary>
+    /// <summary>Layouts this stream has had.</summary>
     private readonly List<StreamLayout> _retired = [];
 
     /// <param name="metrics">
     /// Where a subscriber that falls behind is reported, or null where nothing is measuring: the
     /// detection worker builds a hub of its own and so do the tests, and neither publishes a meter.
-    /// The hub itself measures nothing - it already counts packets and bytes as part of publishing
-    /// them, and the heartbeat reports the interval since it last looked, which is what keeps the
-    /// demultiplexer's thread free of instrument calls.
     /// </param>
     public StreamHub(string name, LiveOptions options, ILogger logger, LiveMetrics? metrics = null)
     {
@@ -56,8 +35,6 @@ public sealed class StreamHub : IDisposable
 
     /// <summary>
     /// What the stream is carrying, or null before the first packet has been demultiplexed.
-    /// Replaced when a reconnect brings a different shape, which is also when a recording in
-    /// progress has to close.
     /// </summary>
     public StreamLayout? Layout
     {
@@ -71,21 +48,13 @@ public sealed class StreamHub : IDisposable
 
     public long Bytes { get; private set; }
 
-    /// <summary>When a packet last arrived. The grace period is measured from this.</summary>
+    /// <summary>When a packet last arrived.</summary>
     public DateTimeOffset? LastPacketAt { get; private set; }
 
     /// <summary>Set when the hub has stopped for good and nothing should attach to it again.</summary>
     public bool Closed { get; private set; }
 
-    /// <summary>
-    /// Adopts the layout a freshly connected demultiplexer reports.
-    /// </summary>
-    /// <returns>
-    /// True when the buffer and any recording carry on, false when the shape changed and they
-    /// have to start again. A resumed feed appends when its layout matches, as a new segment
-    /// boundary; when the encoder was reconfigured while it was away, the file already being
-    /// written cannot hold what comes next.
-    /// </returns>
+    /// <summary>Adopts the layout a freshly connected demultiplexer reports.</summary>
     public bool Adopt(StreamLayout layout)
     {
         lock (_gate)
@@ -116,17 +85,7 @@ public sealed class StreamHub : IDisposable
         }
     }
 
-    /// <summary>
-    /// Attaches a consumer to the packet tier.
-    /// </summary>
-    /// <param name="streamIndexes">
-    /// Which streams to deliver, or empty for all of them. A KLV extractor would name one index
-    /// and never see a video packet.
-    /// </param>
-    /// <param name="preroll">
-    /// How far back in the buffer to start. Zero joins at the live edge. The actual start is the
-    /// segment at or before that point, so a caller routinely gets more than it asked for.
-    /// </param>
+    /// <summary>Attaches a consumer to the packet tier.</summary>
     public PacketSubscription Subscribe(
         int capacity,
         OverflowPolicy policy,
@@ -150,8 +109,8 @@ public sealed class StreamHub : IDisposable
                 return subscription;
             }
 
-            // Filled under the same lock that publishing takes, so a packet cannot slip between
-            // the history and the live flow and leave a hole in the middle of a recording.
+            // Filled under the same lock that publishing takes, so a packet cannot slip between the
+            // history and the live flow and leave a hole in the middle of a recording.
             if (Buffer is { } buffer && buffer.StartingFrom(preroll) is { } from)
             {
                 foreach (var packet in buffer.PacketsFrom(from))
@@ -177,15 +136,7 @@ public sealed class StreamHub : IDisposable
         }
     }
 
-    /// <summary>
-    /// A copy of the newest position a decoder can start from, or null when there is none.
-    ///
-    /// A copy, and taken under the same lock publishing takes, because the newest segment is the
-    /// one still being written: a caller iterating it directly races the demultiplexer appending
-    /// to it, and the buffer says of itself that the hub serialises access. Reaching past that
-    /// into <see cref="Buffer"/> is what made a snapshot fail with "collection was modified"
-    /// roughly one time in thirty, and muxing takes long enough to make the window wide.
-    /// </summary>
+    /// <summary>A copy of the newest position a decoder can start from, or null when there is none.</summary>
     public MediaPacket[]? NewestStartablePackets()
     {
         lock (_gate)
@@ -195,8 +146,8 @@ public sealed class StreamHub : IDisposable
     }
 
     /// <summary>
-    /// What the buffer holds, read in one lock so the three answers describe one moment and
-    /// neither of the first two indexes a list the demultiplexer is appending to.
+    /// What the buffer holds, read in one lock so the three answers describe one moment and neither
+    /// of the first two indexes a list the demultiplexer is appending to.
     /// </summary>
     public (double HeldSeconds, bool Startable, bool CeilingBinding) BufferState()
     {
@@ -235,10 +186,7 @@ public sealed class StreamHub : IDisposable
         }
     }
 
-    /// <summary>
-    /// Whether a decoder could begin here. A stream carrying video says so with a keyframe; one
-    /// carrying only audio can be joined anywhere, so every packet qualifies.
-    /// </summary>
+    /// <summary>Whether a decoder could begin here.</summary>
     private bool StartsSegment(MediaPacket packet)
     {
         var video = _layout?.VideoIndex ?? -1;
@@ -246,7 +194,7 @@ public sealed class StreamHub : IDisposable
         return video < 0 ? packet.IsKeyframe : packet.StreamIndex == video && packet.IsKeyframe;
     }
 
-    /// <summary>Ends the hub. Every attached consumer sees its queue finish rather than stall.</summary>
+    /// <summary>Ends the hub.</summary>
     public void Close()
     {
         PacketSubscription[] subscribers;

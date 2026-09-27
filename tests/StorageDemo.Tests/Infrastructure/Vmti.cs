@@ -10,17 +10,7 @@ internal sealed record VmtiPack(int Id, IReadOnlyDictionary<int, byte[]> Items);
 /// <summary>A VMTI LS read back: the set's own TLV triplets by tag, and the VTargetSeries.</summary>
 internal sealed record VmtiPacket(IReadOnlyDictionary<int, byte[]> Items, IReadOnlyList<VmtiPack> Targets);
 
-/// <summary>
-/// Just enough of an ST 0903.4 reader to prove the encoder wrote what it meant to.
-///
-/// It lives in the test project on purpose. Nothing in this service consumes VMTI, so a production
-/// decoder would be code with no caller; and a decoder written here, from the standard's structure
-/// rather than from the encoder's source, is what catches a length or an offset that the encoder
-/// and a hand-built expectation would otherwise agree on.
-///
-/// Written from MISB ST 0903.4, 23 October 2014: section 9.1 for the VTarget Pack's shape
-/// (BER-OID id then TLVs), section 8.3 for the variable-length integers, SMPTE ST 336 for BER.
-/// </summary>
+/// <summary>Just enough of an ST 0903.4 reader to prove the encoder wrote what it meant to.</summary>
 internal static class Vmti
 {
     /// <summary>What a worker would post for one frame: a tracked dog, typed and encoded.</summary>
@@ -140,8 +130,7 @@ internal static class Vmti
 
     /// <summary>
     /// ST 0903.4 section 11.15 Tag 1 backwards: pixel number to (column, row), one-based from the
-    /// top left. The division is the half of the formula the encoder never runs, which is why this
-    /// catches a frame width the encoder got wrong.
+    /// top left.
     /// </summary>
     public static (int Column, int Row) Pixel(ulong number, int frameWidth)
     {

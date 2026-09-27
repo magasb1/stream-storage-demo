@@ -2,11 +2,7 @@ using StorageDemo.Core.Documents;
 
 namespace StorageDemo.Tests.Application;
 
-/// <summary>
-/// The extension table comes from MimeTypesMap rather than a hand-written list. These pin the
-/// answers this application actually depends on, so an upgrade cannot quietly reclassify a video
-/// as a document and lose its thumbnail.
-/// </summary>
+/// <summary>The extension table comes from MimeTypesMap rather than a hand-written list.</summary>
 public sealed class ContentTypeTests
 {
     [Theory]

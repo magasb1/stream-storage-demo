@@ -7,10 +7,6 @@ public sealed record ServerEntry(string Name, string Address)
 {
     /// <summary>
     /// The live token this server wants, carried as x-storage-token on the guarded live calls.
-    /// Empty for a server with none configured, which is most of them: it guards nothing then.
-    ///
-    /// A property rather than a constructor parameter so a servers.json written before tokens
-    /// existed still loads, with an empty token rather than a null one.
     /// </summary>
     public string Token { get; init; } = string.Empty;
 
@@ -20,8 +16,8 @@ public sealed record ServerEntry(string Name, string Address)
 
 /// <summary>
 /// The switches that are the user's rather than any server's, beside servers.json in the same
-/// profile folder and with the same attitude to a file it cannot read: a forgotten preference is
-/// a nuisance, not a reason to fail startup.
+/// profile folder and with the same attitude to a file it cannot read: a forgotten preference is a
+/// nuisance, not a reason to fail startup.
 /// </summary>
 public static class ClientPreferences
 {
@@ -68,8 +64,8 @@ public static class ClientPreferences
 }
 
 /// <summary>
-/// The endpoints the client can switch between, kept in the user's profile so the list survives
-/// a rebuild. One client, many servers: Windows, Linux, Docker Compose, a port-forwarded cluster.
+/// The endpoints the client can switch between, kept in the user's profile so the list survives a
+/// rebuild.
 /// </summary>
 public sealed class ServerList
 {
@@ -83,8 +79,6 @@ public sealed class ServerList
         new("Local (dotnet run)", "http://127.0.0.1:5080"),
         new("Docker Compose", "http://127.0.0.1:5081"),
         new("Kubernetes (port-forward)", "http://127.0.0.1:5082"),
-        // The Talos lab cluster, reached on the address Cilium holds for the API Service. No
-        // port-forward: the cluster hands out real addresses on the lab network.
         new("Talos lab", "http://10.10.10.122:5080"),
     ];
 
@@ -112,7 +106,8 @@ public sealed class ServerList
         }
         catch (Exception)
         {
-            // A corrupt or unreadable file is not worth failing startup over; fall back to defaults.
+            // A corrupt or unreadable file is not worth failing startup over; fall back to
+            // defaults.
         }
 
         return list;

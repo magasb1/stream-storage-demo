@@ -4,15 +4,7 @@ using StorageDemo.Infrastructure.Streaming;
 
 namespace StorageDemo.Tests.Application;
 
-/// <summary>
-/// The arithmetic behind the operator page, tested without a renderer.
-///
-/// The page itself is markup and a two second timer, and a component test rig would be a new
-/// dependency to assert on the parts of it a person can see at a glance anyway. What a person
-/// cannot see at a glance is whether a source with no stream reads as off air rather than as
-/// broken, and whether the URL handed to a player is the one that reaches this service. Those are
-/// here.
-/// </summary>
+/// <summary>The arithmetic behind the operator page, tested without a renderer.</summary>
 public sealed class SourceRowTests
 {
     private static readonly DateTimeOffset Now = DateTimeOffset.UnixEpoch;
@@ -39,11 +31,7 @@ public sealed class SourceRowTests
             StreamingRows.LocalOutput(options, "box.local", "camera1"));
     }
 
-    /// <summary>
-    /// A stream name may contain slashes, and it rides in a query string. Handing an operator an
-    /// unescaped one gives them a URL that works in some players and silently names a different
-    /// stream in others.
-    /// </summary>
+    /// <summary>A stream name may contain slashes, and it rides in a query string.</summary>
     [Fact]
     public void A_name_with_a_slash_is_escaped_into_the_stream_identifier()
     {
@@ -77,8 +65,7 @@ public sealed class SourceRowTests
 
     /// <summary>
     /// The state this page exists to make legible: three forwards asked for, one connected, one
-    /// refused with a reason and one the owner is reporting nothing at all for. A row that showed
-    /// only the statuses would list two forwards and hide the third entirely.
+    /// refused with a reason and one the owner is reporting nothing at all for.
     /// </summary>
     [Fact]
     public void A_configured_forward_the_owner_reports_nothing_for_still_appears()

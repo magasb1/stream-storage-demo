@@ -4,9 +4,7 @@ namespace StorageDemo.Tests.Infrastructure;
 
 /// <summary>
 /// The stream identifier is the only thing an operator types into an encoder, and the name it
-/// yields is the stream's identity for its whole life. The worked examples here are the ones from
-/// the research: a Makito's standard keys, an OBS free-text box, and the traversal attempt that
-/// makes rejecting rather than sanitising the rule.
+/// yields is the stream's identity for its whole life.
 /// </summary>
 public sealed class StreamNameTests
 {
@@ -29,7 +27,6 @@ public sealed class StreamNameTests
     // A bare name, which is what OBS and Teradek produce and what SRT's own listener accepts.
     [InlineData("camera1", "camera1")]
     [InlineData("live/camera1", "live/camera1")]
-    // The convention.
     [InlineData("#!::r=camera1", "camera1")]
     [InlineData("#!::u=admin,r=live/camera1,m=publish", "live/camera1")]
     // A Makito in standard-keys mode omits m entirely, and Haivision wrote the format.
@@ -94,19 +91,13 @@ public sealed class StreamNameTests
 
     /// <summary>
     /// The identifier begins with '#', which starts a fragment in a URL, so a caller that puts it
-    /// in one has to write %23 - and FFmpeg versions disagree about when they decode that. Older
-    /// builds do not decode at all and the escape arrives literally, which is why it is rewritten
-    /// here. Newer ones decode before splitting the query, put the '#' back, and truncate
-    /// everything after it, which arrives as nothing at all.
-    ///
-    /// Neither is something this end can fix, which is why the service and the desktop client both
-    /// pass the identifier as a protocol option instead of putting it in a URL.
+    /// in one has to write %23 - and FFmpeg versions disagree about when they decode that.
     /// </summary>
     [Fact]
     public void An_identifier_truncated_at_the_fragment_is_refused_rather_than_guessed_at()
     {
         // What arrives when a URL parser treated the '#' as a fragment: the key is there and the
-        // value is gone. Inventing a name from nothing would be worse than refusing.
+        // value is gone.
         Assert.Contains("empty", Reject(string.Empty));
     }
 

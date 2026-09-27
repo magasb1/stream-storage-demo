@@ -1,12 +1,9 @@
 #!/usr/bin/env bash
 # Fetches an FFmpeg build with libsrt, which the bundled LGPL package does not have.
-#
-# Run it once and rebuild; the result is copied into the application output and used in place of
-# the bundled libraries. Skip it and the LGPL build keeps working, minus SRT.
-#
-# The version is pinned because the FFmpeg.AutoGen bindings are: 8.1 carries the same library
-# majors as 8.0 (avcodec 62, avutil 60, avformat 62), which is what the bindings expect. A 9.x
-# build would load and then fail on the first call.
+# Run it once and rebuild; the result is copied into the application output and used in place of the
+# bundled libraries.
+# The version is pinned because the FFmpeg.AutoGen bindings are: 8.1 carries the same library majors
+# as 8.0 (avcodec 62, avutil 60, avformat 62), which is what the bindings expect.
 set -euo pipefail
 
 VERSION="${FFMPEG_VERSION:-n8.1}"

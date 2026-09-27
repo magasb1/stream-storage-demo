@@ -14,16 +14,6 @@ namespace StorageDemo.Worker;
 /// <summary>
 /// Claims streams whose detection toggle is set, and runs one <see cref="StreamJob"/> per claimed
 /// stream against detector sessions shared by every stream selecting the same model.
-///
-/// A pull-lease, as detection-plan.md fixes it: every beat the worker lists the streams, claims
-/// any that are enabled and unheld by writing its name through the owner, renews the claims it
-/// holds by writing them again, and stands down from a stream whose toggle cleared, whose owner
-/// answered that another worker holds it, or which is no longer listed. Nothing pushes work here,
-/// and a worker that dies is simply one whose claims stop being renewed.
-///
-/// Detection is one loop for every stream. A job hands its due frame to a channel and the loop
-/// groups what is queued by model, so frames from several streams selecting the same family are
-/// inferred as one batch. The default session loads eagerly; alternate sessions load on first use.
 /// </summary>
 public sealed class DetectionWorker : BackgroundService
 {
@@ -38,8 +28,8 @@ public sealed class DetectionWorker : BackgroundService
         new UnboundedChannelOptions { SingleReader = true });
 
     /// <summary>
-    /// The worker's private hubs keep the smallest buffer the option allows: nobody rolls back
-    /// on a worker, and what a hub holds here is only the packets between one decode and the next.
+    /// The worker's private hubs keep the smallest buffer the option allows: nobody rolls back on a
+    /// worker, and what a hub holds here is only the packets between one decode and the next.
     /// </summary>
     private readonly LiveOptions _live = new()
     {
@@ -86,9 +76,7 @@ public sealed class DetectionWorker : BackgroundService
             ?? throw new InvalidOperationException("Worker__Model must name a concrete model.");
         var detectors = new Dictionary<string, OnnxDetector>(StringComparer.Ordinal);
 
-        // Load the configured default up front so a bad deployment fails at startup. Alternate
-        // models are lazy: an RF-DETR session is large and should not occupy an accelerator until
-        // a stream actually selects it.
+        // Load the configured default up front so a bad deployment fails at startup.
         detectors[defaultModel] = CreateDetector(defaultModel, defaultModel);
 
         var detecting = Task.Run(() => DetectAsync(detectors, defaultModel, stoppingToken), CancellationToken.None);
@@ -112,9 +100,6 @@ public sealed class DetectionWorker : BackgroundService
                 catch (Exception ex) when (!stoppingToken.IsCancellationRequested)
                 {
                     // An API that is briefly unreachable must not take the worker down.
-                    // A stack trace says where in the HTTP stack a connect gave up, which nobody needs
-                // every two seconds. The address and the reason are the whole of what is
-                // actionable, and the usual reason is that nothing is listening there.
                 _logger.LogWarning(
                     "Could not reach the API at {Url} to list streams: {Reason}. Retrying.",
                     _options.ApiBaseUrl,
@@ -157,8 +142,6 @@ public sealed class DetectionWorker : BackgroundService
 
             if (!mine)
             {
-                // The toggle cleared, the stream is gone, or the lease lapsed and somebody else
-                // has it. Nothing to release: the owner already dropped this worker's name.
                 _logger.LogInformation("Standing down from '{Name}'", name);
                 await StopAsync(name, job);
                 continue;
@@ -168,9 +151,6 @@ public sealed class DetectionWorker : BackgroundService
             job.Rate = Rate(stream!);
             job.Configure(Model(stream!), stream!.DetectionLabels);
 
-            // Renewing the lease. A conflict means the lease lapsed and another worker took the
-            // stream in between; an owner that cannot be reached is left for the next beat, since
-            // a stream that has just moved carries its new address in the next listing.
             if (await ClaimAsync(stream!, cancellationToken) is false)
             {
                 _logger.LogInformation("'{Name}' is held by {Worker} now; standing down", name, stream!.DetectionWorker);
@@ -212,7 +192,10 @@ public sealed class DetectionWorker : BackgroundService
         }
     }
 
-    /// <summary>True when claimed or renewed, false when another worker holds it, null when the owner could not say.</summary>
+    /// <summary>
+    /// True when claimed or renewed, false when another worker holds it, null when the owner could
+    /// not say.
+    /// </summary>
     private async Task<bool?> ClaimAsync(LiveStream stream, CancellationToken cancellationToken)
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -243,7 +226,9 @@ public sealed class DetectionWorker : BackgroundService
         }
     }
 
-    /// <summary>Gives every claim back, because the toggle stays set and the streams want another worker.</summary>
+    /// <summary>
+    /// Gives every claim back, because the toggle stays set and the streams want another worker.
+    /// </summary>
     private async Task StandDownAsync()
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
@@ -266,10 +251,7 @@ public sealed class DetectionWorker : BackgroundService
         }
     }
 
-    /// <summary>
-    /// Takes the newest waiting frames up to the batch size and runs them as one call. Result
-    /// delivery has its own bounded queue per stream and never holds up the next inference.
-    /// </summary>
+    /// <summary>Takes the newest waiting frames up to the batch size and runs them as one call.</summary>
     private async Task DetectAsync(
         Dictionary<string, OnnxDetector> detectors,
         string defaultModel,
@@ -306,9 +288,7 @@ public sealed class DetectionWorker : BackgroundService
                             {
                                 if (!loading.TryGetValue(group.Key, out var load))
                                 {
-                                    // Compiling an OpenVINO model can take seconds. Do it away
-                                    // from the inference loop so streams using a warm model remain
-                                    // smooth while the newly selected family starts up.
+                                    // Compiling an OpenVINO model can take seconds.
                                     load = Task.Run(() => CreateDetector(group.Key, defaultModel), CancellationToken.None);
                                     loading[group.Key] = load;
                                     continue;
@@ -363,8 +343,7 @@ public sealed class DetectionWorker : BackgroundService
             left.TakeFrame()?.Dispose();
         }
 
-        // A background compilation already in flight cannot be cancelled by ONNX Runtime. Observe
-        // it and release its session if shutdown won the race before it entered the shared map.
+        // A background compilation already in flight cannot be cancelled by ONNX Runtime.
         foreach (var load in loading.Values)
         {
             try
@@ -374,7 +353,6 @@ public sealed class DetectionWorker : BackgroundService
             }
             catch
             {
-                // Already reported when the loop was alive; shutdown has nothing to recover.
             }
         }
     }
@@ -405,7 +383,9 @@ public sealed class DetectionWorker : BackgroundService
         }
     }
 
-    /// <summary>The owner's address from the listing, or the API's own when the owner recorded none.</summary>
+    /// <summary>
+    /// The owner's address from the listing, or the API's own when the owner recorded none.
+    /// </summary>
     private string Owner(LiveStream stream)
         => (stream.OwnerAddress is { Length: > 0 } address ? address : _options.ApiBaseUrl).TrimEnd('/');
 
@@ -447,10 +427,7 @@ public sealed class DetectionWorker : BackgroundService
     }
 
     /// <summary>
-    /// A model path as given, or the same relative path found by walking up from the binary. A
-    /// developer keeps models/ at the repository root and the binary runs several directories
-    /// below it, so a path that is obviously right from the repository would otherwise miss
-    /// depending on which directory the worker happened to be started from.
+    /// A model path as given, or the same relative path found by walking up from the binary.
     /// </summary>
     private static string Resolve(string path)
     {

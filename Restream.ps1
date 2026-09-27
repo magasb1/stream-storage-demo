@@ -154,9 +154,8 @@ function Get-FfmpegArguments {
 
     if ($Loop) { $arguments += @('-stream_loop', '-1') }
 
-    # A file arrives as fast as the disk can read it, and a burst that ends at once is not a
-    # stream: the far end sees a peer hang up mid-handshake. Pacing at wall-clock speed is what
-    # makes a file behave like a camera. A source that is already live paces itself.
+    # A file arrives as fast as the disk can read it, and a burst that ends at once is not a stream:
+    # the far end sees a peer hang up mid-handshake.
     if (-not $SourceIsLive) { $arguments += '-re' }
 
     if ($Source -match '^https?://') {
@@ -171,10 +170,7 @@ function Get-FfmpegArguments {
     $arguments += @('-i', $Source)
 
     if ($Transcode) {
-        # Three flags for one keyframe interval, and all three are needed. -g asks for it,
-        # -keyint_min stops the encoder shortening it, and -sc_threshold 0 stops a scene change
-        # inserting a keyframe of its own: without that last one a source that cuts between shots
-        # has whatever interval its editor chose rather than the one asked for here.
+        # Three flags for one keyframe interval, and all three are needed.
         $keyframeInterval = $KeyframeSeconds * 25
 
         $arguments += @(
@@ -185,29 +181,20 @@ function Get-FfmpegArguments {
             '-c:d', 'copy')
     }
     else {
-        # A remultiplex: encoded frames are copied across untouched, which is what keeps this
-        # cheap enough to run several of at once. Keyframes come across as they are, so this path
-        # cannot answer for the interval; -KeyframeSeconds says what that costs.
+        # A remultiplex: encoded frames are copied across untouched, which is what keeps this cheap
+        # enough to run several of at once.
         $arguments += @('-map', '0', '-c', 'copy')
     }
 
-    # -map 0 on both paths, and it is load-bearing rather than tidy. Without it ffmpeg's default
-    # stream selection takes the best video and the best audio and nothing else, so a data stream
-    # is dropped in silence: a MISB source arrives here with three streams and leaves with two.
-    # Every KLV feature in this repository - the classification marking, the sensor panel, the
-    # heads-up display, geo-referencing - then sees a stream that simply has no metadata, and
-    # looks broken rather than unfed. The transcode path pairs it with -c:d copy, because a data
-    # stream has no encoder to re-encode it with.
+    # -map 0 on both paths, and it is load-bearing rather than tidy: without it ffmpeg's default
+    # stream selection silently drops the KLV data stream, and every MISB feature here looks broken
+    # rather than unfed.
 
     # Timestamps are generated where the source carries none, rather than the muxer refusing the
     # first packet it cannot place.
     $arguments += @('-fflags', '+genpts', '-f', 'mpegts')
 
-    # A bare name, not the convention's #!::r=... envelope. That form begins with '#', which has
-    # to be written %23 inside a URL, and ffmpeg versions disagree about when they decode it: one
-    # sends the escape through literally, one restores the '#' and truncates the query there. A
-    # bare name has no '#', works on all of them, and is what SRT's own reference listener and
-    # every plain Stream ID box produce anyway.
+    # A bare name, not the convention's #!::r=... envelope.
     $arguments += "$Ingest`?mode=caller&streamid=$StreamName"
 
     return $arguments

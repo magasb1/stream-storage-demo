@@ -4,11 +4,7 @@ using StorageDemo.Infrastructure.Database.PostgreSql;
 
 namespace StorageDemo.Tests.Infrastructure;
 
-/// <summary>
-/// Runs the shared contract against real PostgreSQL. Skipped unless a connection string is set:
-///   POSTGRES_TEST_CONNECTION="Host=localhost;Database=storagedemo_test;Username=postgres;Password=postgres"
-/// `docker compose up postgres` provides one.
-/// </summary>
+/// <summary>Runs the shared contract against real PostgreSQL.</summary>
 public sealed class PostgresDocumentRepositoryTests : DocumentRepositoryContract, IDisposable
 {
     private const string ConnectionVariable = "POSTGRES_TEST_CONNECTION";

@@ -1,7 +1,5 @@
 # The test image, because the SRT tests need libsrt and an FFmpeg with SRT, and Windows can supply
-# neither without a C++ toolchain. Linux is also what the service deploys to, so this is the more
-# honest place to run them anyway.
-#
+# neither without a C++ toolchain.
 #   docker build -f docker/Dockerfile.test -t storagedemo-tests .
 #   docker run --rm storagedemo-tests
 #
@@ -10,9 +8,9 @@
 FROM mcr.microsoft.com/dotnet/sdk:10.0
 WORKDIR /src
 
-# Same two halves as the runtime image: the hardware-acceleration libraries the fetched FFmpeg
-# links at load time, and the distro libsrt, which is what Srt.cs finds by soname once it has
-# looked beside the libav libraries and found nothing.
+# Same two halves as the runtime image: the hardware-acceleration libraries the fetched FFmpeg links
+# at load time, and the distro libsrt, which is what Srt.cs finds by soname once it has looked
+# beside the libav libraries and found nothing.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         libx11-6 libdrm2 libva2 libva-drm2 libvdpau1 libvpl2 \
@@ -31,8 +29,7 @@ COPY . .
 RUN dotnet build tests/StorageDemo.Tests/StorageDemo.Tests.csproj -c Release
 
 # The LGPL package's libraries land in the test output; the SRT-capable build replaces them there,
-# which is the same substitution scripts/fetch-ffmpeg.sh makes for a local run. The tests need the
-# executable as well as the libraries: they spawn it as the SRT caller.
+# which is the same substitution scripts/fetch-ffmpeg.sh makes for a local run.
 ENV FFMPEG_DIR=/src/tests/StorageDemo.Tests/bin/Release/net10.0/ffmpeg/linux-x64
 RUN cp -P /opt/ffmpeg/lib/*.so* "$FFMPEG_DIR/" \
     && cp /opt/ffmpeg/bin/ffmpeg /opt/ffmpeg/bin/ffprobe "$FFMPEG_DIR/" \

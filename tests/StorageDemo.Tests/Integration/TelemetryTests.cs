@@ -8,14 +8,7 @@ using StorageDemo.Api.Observability;
 
 namespace StorageDemo.Tests.Integration;
 
-/// <summary>
-/// The exporter against the real application, with the collector deliberately absent.
-///
-/// That is the case worth a test. Measurement is not supposed to be load-bearing: a collector that
-/// has gone away, or was never there, must cost a request nothing and must not stop the service
-/// starting. The opposite arrangement - telemetry that can take a service down - is a famous way to
-/// lose an afternoon, and it is cheap to prove this one cannot.
-/// </summary>
+/// <summary>The exporter against the real application, with the collector deliberately absent.</summary>
 public sealed class TelemetryTests
 {
     [Fact]
@@ -38,9 +31,7 @@ public sealed class TelemetryTests
             // exporter, and the live surface is measured by the streaming tests.
             builder.UseSetting("Live:Enabled", "false");
 
-            // On, and pointed at a port nothing is listening on. Port 1 is reserved and unbindable
-            // on every platform this runs on, so this is not a port a developer might happen to have
-            // something on.
+            // On, and pointed at a port nothing is listening on.
             builder.UseSetting("Telemetry:Enabled", "true");
             builder.UseSetting("Telemetry:Endpoint", "http://127.0.0.1:1");
             builder.UseEnvironment("Production");
@@ -55,7 +46,6 @@ public sealed class TelemetryTests
 
         var response = await client.GetAsync($"/api/documents/{Guid.NewGuid()}/content");
 
-        // The service answers normally with an unreachable collector configured, which is the point.
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
 
         var downloads = meters.Of("api.documents.downloads");
@@ -73,13 +63,7 @@ public sealed class TelemetryTests
         Directory.Delete(root, recursive: true);
     }
 
-    /// <summary>
-    /// Which requests are worth a span.
-    ///
-    /// The four subscription RPCs share a prefix that only the first of them ends at, which is
-    /// exactly where a segment-wise prefix match gets this wrong and quietly traces the three
-    /// hour-long ones it was written to exclude.
-    /// </summary>
+    /// <summary>Which requests are worth a span.</summary>
     [Theory]
     [InlineData("/health/live", false)]
     [InlineData("/health/ready", false)]
@@ -105,8 +89,6 @@ public sealed class TelemetryTests
 
         Assert.True(traceable(Request("/storagedemo.v1.Documents/WatchLiveKlv")));
 
-        // The probes stay out either way. Kubernetes asks twice a second forever and the answer is
-        // always the same.
         Assert.False(traceable(Request("/health/ready")));
     }
 

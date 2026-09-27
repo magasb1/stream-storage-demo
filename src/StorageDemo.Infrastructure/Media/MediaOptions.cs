@@ -9,10 +9,7 @@ public sealed class MediaOptions
     /// <summary>Turn off to skip probing and thumbnails entirely.</summary>
     public bool Enabled { get; init; } = true;
 
-    /// <summary>
-    /// Where the libav libraries live. Empty means the ones bundled with the application, which is
-    /// what every normal deployment uses. Point it at a build compiled with libsrt to get SRT.
-    /// </summary>
+    /// <summary>Where the libav libraries live.</summary>
     public string? LibraryPath { get; init; }
 
     /// <summary>JPEG quality, on libav's scale where 1 is best and 31 is worst.</summary>
@@ -23,18 +20,11 @@ public sealed class MediaOptions
     [Range(32, 2048)]
     public int ThumbnailSize { get; init; } = 320;
 
-    /// <summary>
-    /// How far into a video to grab the preview frame. The very first frame is often black,
-    /// a fade-in or a slate.
-    /// </summary>
+    /// <summary>How far into a video to grab the preview frame.</summary>
     [Range(0, 600)]
     public double VideoFrameSeconds { get; init; } = 3;
 
-    /// <summary>
-    /// Quality for a snapshot, on the same scale as the thumbnail. Better, because a snapshot is
-    /// a document someone opens and is sometimes the only surviving record of what happened.
-    /// A lossless format belongs here if snapshots ever have to be evidence-grade.
-    /// </summary>
+    /// <summary>Quality for a snapshot, on the same scale as the thumbnail.</summary>
     [Range(1, 31)]
     public int SnapshotQuality { get; init; } = 2;
 

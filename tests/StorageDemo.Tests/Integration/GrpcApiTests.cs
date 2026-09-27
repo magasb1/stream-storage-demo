@@ -18,7 +18,7 @@ namespace StorageDemo.Tests.Integration;
 
 /// <summary>
 /// Drives the real application over a real gRPC channel: filesystem storage, LiteDB metadata and
-/// the full upload, download, watch and delete path. Nothing is stubbed out.
+/// the full upload, download, watch and delete path.
 /// </summary>
 public sealed class GrpcApiTests : IAsyncLifetime
 {
@@ -41,7 +41,8 @@ public sealed class GrpcApiTests : IAsyncLifetime
             builder.UseSetting("Storage:FileSystem:RootPath", Path.Combine(_root, "files"));
             builder.UseSetting("Database:Provider", "LiteDb");
             builder.UseSetting("Database:LiteDb:Path", Path.Combine(_root, "db", "app.db"));
-            // The monitor is exercised directly in the reconciler tests; a timer here only adds flake.
+            // The monitor is exercised directly in the reconciler tests; a timer here only adds
+            // flake.
             builder.UseSetting("StorageMonitor:Enabled", "false");
 
             // Live is on with a token, so the guard is exercised; nothing is sent to the ports.
@@ -69,9 +70,7 @@ public sealed class GrpcApiTests : IAsyncLifetime
         _channel.Dispose();
         await _factory.DisposeAsync();
 
-        // LiteDB releases its log file just after the host goes away. Cleaning up a temp directory
-        // is housekeeping, so a couple of retries and then let it be; failing the test over it
-        // would report a problem that does not exist.
+        // LiteDB releases its log file just after the host goes away.
         for (var attempt = 0; attempt < 3 && Directory.Exists(_root); attempt++)
         {
             try
@@ -224,9 +223,9 @@ public sealed class GrpcApiTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// The detection control plane across two replicas: the toggle set on the one that does not
-    /// own the stream reaches the owner and comes back in the listing, and a VMTI frame a worker
-    /// posted to the owner is served from both, typed and raw.
+    /// The detection control plane across two replicas: the toggle set on the one that does not own
+    /// the stream reaches the owner and comes back in the listing, and a VMTI frame a worker posted
+    /// to the owner is served from both, typed and raw.
     /// </summary>
     [Fact]
     public async Task Detection_is_toggled_and_served_from_the_owner_and_from_a_replica_that_does_not_own_the_stream()
@@ -379,8 +378,7 @@ public sealed class GrpcApiTests : IAsyncLifetime
     /// <summary>
     /// The client's surface for provenance, both ways round: a detector triggers a snapshot over
     /// gRPC and names the detection, the stored document carries it, and asking by that same
-    /// detection finds it again. The timestamp crosses the wire as a protobuf Timestamp and has to
-    /// come back as the same microsecond, which is the half that would break quietly.
+    /// detection finds it again.
     /// </summary>
     [Fact]
     public async Task SnapshotLive_carries_the_detection_and_ListByDetection_finds_what_it_produced()
@@ -437,8 +435,7 @@ public sealed class GrpcApiTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// The picture from a replica that does not own the stream, which in a cluster is most of
-    /// them. Two applications in one process sharing a registry; see <see cref="LiveReplicas"/>.
+    /// The picture from a replica that does not own the stream, which in a cluster is most of them.
     /// </summary>
     [Fact]
     public async Task DownloadLivePreview_is_answered_by_a_replica_that_does_not_own_the_stream()
@@ -516,7 +513,7 @@ public sealed class GrpcApiTests : IAsyncLifetime
     [Fact]
     public async Task A_lying_content_type_is_replaced_by_what_the_bytes_say()
     {
-        // A JPEG announced as HTML. Believing the client would mean serving it back as markup.
+        // A JPEG announced as HTML.
         var jpeg = await File.ReadAllBytesAsync(await SampleJpegAsync());
 
         var uploaded = await UploadAsync("not-really.html", "text/html", jpeg);

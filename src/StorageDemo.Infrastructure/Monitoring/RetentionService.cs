@@ -7,13 +7,7 @@ using StorageDemo.Core.Documents;
 
 namespace StorageDemo.Infrastructure.Monitoring;
 
-/// <summary>
-/// Runs the retention pass on an interval, on one replica at a time.
-///
-/// The same shape as <see cref="StorageMonitor"/> and for the same reason: the work is correct but
-/// wasteful to do twice, and two replicas deleting the same documents would race each other through
-/// storage for no gain. Nothing here schedules; the lock decides who works this pass.
-/// </summary>
+/// <summary>Runs the retention pass on an interval, on one replica at a time.</summary>
 public sealed class RetentionService(
     IServiceScopeFactory scopeFactory,
     IDistributedLock sweepLock,
@@ -82,13 +76,12 @@ public sealed class RetentionService(
         }
         catch (OperationCanceledException)
         {
-            // Shutdown.
         }
     }
 
     /// <summary>
     /// Long enough to outlast a slow pass, since a lock that expires mid-pass lets a second replica
-    /// start one. Short enough that a replica killed while holding it frees it soon.
+    /// start one.
     /// </summary>
     private static TimeSpan LockTtl(TimeSpan interval)
         => TimeSpan.FromSeconds(Math.Max(300, interval.TotalSeconds * 2));

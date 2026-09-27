@@ -27,11 +27,7 @@ public sealed class DocumentsController(
     ContentTypeSniffer sniffer,
     ApiMetrics metrics) : ControllerBase
 {
-    /// <summary>
-    /// Which surface these figures came from. REST and gRPC write to the same instruments with this
-    /// telling them apart, because "how much was uploaded" is a question about the store and not
-    /// about the protocol, and "which surface is anybody actually using" is worth asking too.
-    /// </summary>
+    /// <summary>Which surface these figures came from.</summary>
     private const string Surface = "rest";
 
     private const string Document = "document";
@@ -42,14 +38,7 @@ public sealed class DocumentsController(
     public async Task<IReadOnlyList<DocumentResponse>> GetAll(CancellationToken cancellationToken)
         => (await documents.GetAllAsync(cancellationToken)).Select(DocumentResponse.From).ToList();
 
-    /// <summary>
-    /// Every recording and snapshot one detection caused. The three parameters are the three things
-    /// that identify a detection: the stream, the VMTI precision timestamp of the frame, and the
-    /// target id within it.
-    ///
-    /// It is here rather than on the live surface because by the time anyone asks, the stream may
-    /// be long gone and the document is what survives.
-    /// </summary>
+    /// <summary>Every recording and snapshot one detection caused.</summary>
     [HttpGet("by-detection")]
     public async Task<IReadOnlyList<DocumentResponse>> GetByDetection(
         [FromQuery] string stream,
@@ -72,7 +61,7 @@ public sealed class DocumentsController(
 
     /// <param name="download">
     /// False (the default) serves the object inline so the browser can display it, which is what
-    /// the explorer UI needs. True forces a save dialog.
+    /// the explorer UI needs.
     /// </param>
     [HttpGet("{id:guid}/content")]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
@@ -89,14 +78,10 @@ public sealed class DocumentsController(
             return NotFound();
         }
 
-        // Counted as a request served, and no byte figure: what follows is handed to Kestrel and may
-        // be a range of the file rather than all of it, so the only number available here would be
-        // the document's size and it would often be wrong. Kestrel's own meter answers that honestly.
         metrics.Downloaded(Surface, Document, "served");
 
         // Uploaded bytes are served from our own origin, so an uploaded .html or .svg would
-        // otherwise run as first-party script. nosniff pins the declared type and the sandbox
-        // directive strips scripting and same-origin access from whatever is rendered.
+        // otherwise run as first-party script.
         Response.Headers.XContentTypeOptions = "nosniff";
         Response.Headers.ContentSecurityPolicy = "sandbox; default-src 'none'; img-src 'self'; media-src 'self'";
         Response.Headers.ContentDisposition = new ContentDispositionHeaderValue(
@@ -105,8 +90,6 @@ public sealed class DocumentsController(
             FileNameStar = content.FileName,
         }.ToString();
 
-        // FileStreamResult streams and disposes the stream; the whole file is never buffered.
-        // Range processing lets a browser seek within a video instead of refetching it.
         return File(
             content.Stream,
             content.ContentType ?? "application/octet-stream",
@@ -147,7 +130,6 @@ public sealed class DocumentsController(
             return BadRequest("A non-empty file is required.");
         }
 
-        // IFormFile stops at the Api layer; the service only sees a Stream.
         await using var stream = file.OpenReadStream();
 
         var contentType = await sniffer.ResolveAsync(

@@ -1,6 +1,5 @@
-# The application on this cluster: the generic Deployment in k8s/live/deployment.yaml with the
-# three things that are specific to a bare-metal cluster with no cloud behind it.
-#
+# The application on this cluster: the generic Deployment in k8s/live/deployment.yaml with the three
+# things that are specific to a bare-metal cluster with no cloud behind it.
 #   image        pulled from the temporary registry in 00-registry.yaml, because Talos has no
 #                local image store and nothing to build with
 #   S3           keys from the ObjectBucketClaim rather than an assumed instance role
@@ -36,8 +35,7 @@ spec:
         - name: migrate
           image: 10.10.10.121:5000/storage-demo:latest
           # The registry this names is temporary. Once every node has pulled the image it can be
-          # deleted, and this is what lets the pods keep starting afterwards. Delete a node's
-          # cached copy, or push a new one, and the registry has to come back.
+          # deleted, and this is what lets the pods keep starting afterwards.
           imagePullPolicy: IfNotPresent
           args: ["--migrate-only"]
           envFrom:
@@ -96,20 +94,13 @@ kind: Deployment
 metadata:
   name: storage-demo
   namespace: storage-demo
-  # One replica per node, and that is a requirement here rather than a preference. Cilium picks
-  # one node to answer ARP for the address and does not move that choice when the node stops
-  # having a pod; a Local service whose announcing node has no pod answers nothing at all. With a
-  # replica everywhere, the node that answers always has one. Revisit this when the cluster grows
-  # past the size where a replica per node is sensible: the alternative is a separate ingress that
-  # is itself a DaemonSet.
+  # One replica per node, and that is a requirement here rather than a preference.
 spec:
   replicas: 3
   strategy:
     rollingUpdate:
       # Replace in place, one at a time. The spread below is mandatory, so there is nowhere for a
       # surge pod to go: a fourth pod would put two on some node and the scheduler would refuse it.
-      # The cost is that one node has no pod for the few seconds a replacement takes, and if that
-      # is the node answering for the address, the address is dark for those seconds.
       maxSurge: 0
       maxUnavailable: 1
   selector:
@@ -122,10 +113,9 @@ spec:
     spec:
       serviceAccountName: storage-demo
       terminationGracePeriodSeconds: 60
-      # Exactly one to a node, and DoNotSchedule because ScheduleAnyway is not good enough here:
-      # let two replicas land on one node and some other node has none, and if that is the node
-      # Cilium picked to answer for the address then nothing can reach the service at all. Seen,
-      # not theorised. Better to leave a replica pending than to place it where it hides an outage.
+      # Exactly one to a node, and DoNotSchedule because ScheduleAnyway is not good enough here: let
+      # two replicas land on one node and some other node has none, and if that is the node Cilium
+      # picked to answer for the address then nothing can reach the service at all.
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: kubernetes.io/hostname
@@ -206,9 +196,8 @@ spec:
                 seconds: 5
           startupProbe:
             # Liveness, not readiness: readiness asks Ceph and PostgreSQL whether they answer, and
-            # on a cluster whose disks are slow that turns a slow dependency into an endless
-            # restart loop. Readiness still keeps the pod out of the Service until storage is
-            # actually reachable.
+            # on a cluster whose disks are slow that turns a slow dependency into an endless restart
+            # loop.
             httpGet:
               path: /health/live
               port: http
@@ -224,9 +213,7 @@ spec:
               path: /health/ready
               port: http
             periodSeconds: 5
-            # Ten seconds, so a replica that stops accepting leaves the Service quickly. The
-            # timeout is generous because the check talks to Ceph, and one slow answer should not
-            # move a working replica out of the Service.
+            # Ten seconds, so a replica that stops accepting leaves the Service quickly.
             timeoutSeconds: 4
             failureThreshold: 2
           resources:
@@ -248,11 +235,8 @@ spec:
           emptyDir:
             sizeLimit: 8Gi
 ---
-# One address for everything, which is the whole point: somebody pointing an encoder or a player
-# at this service has to know a single host, learn it once, and never revisit it. Which replica
-# answers is the load balancer's business, and a player is told this same address no matter which
-# replica owns the stream it asked for.
-#
+# One address for everything, which is the whole point: somebody pointing an encoder or a player at
+# this service has to know a single host, learn it once, and never revisit it.
 # Four ports on it, two of them UDP. A Service carrying more than one protocol is allowed and has
 # been since Kubernetes 1.26; the alternative is one address per protocol, which is exactly what
 # this is avoiding.
@@ -267,15 +251,9 @@ metadata:
 spec:
   type: LoadBalancer
   # Local, and here it is a correctness requirement rather than the diagnostic preference it is
-  # elsewhere. Cluster makes the node masquerade the sender, and the address an SRT connection is
-  # keyed on then changes underneath it: a sender lasts ten to twenty seconds and drops with an
-  # I/O error, over and over. Local leaves the sender's address alone and a sender runs for as
-  # long as it likes.
-  #
+  # elsewhere.
   # The cost is that Cilium announces this address over ARP only from a node that has a ready pod,
-  # so while no pod is ready the address answers nothing at all. That is the right failure for a
-  # service whose senders reconnect by themselves, but it does mean a first deployment looks
-  # broken until the first pod passes its readiness probe.
+  # so while no pod is ready the address answers nothing at all.
   externalTrafficPolicy: Local
   selector:
     app: storage-demo

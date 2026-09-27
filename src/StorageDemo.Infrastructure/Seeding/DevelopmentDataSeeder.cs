@@ -4,10 +4,7 @@ using StorageDemo.Core.Storage;
 
 namespace StorageDemo.Infrastructure.Seeding;
 
-/// <summary>
-/// Development-only sample data. Registered only outside production, and it writes through the
-/// same abstractions the API uses so the seed proves both providers do the same logical work.
-/// </summary>
+/// <summary>Development-only sample data.</summary>
 public sealed class DevelopmentDataSeeder(
     IFileStorage fileStorage,
     IDocumentRepository repository,

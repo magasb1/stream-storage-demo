@@ -6,13 +6,7 @@ using StorageDemo.Infrastructure.Detection;
 namespace StorageDemo.Tests.Infrastructure;
 
 /// <summary>
-/// YOLO26 Nano through the same runner, against the sample image models/README.md documents. The
-/// model is gitignored, so these skip rather than fail when it is absent.
-///
-/// This is the file that proves D4's claim: the abstraction is honest if a second family fits
-/// behind it without either being bent. It is deliberately not a shared expectation with RF-DETR —
-/// the two agree on the scene and disagree on its contents, and the disagreement is asserted here
-/// rather than remembered.
+/// YOLO26 Nano through the same runner, against the sample image models/README.md documents.
 /// </summary>
 [Collection(OnnxCollection.Name)]
 public sealed class YoloDetectorTests(ITestOutputHelper output) : DetectorTests
@@ -25,8 +19,7 @@ public sealed class YoloDetectorTests(ITestOutputHelper output) : DetectorTests
 
     /// <summary>
     /// models/README.md, "Expected result on the sample image", everything above 0.7, in original
-    /// pixels. Floats there; ST 0903 pixels are 1-based and inclusive, so the left and top edges
-    /// land one higher, which the tolerance covers along with the resize.
+    /// pixels.
     /// </summary>
     private static readonly (string Class, int Percent, double X1, double Y1, double X2, double Y2)[] Expected =
     [
@@ -41,8 +34,7 @@ public sealed class YoloDetectorTests(ITestOutputHelper output) : DetectorTests
     /// <summary>
     /// The reference letterboxes with OpenCV's INTER_LINEAR and this runner uses swscale's fast
     /// bilinear, so scores move by a few hundredths and edges by a few pixels; the README says as
-    /// much for RF-DETR and the same applies here. Wide enough to survive that, narrow enough that
-    /// a wrong gain or a dropped pad — 140 pixels of it — fails immediately.
+    /// much for RF-DETR and the same applies here.
     /// </summary>
     private const int Pixels = 8;
     private const int Percent = 6;
@@ -75,12 +67,7 @@ public sealed class YoloDetectorTests(ITestOutputHelper output) : DetectorTests
         }
     }
 
-    /// <summary>
-    /// The difference between the two models, pinned rather than remembered. RF-DETR scores the
-    /// beagle at 0.686; yolo26n does not find it at any score, and neither does the checkpoint
-    /// through its one-to-many head, so this is the nano model's recall and not a broken export
-    /// (models/README.md, "There is no dog").
-    /// </summary>
+    /// <summary>The difference between the two models, pinned rather than remembered.</summary>
     [Fact]
     public void There_is_no_dog_at_any_score()
     {
@@ -103,7 +90,9 @@ public sealed class YoloDetectorTests(ITestOutputHelper output) : DetectorTests
         Assert.Empty(detector.Detect(Blank(640, 640)));
     }
 
-    /// <summary>The dynamic batch axis took at export, and the second frame is decoded as its own picture.</summary>
+    /// <summary>
+    /// The dynamic batch axis took at export, and the second frame is decoded as its own picture.
+    /// </summary>
     [Fact]
     public void A_batch_of_two_gives_each_frame_its_own_identical_result()
     {
@@ -143,9 +132,7 @@ public sealed class YoloDetectorTests(ITestOutputHelper output) : DetectorTests
 
     /// <summary>
     /// The incompatibility pinned at the point it would ship: 18 is a sheep in this file's own
-    /// metadata and a dog in RF-DETR's sparse table. The names come off the file rather than out of
-    /// configuration, which is the asymmetry D4 asked for — RF-DETR's export carries none and falls
-    /// back to the descriptor's.
+    /// metadata and a dog in RF-DETR's sparse table.
     /// </summary>
     [Fact]
     public void Class_18_is_a_sheep_here_and_a_dog_in_rf_detr()
@@ -165,8 +152,7 @@ public sealed class YoloDetectorTests(ITestOutputHelper output) : DetectorTests
 
     /// <summary>
     /// The seam itself: two models, two geometries, two decodes, one <see cref="IDetector"/> and
-    /// one runner, in one test. The timing is recorded rather than asserted — see
-    /// .scratch/scale-to-1000/perf-detection.md, "YOLO26 Nano beside RF-DETR Nano".
+    /// one runner, in one test.
     /// </summary>
     [Fact]
     public void Both_descriptors_run_through_the_same_runner()

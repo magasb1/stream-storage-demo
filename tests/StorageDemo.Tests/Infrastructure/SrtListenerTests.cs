@@ -6,21 +6,7 @@ using StorageDemo.Infrastructure.Streaming;
 
 namespace StorageDemo.Tests.Infrastructure;
 
-/// <summary>
-/// The listener this service owns, against real callers.
-///
-/// Everything above it rests on three properties of libsrt that libav's listener did not have: a
-/// backlog deep enough that callers arriving together are all accepted, a hook that sees the name
-/// while the answer can still be no, and an accept path that never reads from what it accepted. Each
-/// is load-bearing - the first is why a thousand encoders can cold-start, the second is what makes
-/// refusing anything possible at all, the third is what keeps one silent caller from stalling a pod.
-///
-/// These tests exist to fail loudly if a libsrt or FFmpeg upgrade takes any of the three away,
-/// because each would come back as a capacity ceiling that looks like a slow network.
-///
-/// The last three are about the fourth thing a listener decides and a viewer feels: how much
-/// latency a connection ends up with, which is negotiated rather than configured.
-/// </summary>
+/// <summary>The listener this service owns, against real callers.</summary>
 public sealed class SrtListenerTests(ITestOutputHelper output) : IDisposable
 {
     private const string NoLibsrt = "libsrt is not installed. Run scripts/fetch-libsrt.sh.";
@@ -42,18 +28,7 @@ public sealed class SrtListenerTests(ITestOutputHelper output) : IDisposable
         }
     }
 
-    /// <summary>
-    /// The proof the whole phase exists for.
-    ///
-    /// Its predecessor started three senders two seconds apart and explained that the backlog was
-    /// one, so two handshakes finishing while a third sat unaccepted was the measured limit rather
-    /// than a bug. That limit is exactly what owning the listener removes, so this one starts twenty
-    /// together and fails if the backlog is not real.
-    ///
-    /// Starting the processes is outside the five seconds. Twenty <c>Process.Start</c> calls are the
-    /// harness's cost, not the listener's, and a listener that serialises accepts misses this
-    /// deadline by half a minute rather than by a margin.
-    /// </summary>
+    /// <summary>The proof the whole phase exists for.</summary>
     [Fact]
     public async Task Twenty_senders_started_at_once_are_all_accepted_within_five_seconds()
     {
@@ -90,8 +65,6 @@ public sealed class SrtListenerTests(ITestOutputHelper output) : IDisposable
 
         Assert.Equal(names.Order(), accepted.Keys.Order());
 
-        // The same event, counted. Twenty accepts on one port is one time series and not twenty:
-        // the port is the tag, the name is not, and this is what stops that being changed quietly.
         var counted = meters
             .Read()
             .Where(measurement => measurement.Instrument == "live.accepts")
@@ -107,11 +80,7 @@ public sealed class SrtListenerTests(ITestOutputHelper output) : IDisposable
 
     /// <summary>
     /// The name comes off the socket now, not out of a log line, and nothing is installed to
-    /// intercept it. Fails if the option read breaks, if the handshake's zero padding starts coming
-    /// through, or if a future libsrt changes what it hands back.
-    ///
-    /// The identifier is asserted by its tail rather than whole: FFmpeg 7 and later percent-decode
-    /// the leading hash and older builds do not, and which one ran is not what is being pinned here.
+    /// intercept it.
     /// </summary>
     [Fact]
     public async Task The_stream_identifier_is_read_off_the_accepted_socket_byte_for_byte()
@@ -143,11 +112,6 @@ public sealed class SrtListenerTests(ITestOutputHelper output) : IDisposable
     /// <summary>
     /// The property Phases 1b, 4 and 5 are all built on: an answer of no that arrives before a
     /// connection exists.
-    ///
-    /// The discriminator is that the accept handler never fired. A caller that was admitted and then
-    /// dropped would have fired it, and would complain to stderr in exactly the same words, because
-    /// FFmpeg's caller path never asks libsrt for the rejection reason. The stderr check is
-    /// corroboration and lives in <see cref="SrtSenders.WasRefused"/> for that reason.
     /// </summary>
     [Fact]
     public async Task A_sender_with_an_unparseable_name_is_rejected_during_the_handshake_and_not_after()
@@ -177,9 +141,7 @@ public sealed class SrtListenerTests(ITestOutputHelper output) : IDisposable
                     $"the sender was not turned away quickly: {SrtSenders.Complaints(_callers)}");
             });
 
-        // The other half of "an operator can find out why an encoder cannot connect". The reason is
-        // a word from a closed set and never the identifier that was refused, which a caller chooses
-        // and could therefore use to choose this metric's cost.
+        // The other half of "an operator can find out why an encoder cannot connect".
         var reject = Assert.Single(
             meters.Read(),
             measurement => measurement.Instrument == "live.rejects");
@@ -195,17 +157,6 @@ public sealed class SrtListenerTests(ITestOutputHelper output) : IDisposable
     /// <summary>
     /// The one thing that cannot be reasoned about: that the fields this service reads out of
     /// <c>srt_bstats</c> are the fields libsrt wrote.
-    ///
-    /// <c>SRT_TRACEBSTATS</c> is eighty-two members of mixed width, and libsrt takes no length to
-    /// bound what it writes. A layout that is wrong by one member does not fail: it returns success
-    /// and hands back a plausible number from the wrong offset, which would be reported as the
-    /// health of a stream and believed. So two fields deep inside the struct are checked against
-    /// values known from somewhere else entirely - the MTU, which is libsrt's own default of 1500,
-    /// and the receiver's delivery delay, which has to be the latency the connection negotiated and
-    /// is read here through a socket option instead.
-    ///
-    /// Their offsets are 360 and 392 bytes in, so a struct that is wrong anywhere before them is
-    /// wrong here too.
     /// </summary>
     [Fact]
     public async Task The_statistics_libsrt_writes_land_in_the_fields_this_service_reads()
@@ -253,15 +204,8 @@ public sealed class SrtListenerTests(ITestOutputHelper output) : IDisposable
     }
 
     /// <summary>
-    /// A stream that is fine says so, which is the half of the health signal that has to be quiet or
-    /// none of it means anything.
-    ///
-    /// Two samples rather than one, because the figure is an interval and the first one covers the
-    /// connection's whole life. The second covers only the seconds between the two calls, which is
-    /// what the heartbeat reads and what an operator is shown.
-    ///
-    /// The socket is drained throughout. A receiver that never reads accumulates drops of its own
-    /// once packets outlive the latency window, and that would be this test measuring itself.
+    /// A stream that is fine says so, which is the half of the health signal that has to be quiet
+    /// or none of it means anything.
     /// </summary>
     [Fact]
     public async Task A_healthy_stream_reports_no_loss_and_no_drops()
@@ -314,11 +258,7 @@ public sealed class SrtListenerTests(ITestOutputHelper output) : IDisposable
         Assert.NotNull(health?.Link);
     }
 
-    /// <summary>
-    /// The same mechanism in both directions. A port that took callers going the wrong way would
-    /// give an encoder a stream nobody can watch and a player a stream nobody is sending, and both
-    /// would look like a broken feed rather than a misdirected caller.
-    /// </summary>
+    /// <summary>The same mechanism in both directions.</summary>
     [Fact]
     public async Task A_publisher_on_the_consumption_port_and_a_subscriber_on_the_ingest_port_are_both_rejected()
     {
@@ -351,14 +291,6 @@ public sealed class SrtListenerTests(ITestOutputHelper output) : IDisposable
     /// <summary>
     /// The bug the old carousel opened the transport on a separate thread to avoid: one caller that
     /// says nothing holding up everybody behind it.
-    ///
-    /// The first caller is an FFmpeg reading rather than writing, which connects and then waits to be
-    /// sent something, so it genuinely never sends a byte. Its socket is taken off the handler and
-    /// never read from, which is the other half of the claim: accept does not depend on anything
-    /// arriving on what it has already accepted.
-    ///
-    /// Three seconds rather than the one the plan names, because starting an FFmpeg is inside the
-    /// window. An accept that waits on a read does not finish late, it does not finish at all.
     /// </summary>
     [Fact]
     public async Task A_caller_that_never_sends_a_byte_does_not_block_the_next_accept()
@@ -394,15 +326,7 @@ public sealed class SrtListenerTests(ITestOutputHelper output) : IDisposable
             });
     }
 
-    /// <summary>
-    /// What a shutdown depends on. libsrt documents closing a socket from another thread as what
-    /// unblocks <c>srt_accept</c> and says nothing about <c>srt_recvmsg</c>, so the one-second
-    /// receive timeout is there to bound it either way.
-    ///
-    /// Which of the two actually fired is reported rather than asserted, and <c>Faulted</c> is what
-    /// tells them apart: the close comes back as a socket error and the timeout does not. If it is
-    /// always the close, the receive timeout can be lengthened and a silent sender costs less.
-    /// </summary>
+    /// <summary>What a shutdown depends on.</summary>
     [Fact]
     public async Task Closing_the_socket_from_another_thread_ends_a_blocked_read()
     {
@@ -448,8 +372,7 @@ public sealed class SrtListenerTests(ITestOutputHelper output) : IDisposable
 
     /// <summary>
     /// What the listener asks for is what an accepted socket ends up with, as long as nobody at the
-    /// far end asks for more. Fails if the option is set on the wrong socket or after srt_listen,
-    /// either of which leaves libsrt's 120 ms default in place and nothing else to notice it by.
+    /// far end asks for more.
     /// </summary>
     [Fact]
     public async Task The_configured_latency_is_what_an_accepted_socket_negotiates()
@@ -465,15 +388,7 @@ public sealed class SrtListenerTests(ITestOutputHelper output) : IDisposable
         Assert.Equal(60, negotiated);
     }
 
-    /// <summary>
-    /// The direction of the negotiation, pinned so nobody "fixes" it later. Each side names a
-    /// figure and the larger one wins, which is correct: an encoder on a link that loses packets
-    /// knows something this service does not, and its 200 ms has to survive our 60.
-    ///
-    /// FFmpeg's <c>latency</c> is microseconds and libsrt's is milliseconds, which is the other
-    /// thing this test would catch: a unit slip here reads as a stream that buffers a thousand
-    /// times too much or not at all.
-    /// </summary>
+    /// <summary>The direction of the negotiation, pinned so nobody "fixes" it later.</summary>
     [Fact]
     public async Task The_encoders_higher_latency_wins()
     {
@@ -488,19 +403,7 @@ public sealed class SrtListenerTests(ITestOutputHelper output) : IDisposable
         Assert.Equal(200, negotiated);
     }
 
-    /// <summary>
-    /// The half a plain SRTO_RCVLATENCY would have missed. On the consumption port this service is
-    /// the sender, so the buffer that matters is the player's, and it is SRTO_PEERLATENCY that
-    /// carries our figure into it.
-    ///
-    /// The player asks for 20 ms rather than for nothing, which is where this departs from the
-    /// plan. libsrt takes the maximum of our peer latency and the player's own receive latency, and
-    /// a player that asks for nothing is asking for libsrt's 120 ms default, so it would win and
-    /// the assertion would pass at 120 whether or not this service had set anything at all. Against
-    /// a player asking for less, 60 can only have come from SRTO_LATENCY: with SRTO_RCVLATENCY
-    /// alone the peer half would still be its default of zero and the answer would be the player's
-    /// own 20.
-    /// </summary>
+    /// <summary>The half a plain SRTO_RCVLATENCY would have missed.</summary>
     [Fact]
     public async Task The_consumption_side_inherits_the_latency_too()
     {
@@ -517,9 +420,7 @@ public sealed class SrtListenerTests(ITestOutputHelper output) : IDisposable
 
     /// <summary>
     /// Runs one caller against a listener at <paramref name="latencyMs"/> and answers with the
-    /// option read off the accepted socket. Post-handshake that is the negotiated figure rather
-    /// than the configured one, which is the whole reason these three tests read it from there and
-    /// not from the options object.
+    /// option read off the accepted socket.
     /// </summary>
     private async Task<int> NegotiatedAsync(
         StreamIntent intent,
@@ -572,7 +473,7 @@ public sealed class SrtListenerTests(ITestOutputHelper output) : IDisposable
 
     /// <summary>
     /// Runs a listener on its own thread for as long as the body takes, and stops it afterwards
-    /// whatever the body did. Every test here needs that and none of them needs anything else.
+    /// whatever the body did.
     /// </summary>
     private static async Task ListeningAsync(SrtListener listener, int port, Func<int, Task> body)
     {

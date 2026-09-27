@@ -7,10 +7,6 @@ namespace StorageDemo.Api.Grpc;
 /// Presents an inbound client-streaming call as a read-only <see cref="Stream"/>, so uploads flow
 /// straight into the file store without the whole file ever being buffered.
 /// </summary>
-/// <param name="prefix">
-/// Bytes already read from the call, so the type could be sniffed before the upload started.
-/// They are replayed before anything else is pulled from the stream.
-/// </param>
 public sealed class ChunkStream(
     IAsyncStreamReader<UploadRequest> requestStream,
     CancellationToken cancellationToken,
@@ -37,7 +33,6 @@ public sealed class ChunkStream(
     {
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, token);
 
-        // Drain whatever is left of the previous message before pulling the next one.
         while (_remainder.IsEmpty && !_finished)
         {
             if (!await requestStream.MoveNext(linked.Token))

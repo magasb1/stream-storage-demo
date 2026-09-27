@@ -1,12 +1,10 @@
 #!/usr/bin/env bash
 # Produces models/rf-detr-nano.onnx: RF-DETR Nano, COCO weights, Apache-2.0, with uint8 input and
-# ImageNet normalisation baked into the graph. See models/README.md for the tensor contract.
-#
+# ImageNet normalisation baked into the graph.
 # Roboflow publishes no pre-exported ONNX, so this builds a Python venv under .venv/ (gitignored),
 # installs the pinned exporter stack on the CPU torch wheels, and runs scripts/export-rfdetr.py,
-# which downloads the MD5-verified weights, exports, rewrites the graph input, and proves the
-# result with onnxruntime at batch 1 and 2 and on a sample image. Needs Python 3.12+ (3.14 works).
-#
+# which downloads the MD5-verified weights, exports, rewrites the graph input, and proves the result
+# with onnxruntime at batch 1 and 2 and on a sample image.
 # Versions are pinned because the exported graph is what the .NET runner is tested against; a
 # different rfdetr may change tensor names or shapes silently.
 set -euo pipefail

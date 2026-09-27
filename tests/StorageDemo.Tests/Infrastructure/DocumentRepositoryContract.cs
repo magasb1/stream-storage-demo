@@ -3,8 +3,8 @@ using StorageDemo.Core.Documents;
 namespace StorageDemo.Tests.Infrastructure;
 
 /// <summary>
-/// One behavioural spec, run against every <see cref="IDocumentRepository"/> implementation,
-/// so LiteDB and PostgreSQL are held to the same contract.
+/// One behavioural spec, run against every <see cref="IDocumentRepository"/> implementation, so
+/// LiteDB and PostgreSQL are held to the same contract.
 /// </summary>
 public abstract class DocumentRepositoryContract
 {

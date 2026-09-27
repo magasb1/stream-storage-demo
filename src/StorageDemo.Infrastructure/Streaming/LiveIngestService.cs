@@ -8,9 +8,6 @@ namespace StorageDemo.Infrastructure.Streaming;
 /// <summary>
 /// Runs the ingest port for the life of the process: the libsrt listener, and beside it the
 /// heartbeat that keeps the registry honest.
-///
-/// Nothing is requested before it exists. An encoder connects to one address, names itself in the
-/// stream identifier, and the stream is on air from that moment.
 /// </summary>
 public sealed class LiveIngestService(
     LiveStreamCoordinator coordinator,
@@ -48,9 +45,6 @@ public sealed class LiveIngestService(
 
         if (!FfmpegLibrary.InputProtocols().Contains("srt"))
         {
-            // Not a fault: the listening ports are libsrt's now. libav is still the SRT caller for
-            // a pulled stream and for relaying a viewer to the replica that owns its stream, and
-            // both of those fail without it, so an operator has to hear which half is missing.
             logger.LogWarning(
                 "The loaded FFmpeg has no SRT. Encoders can still push here, but pulled streams "
                 + "and relaying a viewer to another replica both dial with libav and will fail. "
@@ -68,8 +62,7 @@ public sealed class LiveIngestService(
 
         // One thread per port and one libsrt receive worker behind each, which is the only way this
         // replica gets more than one: the worker belongs to the multiplexer, and there is one of
-        // those per bound UDP port per process. The listener holds nothing between calls, so the
-        // same instance serves every port.
+        // those per bound UDP port per process.
         var ports = Enumerable.Range(_options.IngestPort, _options.IngestPortCount).ToArray();
 
         listeners.Expect(StreamIntent.Publish, ports.Length);

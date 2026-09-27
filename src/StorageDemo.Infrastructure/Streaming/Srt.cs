@@ -5,17 +5,7 @@ using StorageDemo.Infrastructure.Media;
 
 namespace StorageDemo.Infrastructure.Streaming;
 
-/// <summary>
-/// libsrt's C API, only the parts this service uses.
-///
-/// A second SRT stack beside the one inside libavformat, on purpose. libav's SRT listener accepts
-/// one caller per bind and hands the name over after the handshake, which caps the accept rate and
-/// makes refusing anything by name impossible. Calling libsrt ourselves is what buys a real backlog
-/// and a listen callback. The two stacks never share a socket, and BtbN's FFmpeg links libsrt
-/// statically without re-exporting its symbols, so nothing clashes at the loader.
-///
-/// Names are libsrt's own so the header and the research notes read straight onto this file.
-/// </summary>
+/// <summary>libsrt's C API, only the parts this service uses.</summary>
 public static unsafe partial class Srt
 {
     private const string Library = "srt";
@@ -33,24 +23,17 @@ public static unsafe partial class Srt
 
     static Srt()
     {
-        // One resolver per assembly and a second registration throws. Nothing else here registers
-        // one - the libav bindings load their libraries themselves rather than through DllImport -
-        // so this is the assembly's only resolver, which is why it falls through for every name
-        // that is not ours rather than assuming it owns every lookup.
+        // One resolver per assembly and a second registration throws.
         NativeLibrary.SetDllImportResolver(typeof(Srt).Assembly, Resolve);
     }
 
     /// <summary>
     /// True when libsrt loaded and is new enough for the listen callback and the extended rejection
-    /// codes. Never throws: a machine without libsrt answers false, and that answer is how a replica
-    /// takes itself out of the Service rather than serving streams it cannot accept.
+    /// codes.
     /// </summary>
     public static bool IsAvailable => Available.Value;
 
-    /// <summary>
-    /// Starts libsrt once per process. Idempotent, and every entry point into this file that
-    /// touches a socket goes through it first.
-    /// </summary>
+    /// <summary>Starts libsrt once per process.</summary>
     public static void EnsureStarted()
     {
         lock (Gate)
@@ -101,8 +84,7 @@ public static unsafe partial class Srt
         // unless the -dev package is installed, which a container has no reason to carry.
         var fileName = OperatingSystem.IsWindows() ? "srt.dll" : "libsrt.so.1.5";
 
-        // Beside the libav libraries first, which is where scripts/fetch-libsrt.sh puts it. A host
-        // that installed libsrt from its own package manager is served by the fallback.
+        // Beside the libav libraries first, which is where scripts/fetch-libsrt.sh puts it.
         if (NativeLibrary.TryLoad(Path.Combine(Ffmpeg.Directory, fileName), out var bundled))
         {
             return _handle = bundled;
@@ -113,10 +95,7 @@ public static unsafe partial class Srt
             : IntPtr.Zero;
     }
 
-    /// <summary>
-    /// The last error on this thread, as a line worth logging. Never throws, because it is only
-    /// ever used to explain another failure and must not become one.
-    /// </summary>
+    /// <summary>The last error on this thread, as a line worth logging.</summary>
     public static string LastError()
     {
         try
@@ -132,11 +111,7 @@ public static unsafe partial class Srt
         }
     }
 
-    /// <summary>
-    /// The last error code on this thread, or zero when libsrt is not loaded. Zero is
-    /// <c>SRT_SUCCESS</c>, so a caller comparing against a known code treats "unknown" as
-    /// "not the case I am looking for", which is the safe way round.
-    /// </summary>
+    /// <summary>The last error code on this thread, or zero when libsrt is not loaded.</summary>
     public static int LastErrorCode()
     {
         try
@@ -179,10 +154,7 @@ public static unsafe partial class Srt
         }
     }
 
-    /// <summary>
-    /// The option's value, or null if it could not be read. Empty is a real answer and means the
-    /// peer set nothing, which is why it is not the failure value.
-    /// </summary>
+    /// <summary>The option's value, or null if it could not be read.</summary>
     public static string? GetString(int socket, SRT_SOCKOPT option, int maxLength = StreamIdMaxLength)
     {
         var buffer = stackalloc byte[maxLength + 1];
@@ -217,10 +189,7 @@ public static unsafe partial class Srt
 
     public const int SRT_ETIMEOUT = 6003;
 
-    /// <summary>
-    /// The rejection codes this service sets from the listen callback. They are HTTP's numbers with
-    /// a thousand added, and libsrt carries them intact to the caller's srt_getrejectreason.
-    /// </summary>
+    /// <summary>The rejection codes this service sets from the listen callback.</summary>
     public const int SRT_REJX_BAD_REQUEST = 1400;
 
     public const int SRT_REJX_OVERLOAD = 1402;
@@ -250,8 +219,7 @@ public static unsafe partial class Srt
 
     /// <summary>
     /// The caller half of a handshake, for the one thing this service dials out to rather than
-    /// accepts: a forward whose target is an SRT caller. Blocking, like every other libsrt call
-    /// here - see <see cref="SrtEgress"/>, its only caller.
+    /// accepts: a forward whose target is an SRT caller.
     /// </summary>
     [LibraryImport(Library)]
     public static partial int srt_connect(int u, void* name, int namelen);
@@ -259,11 +227,7 @@ public static unsafe partial class Srt
     [LibraryImport(Library)]
     public static partial int srt_close(int u);
 
-    /// <summary>
-    /// Installs the handshake hook. Must be called before <see cref="srt_listen"/>, and the hook
-    /// runs on libsrt's receiver worker thread, which is the thread every packet for every socket
-    /// on that port also goes through.
-    /// </summary>
+    /// <summary>Installs the handshake hook.</summary>
     [LibraryImport(Library)]
     public static partial int srt_listen_callback(
         int lsn,
@@ -293,10 +257,7 @@ public static unsafe partial class Srt
     [LibraryImport(Library)]
     public static partial byte* srt_getlasterror_str();
 
-    /// <summary>
-    /// Still void*, because the destination is deliberately larger than the struct. See
-    /// <see cref="Stats"/>, which is the only caller and the only thing that should be.
-    /// </summary>
+    /// <summary>Still void*, because the destination is deliberately larger than the struct.</summary>
     [LibraryImport(Library)]
     public static partial int srt_bstats(int u, void* perf, int clear);
 
@@ -304,17 +265,10 @@ public static unsafe partial class Srt
     /// What libsrt says about one connection, or false when it will not answer - a socket that has
     /// already gone, which is a normal thing for a caller to ask about and not an error.
     /// </summary>
-    /// <param name="clear">
-    /// Resets the interval counters, the ones without a <c>Total</c> suffix, so the next sample
-    /// covers only the time since this one. The <c>Total</c> fields are never reset either way.
-    /// </param>
     public static bool Stats(int socket, out SRT_TRACEBSTATS stats, bool clear)
     {
         // srt_bstats writes however many bytes the struct has in the libsrt that is actually
-        // loaded, and takes no length to bound it. The header only ever grows at the end - it says
-        // so in a comment above the struct - so the destination is padded to twice what this file
-        // declares: an older libsrt leaves the tail alone, and one newer than this file writes into
-        // the padding instead of into somebody's stack.
+        // loaded, and takes no length to bound it.
         Span<byte> destination = stackalloc byte[sizeof(SRT_TRACEBSTATS) * 2];
 
         destination.Clear();
@@ -335,22 +289,7 @@ public static unsafe partial class Srt
     }
 }
 
-/// <summary>
-/// libsrt's <c>CBytePerfMon</c>, which <c>srt_bstats</c> fills in.
-///
-/// Transcribed field for field, in order, from <c>srtcore/srt.h</c> at v1.5.3, v1.5.6 and master,
-/// which are byte for byte the same struct: 1.5.3 is what Ubuntu 24.04 installs in the container,
-/// 1.5.6 is what vcpkg builds for a Windows developer, and the file has only ever gained fields at
-/// the end. Nothing here is a guess, because a wrong layout would read plausible garbage and report
-/// it as the health of a stream, which is worse than reporting nothing at all.
-///
-/// Names are libsrt's own, so a field reads straight onto the header and onto every SRT statistics
-/// document. Most of them are never used: they are here because the ones that are used sit at an
-/// offset the fields above them decide.
-///
-/// Sequential layout with the platform's natural alignment, which is what the C compiler gave it -
-/// libsrt packs nothing and both platforms this service runs on align an 8-byte member to 8.
-/// </summary>
+/// <summary>libsrt's <c>CBytePerfMon</c>, which <c>srt_bstats</c> fills in.</summary>
 [StructLayout(LayoutKind.Sequential)]
 public struct SRT_TRACEBSTATS
 {
@@ -444,10 +383,7 @@ public struct SRT_TRACEBSTATS
     public ulong byteRecvUnique;
 }
 
-/// <summary>
-/// Values from libsrt's own SRT_SOCKOPT enum. Gaps in the numbering are libsrt's, not a mistake
-/// here, which is why every member carries its value rather than relying on the order.
-/// </summary>
+/// <summary>Values from libsrt's own SRT_SOCKOPT enum.</summary>
 public enum SRT_SOCKOPT
 {
     SRTO_SNDSYN = 1,
@@ -457,7 +393,9 @@ public enum SRT_SOCKOPT
     SRTO_REUSEADDR = 15,
     SRTO_MAXBW = 16,
 
-    /// <summary>Sets SRTO_RCVLATENCY and SRTO_PEERLATENCY together, which is why it is the one to set.</summary>
+    /// <summary>
+    /// Sets SRTO_RCVLATENCY and SRTO_PEERLATENCY together, which is why it is the one to set.
+    /// </summary>
     SRTO_LATENCY = 23,
     SRTO_PASSPHRASE = 26,
     SRTO_RCVLATENCY = 43,

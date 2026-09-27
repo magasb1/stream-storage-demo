@@ -24,10 +24,7 @@ using StorageDemo.Infrastructure.Seeding;
 
 namespace StorageDemo.Infrastructure;
 
-/// <summary>
-/// The only place that knows which concrete provider is active. The two choices are read from
-/// separate configuration keys so any combination of storage and database works.
-/// </summary>
+/// <summary>The only place that knows which concrete provider is active.</summary>
 public static class DependencyInjection
 {
     public static IServiceCollection AddInfrastructure(
@@ -37,8 +34,6 @@ public static class DependencyInjection
     {
         AddChangeFeed(services, configuration);
 
-        // Thumbnails and media metadata, from the FFmpeg bundled with this application. The work
-        // runs on a queue so an upload never waits for ffmpeg to decode a frame.
         Bind<MediaOptions>(services, configuration, MediaOptions.SectionName);
 
         // Applied before anything loads libav, since the path cannot change afterwards.
@@ -49,8 +44,6 @@ public static class DependencyInjection
 
         services.AddSingleton<IMediaAnalyzer, LibavMediaAnalyzer>();
 
-        // Live streaming: SRT in on its own port, MPEG-TS out on another. Off unless configured,
-        // because switching it on opens a port anybody who can reach it may push a stream into.
         Bind<LiveOptions>(services, configuration, LiveOptions.SectionName);
         services.AddSingleton<LiveListeners>();
         services.AddSingleton<LiveMetrics>();
@@ -60,18 +53,11 @@ public static class DependencyInjection
         services.AddHostedService<LiveIngestService>();
         services.AddHostedService<LiveConsumptionService>();
 
-        // Reaches whichever replica owns a stream: a forwarded control call, and a relayed viewer's
-        // media. No request timeout, because a relayed viewer is held open for as long as it
-        // watches; the connect is bounded instead, because a registry entry can name a pod that is
-        // already gone and every viewer arriving meanwhile would wait out the operating system's
-        // own connect timeout.
         services.AddHttpClient(LiveOptions.PeerClient)
             .ConfigureHttpClient(client => client.Timeout = Timeout.InfiniteTimeSpan)
             .ConfigurePrimaryHttpMessageHandler(
                 () => new SocketsHttpHandler { ConnectTimeout = TimeSpan.FromSeconds(1) });
 
-        // Readiness for this service is "am I accepting media", not only "can I reach a database".
-        // A replica that cannot serve an encoder belongs out of the Service until it can.
         services.AddHealthChecks().AddCheck<LiveIngestHealthCheck>("live", tags: ["ready"]);
         services.AddHostedService<AnalysisWorker>();
         services.AddScoped<IDocumentService, DocumentService>();
@@ -87,8 +73,6 @@ public static class DependencyInjection
             databaseProvider,
             configuration["Documents:PublicBaseUrl"]));
 
-        // Watches the store for changes made outside this application: on notification from the
-        // filesystem watcher or the S3 endpoint, and on an interval as the backstop.
         Bind<StorageMonitorOptions>(services, configuration, StorageMonitorOptions.SectionName);
         services.AddScoped<StorageReconciler>();
         services.AddSingleton<StorageChangeSignal>();
@@ -99,9 +83,6 @@ public static class DependencyInjection
             services.AddHostedService<FileSystemChangeWatcher>();
         }
 
-        // Expires recordings and snapshots, and removes registry entries whose owner was killed
-        // before it could clean up. Off unless configured: nothing else in this service deletes a
-        // document by itself, and doing it by default would be deleting somebody's data uninvited.
         Bind<RetentionOptions>(services, configuration, RetentionOptions.SectionName);
         services.AddScoped<RetentionSweeper>();
         services.AddHostedService<RetentionService>();
@@ -118,9 +99,6 @@ public static class DependencyInjection
     /// <summary>
     /// Everything that has to be shared once there is more than one replica: the change feed, the
     /// analysis queue, and the lock that keeps two replicas from scanning the store at once.
-    ///
-    /// In-memory is right for a single instance and is what a developer gets by default. Same
-    /// independent-choice rule as storage and database: no application code knows which is active.
     /// </summary>
     private static void AddChangeFeed(IServiceCollection services, IConfiguration configuration)
     {
@@ -136,9 +114,6 @@ public static class DependencyInjection
                 services.AddSingleton<IDistributedLock, InMemoryLock>();
                 services.AddSingleton<ILiveStreamRegistry, InMemoryLiveStreamRegistry>();
 
-                // A file rather than a dictionary, unlike the registry beside it. The registry holds
-                // what is on air and may start empty; this holds what an operator configured, and
-                // starting empty would mean they have to type it again after every restart.
                 services.AddSingleton<ILiveSourceStore, FileLiveSourceStore>();
                 break;
 
@@ -209,7 +184,8 @@ public static class DependencyInjection
                         config.AuthenticationRegion = options.Region;
                     }
 
-                    // Credentials come from the AWS provider chain: env, profile, IRSA, instance role.
+                    // Credentials come from the AWS provider chain: env, profile, IRSA, instance
+                    // role.
                     return new AmazonS3Client(config);
                 });
                 services.AddSingleton<S3Storage>();
@@ -239,7 +215,7 @@ public static class DependencyInjection
                     Directory.CreateDirectory(Path.GetDirectoryName(path)!);
                     // Direct, not shared: shared mode takes a cross-process mutex and reopens the
                     // file on every operation, which measured about four times slower on the write
-                    // path. Only this process touches the file; clients go through the API.
+                    // path.
                     return new LiteDatabase($"Filename={path}");
                 });
                 services.AddScoped<IDocumentRepository, LiteDbDocumentRepository>();
@@ -265,7 +241,7 @@ public static class DependencyInjection
         }
     }
 
-    /// <summary>Binds and validates on first resolve, which startup forces. Misconfiguration fails fast.</summary>
+    /// <summary>Binds and validates on first resolve, which startup forces.</summary>
     private static void Bind<T>(IServiceCollection services, IConfiguration configuration, string section)
         where T : class
         => services.AddOptions<T>()
@@ -277,9 +253,6 @@ public static class DependencyInjection
 
 /// <summary>Which providers are active, for logging and the /health payload.</summary>
 /// <param name="ContentBaseUrl">
-/// Where this instance's REST surface can be reached, when it has been told. A client uses it to
-/// play a long recording by streaming and seeking rather than downloading hours of it first, which
-/// it cannot work out for itself: it holds a gRPC connection, and the two are on different ports.
-/// Empty means the client falls back to downloading, which is right for ordinary files.
+/// Where this instance's REST surface can be reached, when it has been told.
 /// </param>
 public sealed record ProviderInfo(string Storage, string Database, string? ContentBaseUrl = null);

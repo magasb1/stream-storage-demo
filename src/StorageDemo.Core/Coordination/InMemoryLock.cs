@@ -4,8 +4,7 @@ namespace StorageDemo.Core.Coordination;
 
 /// <summary>
 /// Mutual exclusion within one process, which is all there is to coordinate when the service runs
-/// as a single instance. It still refuses a second holder rather than always saying yes, so local
-/// runs exercise the same behaviour the Redis lock has in a cluster.
+/// as a single instance.
 /// </summary>
 public sealed class InMemoryLock : IDistributedLock
 {

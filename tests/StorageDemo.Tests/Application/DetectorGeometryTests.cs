@@ -2,11 +2,7 @@ using StorageDemo.Core.Streaming;
 
 namespace StorageDemo.Tests.Application;
 
-/// <summary>
-/// Detection-plan phase D0. Expected values are worked by hand from the cited formulas, never from
-/// the other direction of the same object, so agreement is evidence rather than a tautology; the
-/// round trip on top of that is what catches the forward and inverse drifting apart.
-/// </summary>
+/// <summary>Detection-plan phase D0.</summary>
 public sealed class DetectorGeometryTests
 {
     private static readonly DetectorGeometry.Stretch RfDetr = new(560);
@@ -45,8 +41,7 @@ public sealed class DetectorGeometryTests
     [Fact]
     public void Stretch_maps_the_whole_frame_onto_the_whole_canvas_per_axis()
     {
-        // detr.py predict: F.resize(t, [560, 560], antialias=False). No pad, so the target rectangle
-        // is the canvas, and the scale is 560/1920 across but 560/1080 down.
+        // detr.py predict: F.resize(t, [560, 560], antialias=False).
         Assert.Equal((0, 0, 560, 560), RfDetr.Place(1920, 1080));
         Assert.Equal((0, 0, 560, 560), RfDetr.ToModel(new VmtiDetection(1, 1, 1, 1920, 1080), 1920, 1080));
 
@@ -62,8 +57,7 @@ public sealed class DetectorGeometryTests
     [Fact]
     public void Stretch_inverse_is_the_normalised_box_times_the_original_size()
     {
-        // postprocess.py: (cx - w/2) * W0, (cy - h/2) * H0, ... on a 1000 x 500 frame. x1 = 200,
-        // x2 = 300, y1 = 200, y2 = 300 continuous, so columns 201..300 and rows 201..300.
+        // postprocess.py: (cx - w/2) * W0, (cy - h/2) * H0, ...
         Assert.Equal(
             new VmtiDetection(1, 201, 201, 300, 300),
             RfDetr.ToFrameNormalised(1, (Cx: 0.25, Cy: 0.5, W: 0.1, H: 0.2), 1000, 500));
@@ -72,8 +66,8 @@ public sealed class DetectorGeometryTests
     [Fact]
     public void Letterbox_rounds_an_odd_pad_half_down()
     {
-        // 1920 x 1071 at 640: r = 1/3, new_unpad = (640, 357), dh = 283 / 2 = 141.5,
-        // top = round(141.4) = 141. Both to-even and away-from-zero would say 142.
+        // 1920 x 1071 at 640: r = 1/3, new_unpad = (640, 357), dh = 283 / 2 = 141.5, top =
+        // round(141.4) = 141.
         Assert.Equal((0, 141, 640, 357), Yolo.Place(1920, 1071));
 
         // And the same gap on the other axis for a tall frame: 1071 x 1920 -> left = 141.
@@ -110,22 +104,21 @@ public sealed class DetectorGeometryTests
 
     /// <summary>
     /// A rectangle covering 0-based columns 480..959 and rows 270..539 of a 1920 x 1080 frame, so
-    /// ST 0903 pixels (481, 271) to (960, 540). Hand-placed in each model space, then inverted.
+    /// ST 0903 pixels (481, 271) to (960, 540).
     /// </summary>
     [Fact]
     public void A_known_rectangle_returns_from_each_model_space()
     {
         var rectangle = new VmtiDetection(1, 481, 271, 960, 540);
 
-        // Stretch to 560: x * 7/24 = 140..280, y * 14/27 = 140..280. A square on the canvas that
-        // is a 480 x 270 rectangle in the frame, which is exactly the anisotropy at stake.
+        // Stretch to 560: x * 7/24 = 140..280, y * 14/27 = 140..280.
         Assert.Equal((140.0, 140.0, 280.0, 280.0), RfDetr.ToModel(rectangle, 1920, 1080));
         Assert.Equal(rectangle, RfDetr.ToFrame(1, (X1: 140, Y1: 140, X2: 280, Y2: 280), 1920, 1080));
 
         // As RF-DETR emits it: cx = cy = 210/560, w = h = 140/560.
         Assert.Equal(rectangle, RfDetr.ToFrameNormalised(1, (Cx: 0.375, Cy: 0.375, W: 0.25, H: 0.25), 1920, 1080));
 
-        // Letterbox to 640: gain 1/3, pad (0, 140). x = 160..320, y = 90..180 + 140 = 230..320.
+        // Letterbox to 640: gain 1/3, pad (0, 140).
         Assert.Equal((160.0, 230.0, 320.0, 320.0), Yolo.ToModel(rectangle, 1920, 1080));
         Assert.Equal(rectangle, Yolo.ToFrame(1, (X1: 160, Y1: 230, X2: 320, Y2: 320), 1920, 1080));
     }

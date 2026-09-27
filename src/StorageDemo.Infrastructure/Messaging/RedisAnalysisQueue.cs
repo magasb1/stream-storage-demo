@@ -10,10 +10,6 @@ namespace StorageDemo.Infrastructure.Messaging;
 /// <summary>
 /// A Redis list shared by every replica: any pod can produce the thumbnail for a file another pod
 /// received, and a pod that dies with work still queued does not take that work with it.
-///
-/// ponytail: polled with LPOP rather than blocked on BLPOP, because a blocking pop occupies a
-/// connection and StackExchange.Redis multiplexes one. A second of latency on a background
-/// thumbnail is not worth a dedicated connection per replica.
 /// </summary>
 public sealed class RedisAnalysisQueue(
     IConnectionMultiplexer connection,

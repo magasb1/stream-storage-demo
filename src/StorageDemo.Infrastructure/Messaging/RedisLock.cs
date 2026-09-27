@@ -6,9 +6,6 @@ namespace StorageDemo.Infrastructure.Messaging;
 
 /// <summary>
 /// The usual Redis lock: SET NX PX to take it, and a compare-and-delete script to release it.
-///
-/// The script matters. Releasing with a plain DEL would let a replica whose lock had already
-/// expired delete a lock a different replica has since taken, which is the one way this breaks.
 /// </summary>
 public sealed class RedisLock(IConnectionMultiplexer connection, ILogger<RedisLock> logger) : IDistributedLock
 {
