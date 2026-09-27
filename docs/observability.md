@@ -207,6 +207,14 @@ errors, no recording overflowed, the median beat well inside two seconds — so 
 list stay measurements rather than recollections. `LIVE_LOAD_STREAMS` raises the count to use it as
 the rig on real hardware.
 
+**And the alert order above is the order it was found in.** `LiveScaleTests`, the scale rig beside it,
+ramped one replica to 150 camera-rate streams and caught the state this page exists for: every stream
+listed live, the delivered rate *higher* than the step before it — a receiver catching up on
+retransmissions delivers more than the source rate, not less — and the only two figures telling the
+truth were 41,264 packets lost in fifteen seconds and 12,876 kernel UDP receive errors. A dashboard
+watching bitrate would have called that pod healthy. The measurements, including what ran out and in
+which thread, are in `.scratch/scale-to-1000/ingest-and-readers.md`.
+
 ## What is not measured yet
 
 - **The detection worker's meter is not exported.** It publishes one instrument already -

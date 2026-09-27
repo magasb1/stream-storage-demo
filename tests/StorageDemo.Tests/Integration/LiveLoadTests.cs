@@ -228,7 +228,7 @@ public sealed class LiveLoadTests(ITestOutputHelper output) : IAsyncLifetime
         // counts the bytes of the packets it publishes, so transport-stream headers, the program
         // tables and any padding are not in the figure and would make a clean pod look like one
         // delivering four fifths of what was sent to it.
-        var source = Payload(_pattern);
+        var source = SrtSenders.PayloadMbps(_pattern, PatternSeconds);
         var run = Stopwatch.StartNew();
 
         Report($"load             {Streams} streams x {source:0.00} Mbit/s, one ingest port");
@@ -255,7 +255,7 @@ public sealed class LiveLoadTests(ITestOutputHelper output) : IAsyncLifetime
         // reconnected, which is another test's subject.
         Assert.Equal(Streams, (int)meters.Total("live.accepts"));
         Assert.Equal(0, meters.Total("live.rejects"));
-        Assert.Equal(Streams, Tallied(meters, "live.claims", "outcome")["taken"]);
+        Assert.Equal(Streams, meters.Tally("live.claims", "outcome")["taken"]);
 
         // Published by the heartbeat rather than by the claim, so it arrives a beat behind the
         // streams; waiting for it is also what proves the beat is what publishes it.
@@ -293,7 +293,7 @@ public sealed class LiveLoadTests(ITestOutputHelper output) : IAsyncLifetime
             Streams,
             requests
                 .Of("api.documents.downloads")
-                .Count(download => Tag(download, "kind") == "preview" && Tag(download, "outcome") == "served"));
+                .Count(download => Meters.Tag(download, "kind") == "preview" && Meters.Tag(download, "outcome") == "served"));
 
         Assert.True(requests.Total("api.documents.download.bytes") > 0, "the previews carried no bytes");
 
@@ -438,7 +438,7 @@ public sealed class LiveLoadTests(ITestOutputHelper output) : IAsyncLifetime
         Assert.All(clips, clip => Assert.Equal("video/mp2t", clip.ContentType));
         Assert.All(clips, clip => Assert.True(clip.Size > 0, $"{clip.FileName} is empty"));
 
-        var captured = Tallied(meters, "live.snapshots", "outcome");
+        var captured = meters.Tally("live.snapshots", "outcome");
 
         Report($"snapshots        {captured.GetValueOrDefault("stored")} decoded fresh"
             + $", {captured.GetValueOrDefault("preview")} from the harvester's older picture");
@@ -453,12 +453,12 @@ public sealed class LiveLoadTests(ITestOutputHelper output) : IAsyncLifetime
         // Every recording whole. A truncated one here is not a flake to re-run: it is the recorder's
         // queue overflowing under this load, which is the second thing the observability page says
         // to alert on, and it has a short document behind it.
-        Assert.Equal(Streams, Tallied(meters, "live.recordings", "outcome")["stored"]);
+        Assert.Equal(Streams, meters.Tally("live.recordings", "outcome")["stored"]);
         Assert.Equal(
             0,
-            meters.Of("live.overflows").Count(overflow => Tag(overflow, "policy") == "fail"));
+            meters.Of("live.overflows").Count(overflow => Meters.Tag(overflow, "policy") == "fail"));
 
-        Report($"fan-out          {meters.Of("live.overflows").Count(o => Tag(o, "policy") == "skip-to-live")}"
+        Report($"fan-out          {meters.Of("live.overflows").Count(o => Meters.Tag(o, "policy") == "skip-to-live")}"
             + " viewers skipped to live");
 
         // The byte counter against the documents it describes. It is added to as each part is
@@ -498,7 +498,7 @@ public sealed class LiveLoadTests(ITestOutputHelper output) : IAsyncLifetime
             () => $"the {killed.Length} dead feeds were still listed after the grace period");
 
         // Ended the same way whether or not anybody was watching, and ended once each.
-        Assert.Equal(killed.Length, Tallied(meters, "live.streams.ended", "reason")["expired"]);
+        Assert.Equal(killed.Length, meters.Tally("live.streams.ended", "reason")["expired"]);
 
         // And the gauge follows, which is the number an autoscaler would be acting on.
         await Until(
@@ -539,7 +539,7 @@ public sealed class LiveLoadTests(ITestOutputHelper output) : IAsyncLifetime
         // so nothing was relayed. Counted where a viewer is actually subscribed rather than where an
         // attach is decided, which is what stops a retrying attach reading as an audience.
         Assert.Equal(Watched + Churned, meters.Total("live.viewer.sessions"));
-        Assert.All(meters.Of("live.viewer.sessions"), session => Assert.Equal("direct", Tag(session, "route")));
+        Assert.All(meters.Of("live.viewer.sessions"), session => Assert.Equal("direct", Meters.Tag(session, "route")));
 
         // ---- What the beat cost, and what the kernel saw -----------------------------------
         var beats = meters.Of("live.heartbeat.duration").Select(beat => beat.Value).Order().ToArray();
@@ -620,62 +620,6 @@ public sealed class LiveLoadTests(ITestOutputHelper output) : IAsyncLifetime
 
     private static double Mbps(long bytes, TimeSpan over)
         => over.TotalSeconds <= 0 ? 0 : bytes * 8 / over.TotalSeconds / 1_000_000;
-
-    /// <summary>
-    /// The rate of the packets inside a transport stream, as the bundled ffprobe adds them up: the
-    /// same bytes a demultiplexer will publish, and so the only figure a delivered rate can honestly
-    /// be compared against. Nothing is decoded to get it.
-    /// </summary>
-    private static double Payload(string path)
-    {
-        var startInfo = new ProcessStartInfo(Ffmpeg.ProbePath)
-        {
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-        };
-
-        foreach (var argument in (string[])
-                 ["-v", "error", "-show_entries", "packet=size", "-of", "csv=p=0", path])
-        {
-            startInfo.ArgumentList.Add(argument);
-        }
-
-        if (!OperatingSystem.IsWindows())
-        {
-            startInfo.Environment["LD_LIBRARY_PATH"] = Ffmpeg.Directory;
-        }
-
-        using var probe = Process.Start(startInfo)!;
-        var sizes = probe.StandardOutput.ReadToEnd();
-        probe.WaitForExit();
-
-        Assert.True(probe.ExitCode == 0, $"ffprobe could not read the pattern: {probe.StandardError.ReadToEnd()}");
-
-        // One line per packet, and the size is the first field: ffprobe's CSV writer still emits the
-        // separator for the side-data column it was not asked about, so "8058," is a whole line.
-        var bytes = sizes
-            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Sum(line => long.TryParse(
-                line.Split(',')[0],
-                CultureInfo.InvariantCulture,
-                out var packet) ? packet : 0);
-
-        Assert.True(bytes > 0, "the pattern holds no packets");
-
-        return Mbps(bytes, TimeSpan.FromSeconds(PatternSeconds));
-    }
-
-    private static string? Tag(Meters.Recording measurement, string key)
-        => measurement.Tags.FirstOrDefault(tag => tag.Key == key).Value?.ToString();
-
-    /// <summary>Every value of one tag on one instrument, counted, which is what a dashboard groups by.</summary>
-    private static Dictionary<string, int> Tallied(Meters meters, string instrument, string key)
-        => meters
-            .Of(instrument)
-            .GroupBy(measurement => Tag(measurement, key) ?? string.Empty)
-            .ToDictionary(group => group.Key, group => group.Count());
 
     private Process Track(Process caller)
     {

@@ -165,6 +165,16 @@ kernel udp       0 receive errors over the run
 That run was four cores. `LIVE_LOAD_STREAMS=250 dotnet test --filter LiveLoadTests` uses the same
 test as the rig on a machine with more of them.
 
+Beside it, `LiveScaleTests` is a rig rather than a test, skipped unless `LIVE_SCALE=1`: it ramps
+ingest to two hundred streams and then readers to five hundred on top of them, and reports at every
+step what each side delivered, what the transport and the kernel lost, and — out of
+`/proc/self/task` — which threads by name were spending the machine. What it found on four cores is
+in [`.scratch/scale-to-1000/ingest-and-readers.md`](.scratch/scale-to-1000/ingest-and-readers.md):
+two hundred streams and five hundred readers is not where this breaks (1.4 cores, 148 Mbit/s in and
+437 Mbit/s out), camera-rate ingest starts losing packets between 100 and 150 streams, two thousand
+readers cost six tenths of a core, and the thread that runs out first is the per-stream
+demultiplexer rather than the SRT receive worker every earlier measurement pointed at.
+
 ## Migrations
 
 ```bash

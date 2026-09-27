@@ -77,6 +77,30 @@ Scaling to a thousand streams. The plan, the reasoning and the research behind e
       against what is held, recorded bytes against the documents, and no tag carrying a stream name,
       which fifty names can show and one cannot. Clean on four cores at 50 x 0.8 Mbit/s: 98 per cent
       delivered, no kernel receive errors, a 1 ms median beat. LIVE_LOAD_STREAMS uses it as the rig
+- [x] Find the edge, on four cores, with a rig that is not its own bottleneck: LiveScaleTests ramps
+      ingest to 200 streams and readers to 500 and names what ran out, per thread, out of /proc.
+      Answers in .scratch/scale-to-1000/ingest-and-readers.md. 200 streams and 550 readers is not
+      where it breaks - 148 Mbit/s in, 437 out, 1.4 of 4 cores, nothing lost. Camera-rate ingest is:
+      clean to 100 streams, losing 6.8 percent of packets at 150 while delivering 116 percent of the
+      rate through retransmits, collapsed at 200. Readers are nearly free - 2000 of them cost 0.6 of
+      a core and ingest never noticed
+- [ ] Pool StreamDemuxer.Pump's per-packet byte[]. Now measured rather than suspected: the per-stream
+      demux threads are 1.8 cores at 200 camera-rate streams against the receive worker's 0.24, so
+      ingest per pod is bounded by demultiplexing cost per packet and this is the thread to make
+      cheaper. It supersedes the preview as the thing to look at first
+- [ ] baseline.md's receive-worker budget (streams/175 + pps/45000 < 1, knee at 60 percent of that
+      thread) does not hold outside the rig it was measured on. On a container over loopback the same
+      thread never passed 24 percent, at any load, including through a collapse, so the formula
+      over-predicts by an order of magnitude and must not size a Linux node. Decide whether to
+      re-measure it per environment or delete it and size from loss and kernel drops instead
+- [ ] Decide what a viewer's thread should be. Task.Factory.StartNew with an async delegate spends the
+      LongRunning thread at the first await, so 300 concurrent viewers cost no threads at all - good
+      at this scale - while one OS thread is still created and thrown away per accepted viewer, which
+      is waste during exactly the reconnect storm that produces them. Either Task.Run and a comment
+      that says so, or a genuinely synchronous serve loop
+- [ ] Find the reader ceiling with a socket in it. The 2000-reader figure is in-process HTTP against
+      the test server: it measures the subscription, the muxer and the copy, and no socket, no
+      Kestrel write path and no SRT egress. Whatever binds readers is in the part that rig replaces
 - [ ] Export the detection worker's meter too. It already publishes live.detection.duration on the
       same meter name, and nothing carries it off the pod: the worker is a separate deployment with
       no exporter wired, so today it is readable only with dotnet-counters against that process
