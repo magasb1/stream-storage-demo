@@ -60,33 +60,18 @@ internal static class SrtSenders
     /// </param>
     public static void Render(string path, int seconds, string? image = null)
     {
-        var startInfo = new ProcessStartInfo(Ffmpeg.ExecutablePath)
-        {
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-        };
+        using var process = BundledFfmpeg.Start(
+            Ffmpeg.ExecutablePath,
+            [
+                "-hide_banner", "-loglevel", "error", "-y",
+                .. image is null
+                    ? (string[])["-f", "lavfi", "-i", "testsrc=size=320x240:rate=15", "-c:v", "mpeg2video", "-b:v", "800k"]
+                    : ["-loop", "1", "-framerate", "15", "-i", image, "-c:v", "mpeg2video", "-q:v", "2", "-pix_fmt", "yuv420p"],
+                "-g", "15",
+                "-t", seconds.ToString(CultureInfo.InvariantCulture),
+                "-f", "mpegts", path,
+            ]);
 
-        foreach (var argument in (string[])
-                 [
-                     "-hide_banner", "-loglevel", "error", "-y",
-                     .. image is null
-                         ? (string[])["-f", "lavfi", "-i", "testsrc=size=320x240:rate=15", "-c:v", "mpeg2video", "-b:v", "800k"]
-                         : ["-loop", "1", "-framerate", "15", "-i", image, "-c:v", "mpeg2video", "-q:v", "2", "-pix_fmt", "yuv420p"],
-                     "-g", "15",
-                     "-t", seconds.ToString(CultureInfo.InvariantCulture),
-                     "-f", "mpegts", path,
-                 ])
-        {
-            startInfo.ArgumentList.Add(argument);
-        }
-
-        if (!OperatingSystem.IsWindows())
-        {
-            startInfo.Environment["LD_LIBRARY_PATH"] = Ffmpeg.Directory;
-        }
-
-        using var process = Process.Start(startInfo)!;
         var complaints = process.StandardError.ReadToEnd();
         process.WaitForExit();
 
@@ -268,24 +253,7 @@ internal static class SrtSenders
 
     private static Process Start(string[] arguments)
     {
-        var startInfo = new ProcessStartInfo(Ffmpeg.ExecutablePath)
-        {
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-        };
-
-        foreach (var argument in arguments)
-        {
-            startInfo.ArgumentList.Add(argument);
-        }
-
-        if (!OperatingSystem.IsWindows())
-        {
-            startInfo.Environment["LD_LIBRARY_PATH"] = Ffmpeg.Directory;
-        }
-
-        var caller = Process.Start(startInfo)!;
+        var caller = BundledFfmpeg.Start(Ffmpeg.ExecutablePath, arguments);
 
         // Drained, not merely redirected. A pipe nobody reads fills and stops the caller, and the
         // test then fails as "nothing was accepted" with the reason sitting unread in the pipe.

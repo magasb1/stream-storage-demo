@@ -600,24 +600,14 @@ public sealed class GrpcApiTests : IAsyncLifetime
             return path;
         }
 
-        var startInfo = new System.Diagnostics.ProcessStartInfo(Ffmpeg.ExecutablePath)
-        {
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-        };
+        using var process = BundledFfmpeg.Start(
+            Ffmpeg.ExecutablePath,
+            [
+                "-hide_banner", "-loglevel", "error",
+                "-f", "lavfi", "-i", "testsrc=size=64x64:duration=1:rate=1",
+                "-frames:v", "1", "-y", path,
+            ]);
 
-        foreach (var argument in new[]
-                 {
-                     "-hide_banner", "-loglevel", "error",
-                     "-f", "lavfi", "-i", "testsrc=size=64x64:duration=1:rate=1",
-                     "-frames:v", "1", "-y", path,
-                 })
-        {
-            startInfo.ArgumentList.Add(argument);
-        }
-
-        using var process = System.Diagnostics.Process.Start(startInfo)!;
         await process.WaitForExitAsync();
 
         Assert.True(File.Exists(path), "ffmpeg did not generate the sample image");

@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using StorageDemo.Infrastructure.Media;
@@ -192,20 +191,7 @@ public sealed class LibavMediaAnalyzerTests : IDisposable
 
     private static async Task<string> RunAsync(string executable, string[] arguments)
     {
-        var startInfo = new ProcessStartInfo(executable)
-        {
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-        };
-
-        foreach (var argument in arguments)
-        {
-            startInfo.ArgumentList.Add(argument);
-        }
-
-        using var process = Process.Start(startInfo)!;
+        using var process = BundledFfmpeg.Start(executable, arguments, readOutput: true);
         var output = await process.StandardOutput.ReadToEndAsync();
         var error = await process.StandardError.ReadToEndAsync();
         await process.WaitForExitAsync();
