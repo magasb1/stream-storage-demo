@@ -22,6 +22,24 @@ public sealed class LibavMediaAnalyzer(
 {
     private readonly MediaOptions _options = options.Value;
 
+    /// <summary>
+    /// The valve on the blocking section, <see cref="MediaOptions.MaxConcurrentDecodes"/> wide.
+    ///
+    /// Here rather than at the snapshot route, because this is the one place all of the cost passes
+    /// through: a bound on the route would leave an upload's thumbnail outside it and would have to
+    /// be repeated by whatever calls this next. It bounds the process only because this class is
+    /// registered as a singleton; a transient one would hand every call its own gate and every gate
+    /// would be open.
+    ///
+    /// Callers queue rather than being refused, and the queue is not bounded here: a snapshot that
+    /// arrives late is still the evidence somebody asked for, and a refused one is not. Waiting
+    /// costs a caller no thread, and how many callers there can be is a question for the surface in
+    /// front of this rather than for a decoder.
+    /// </summary>
+    private readonly SemaphoreSlim _decodes = new(
+        options.Value.MaxConcurrentDecodes,
+        options.Value.MaxConcurrentDecodes);
+
     public bool CanAnalyze(string? contentType, string fileName)
     {
         if (!_options.Enabled)
@@ -58,10 +76,16 @@ public sealed class LibavMediaAnalyzer(
         => OnAFileAsync(content, fileName, LatestFrame, cancellationToken);
 
     /// <summary>
-    /// Spills the content to a temp file and runs libav over it off the request thread.
+    /// Spills the content to a temp file and runs libav over it off the request thread, with at
+    /// most <see cref="MediaOptions.MaxConcurrentDecodes"/> calls doing either at once.
     ///
-    /// The file is not an optimisation to remove later: libav seeks its input, an upload and an
-    /// in-memory mux both hand back a forward-only stream, and decoding is blocking CPU work.
+    /// The file is what makes the poster frame possible, rather than an optimisation to remove
+    /// later: an upload is read back out of storage as a forward-only stream, and a seek into an
+    /// input libav cannot seek fails instead of moving, which turns every poster frame into frame
+    /// zero while reporting success. The snapshot path is the exception - it muxes into memory and
+    /// then reads straight through to the end, and libav demultiplexes an unseekable MPEG-TS
+    /// perfectly well, as every live stream in this service already does - so a custom AVIO could
+    /// spare that one caller the write and the unlink. It would not remove the file from here.
     /// </summary>
     private async Task<T> OnAFileAsync<T>(
         Stream content,
@@ -78,6 +102,16 @@ public sealed class LibavMediaAnalyzer(
             workingDirectory,
             $"{Guid.NewGuid():N}{Path.GetExtension(fileName)}");
 
+        // Held across the spill as well as the decode, so a burst is bounded in temp files and in
+        // disk traffic and not only in threads: a call still waiting keeps its content wherever the
+        // caller already had it, rather than in a second copy under the temp directory.
+        //
+        // That costs nothing today because no caller here is slow to read: a snapshot muxes into
+        // memory first, and an upload is read back out of storage by the analysis worker one item at
+        // a time. Widening that worker would put the read of an S3 object inside the permit, and a
+        // slow object would then hold a decode slot for as long as it took to arrive.
+        await _decodes.WaitAsync(cancellationToken);
+
         try
         {
             await using (var temp = File.Create(sourcePath))
@@ -89,6 +123,8 @@ public sealed class LibavMediaAnalyzer(
         }
         finally
         {
+            _decodes.Release();
+
             try
             {
                 File.Delete(sourcePath);

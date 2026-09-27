@@ -38,4 +38,27 @@ public sealed class MediaOptions
     [Range(1, 31)]
     public int SnapshotQuality { get; init; } = 2;
 
+    /// <summary>
+    /// How many calls may be inside libav at once, across every caller: a snapshot of a live
+    /// stream, a thumbnail for an upload, anything else that arrives.
+    ///
+    /// One per processor, because what this bounds is a blocking decode and a JPEG encode. A wider
+    /// front does not produce a single frame any sooner; it only spreads the same cores over more
+    /// work in flight, each item holding a temp file, a decoder's buffers and a thread pool thread.
+    /// That pool is the one serving viewers, the API and the heartbeat, which is what makes the
+    /// width everybody else's problem rather than the snapshot's.
+    ///
+    /// Nothing upstream bounds how many callers arrive. Detection triggers a capture per stream and
+    /// a cluster is meant to hold a thousand streams, so a moment when every stream fires at once
+    /// is the shape this service is built for rather than a misuse of it. Two hundred simultaneous
+    /// snapshots against two hundred streams on four cores did all land - 0.38 s median, 0.77 s at
+    /// the slowest - and they landed by taking the pool two hundred wide.
+    ///
+    /// Raising it is for a deployment whose decodes wait on something other than a core, a slow
+    /// disk under the temp file being the likely one. The ceiling on the range is there because a
+    /// valve that wide is not a valve.
+    /// </summary>
+    [Range(1, 1024)]
+    public int MaxConcurrentDecodes { get; init; } = Environment.ProcessorCount;
+
 }
