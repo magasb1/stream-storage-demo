@@ -188,6 +188,25 @@ In rough order of how much it means:
 Which streams are hurt is not on this page and should not be: that is `GET /api/live`, which names
 every stream with its own loss and drop figures over the last beat.
 
+## This page is tested
+
+`tests/StorageDemo.Tests/Integration/LiveLoadTests.cs` is one test that runs fifty encoders into one
+replica with viewers opening and closing, a snapshot and a recording on every stream at once, and ten
+feeds killed — five of them with an audience — and then checks the figures above against what the pod
+was actually doing. Two things it does that a single-stream test cannot:
+
+- **The meter is checked against the truth it describes.** `live_bytes` against the per-stream byte
+  deltas in `GET /api/live` over the same window, `live_streams_owned` against the streams actually
+  held, `live_recorded_bytes` against the size of the documents in storage. A dashboard's number is
+  worth exactly that agreement, and nothing here is ever asserted against itself.
+- **No tag carries a stream name.** Fifty streams named alike make the leak visible; one stream
+  cannot. The test also holds every tag key to the six on this page.
+
+It pins the first alert's fifty-stream row as a pass condition — clean delivery, no kernel receive
+errors, no recording overflowed, the median beat well inside two seconds — so the numbers in that
+list stay measurements rather than recollections. `LIVE_LOAD_STREAMS` raises the count to use it as
+the rig on real hardware.
+
 ## What is not measured yet
 
 - **The detection worker's meter is not exported.** It publishes one instrument already -

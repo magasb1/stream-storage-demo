@@ -58,7 +58,13 @@ internal static class SrtSenders
     /// and near-lossless, so a detector sees the picture the file holds rather than the codec's
     /// idea of it. This is how a known image becomes a stream.
     /// </param>
-    public static void Render(string path, int seconds, string? image = null)
+    /// <param name="picture">
+    /// The lavfi source to encode, for a test that needs a particular bitrate rather than the
+    /// smallest thing that is a video. The default is what every sender here sends; the load test
+    /// asks for the busier, larger pattern <c>scripts/load-senders.sh</c> uses, so its figures can
+    /// be read beside the ones measured with that script.
+    /// </param>
+    public static void Render(string path, int seconds, string? image = null, string? picture = null)
     {
         var startInfo = new ProcessStartInfo(Ffmpeg.ExecutablePath)
         {
@@ -71,7 +77,11 @@ internal static class SrtSenders
                  [
                      "-hide_banner", "-loglevel", "error", "-y",
                      .. image is null
-                         ? (string[])["-f", "lavfi", "-i", "testsrc=size=320x240:rate=15", "-c:v", "mpeg2video", "-b:v", "800k"]
+                         ? (string[])
+                         [
+                             "-f", "lavfi", "-i", picture ?? "testsrc=size=320x240:rate=15",
+                             "-c:v", "mpeg2video", "-b:v", "800k",
+                         ]
                          : ["-loop", "1", "-framerate", "15", "-i", image, "-c:v", "mpeg2video", "-q:v", "2", "-pix_fmt", "yuv420p"],
                      "-g", "15",
                      "-t", seconds.ToString(CultureInfo.InvariantCulture),

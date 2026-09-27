@@ -70,6 +70,13 @@ Scaling to a thousand streams. The plan, the reasoning and the research behind e
       attaches by route, overflows, capture outcomes, the heartbeat's own latency, and on the API
       side the open server streams, document bytes by surface and the hop between replicas.
       docs/observability.md says what to alert on
+- [x] A high-load end-to-end test, and the meters checked rather than assumed: fifty encoders on one
+      ingest port, viewers opening and closing, a snapshot and a recording on every stream at once,
+      ten feeds killed with an audience and without, and every published figure held against what the
+      replica was actually doing - hub bytes against the registry's per stream, the owned gauge
+      against what is held, recorded bytes against the documents, and no tag carrying a stream name,
+      which fifty names can show and one cannot. Clean on four cores at 50 x 0.8 Mbit/s: 98 per cent
+      delivered, no kernel receive errors, a 1 ms median beat. LIVE_LOAD_STREAMS uses it as the rig
 - [ ] Export the detection worker's meter too. It already publishes live.detection.duration on the
       same meter name, and nothing carries it off the pod: the worker is a separate deployment with
       no exporter wired, so today it is readable only with dotnet-counters against that process

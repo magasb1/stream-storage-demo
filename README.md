@@ -145,6 +145,26 @@ the filesystem and S3 providers — are held to identical behaviour. Live stream
 same way it runs: a real SRT transport, a real demultiplexer, a real viewer. PostgreSQL's contract
 tests skip unless `POSTGRES_TEST_CONNECTION` points at a real database.
 
+One of them is a load test rather than a specification. `LiveLoadTests` puts fifty encoders on one
+ingest port, opens and closes viewers, snapshots and records every stream at the same time, and
+kills ten feeds — five of them with somebody watching — then holds every figure the replica
+publishes about itself against what it was actually doing. It runs alone, takes about a minute and
+a half, and reports its measurements in the shape `.scratch/scale-to-1000/baseline.md` uses, so a
+run is a row in that table rather than a pass:
+
+```
+load             50 streams x 0.80 Mbit/s, one ingest port
+on air           1.9 s for 50 streams (26.4 accepts/s)
+delivered        0.79 of 0.80 Mbit/s per stream (98 % of source, median), 39.3 Mbit/s over 50 streams
+meter agreement  39.3 Mbit/s counted by the hub, 39.3 reported per stream
+heartbeat        1 ms median, 15 ms slowest, over 38 passes
+transport        0 lost and 0 dropped of 84042 packets
+kernel udp       0 receive errors over the run
+```
+
+That run was four cores. `LIVE_LOAD_STREAMS=250 dotnet test --filter LiveLoadTests` uses the same
+test as the rig on a machine with more of them.
+
 ## Migrations
 
 ```bash
