@@ -82,9 +82,23 @@ public sealed class LiveConsumptionService(
         var from = StreamName.Position(socket.StreamId) ?? 0;
         var viewer = new SrtSocketStream(socket.Release(), writable: true);
 
-        _ = Task.Factory.StartNew(
-            () => ServeAsync(name, from, viewer, _stopping),
-            TaskCreationOptions.LongRunning);
+        // Pool work, and now it says so. Serving a viewer is an await loop whose first act is a
+        // registry read, so a LongRunning thread here only lived as far as that await: it was one
+        // OS thread created and thrown away per accepted viewer - LongRunning threads are not
+        // pooled - paid during exactly the reconnect storm that produces hundreds of viewers at
+        // once. Three hundred concurrent viewers moved this process's thread count by nothing,
+        // which is the measurement saying the pool was already carrying them and the flag was
+        // stating an intent the code did not have.
+        //
+        // Ingest is the other way round, and the difference is the point: the listener started
+        // above and the coordinator's feed are synchronous from their first line to their last,
+        // blocking inside libsrt and libav, so their dedicated threads are real, would starve the
+        // pool if they were taken from it, and keep the flag.
+        //
+        // No cancellation token: a token already cancelled would make Task.Run skip the body, and
+        // the body is what disposes the socket accepted a line above. Shutdown is the token
+        // ServeAsync itself watches.
+        _ = Task.Run(() => ServeAsync(name, from, viewer, _stopping));
     }
 
     /// <summary>
