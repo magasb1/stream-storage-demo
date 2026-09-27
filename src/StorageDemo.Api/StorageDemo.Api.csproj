@@ -17,6 +17,15 @@
     <!-- Reads a file's real type from its magic bytes. Needs the ASP.NET framework reference,
          which is why upload validation lives here rather than in Core. -->
     <PackageReference Include="MagicBytesValidator" Version="2.2.1" />
+    <!-- The exporter, and only the exporter: every instrument in this service is a plain
+         System.Diagnostics.Metrics instrument that works with none of these referenced. OTLP to a
+         collector rather than Prometheus.AspNetCore, which is still a beta package - see
+         Observability/Telemetry.cs. The ASP.NET Core and HTTP client packages are for tracing; the
+         metrics they would add are built into the framework and arrive through AddMeter. -->
+    <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.19.1" />
+    <PackageReference Include="OpenTelemetry.Extensions.Hosting" Version="1.19.1" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.AspNetCore" Version="1.19.0" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.Http" Version="1.19.0" />
     <PackageReference Include="Serilog.AspNetCore" Version="10.0.0" />
     <PackageReference Include="Swashbuckle.AspNetCore" Version="10.2.3" />
   </ItemGroup>

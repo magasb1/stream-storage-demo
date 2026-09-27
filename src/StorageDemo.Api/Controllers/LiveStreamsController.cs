@@ -4,6 +4,7 @@ using System.Text;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Options;
+using StorageDemo.Api.Observability;
 using StorageDemo.Core.Streaming;
 using StorageDemo.Infrastructure.Streaming;
 
@@ -58,8 +59,19 @@ public sealed record LiveStatusResponse(
 public sealed class LiveStreamsController(
     ILiveStreamService live,
     LivePeerProxy peers,
+    ApiMetrics metrics,
     IOptions<LiveOptions> options) : ControllerBase
 {
+    /// <summary>
+    /// A preview is counted with the document downloads, tagged as what it is. One instrument answers
+    /// "how much is this API serving" for files and for live tiles, and the tag is what keeps either
+    /// number meaningful: a wall of a thousand tiles refreshing is the heaviest read this surface
+    /// takes and it is not a file download.
+    /// </summary>
+    private const string Surface = "rest";
+
+    private const string PreviewKind = "preview";
+
     private readonly LiveOptions _options = options.Value;
 
     [HttpGet]
@@ -144,6 +156,9 @@ public sealed class LiveStreamsController(
             // failure this endpoint exists to avoid. Set on both branches.
             Response.Headers.CacheControl = "no-store";
 
+            metrics.Downloaded(Surface, PreviewKind, "served");
+            metrics.DownloadedBytes(Surface, PreviewKind, local.Length);
+
             return File(local, "image/jpeg");
         }
 
@@ -151,8 +166,12 @@ public sealed class LiveStreamsController(
 
         if (stream is null || !stream.HasPreview || live.Owns(name))
         {
+            metrics.Downloaded(Surface, PreviewKind, "missing");
+
             return NotFound();
         }
+
+        metrics.Downloaded(Surface, PreviewKind, "served");
 
         return await ProxyAsync(stream, $"api/live/preview/{name}", cancellationToken);
     }
