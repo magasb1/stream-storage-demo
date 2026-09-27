@@ -209,3 +209,139 @@ against a hundred streams the constraint is still ingest.
 - **Multi-port ingest.** `Live__IngestPortCount` is the answer to a saturated receive worker, and the
   receive worker was never the limit here, so there was nothing for it to fix. The open TODO to
   re-measure it on a real node still stands.
+
+# Part two: the work the first rig was not doing
+
+Everything above measures ingest and fan-out, which are the two cheapest things this process does:
+they move bytes and never decode. The first version of this page therefore reported a replica coasting
+at a third of its cores, and the reaction it deserved was the one it got - that cannot be the whole
+story. It was not. A preview is a decode per keyframe and a JPEG per interval, per stream, always on.
+A snapshot is a container muxed, spilled to a file, opened, decoded and encoded, per request. A
+recording is a muxer, parts on disk, objects in storage and a document write, per stream. None of that
+was in the measurement.
+
+`LIVE_SCALE_WORK` is on by default now, and the rig's second half audits previews and then asks for a
+snapshot and a recording of every stream at once, at whatever load the ramps ended on.
+
+## What is healthy, measured rather than assumed
+
+At 200 streams with 50 real players attached:
+
+| | measured |
+| --- | --- |
+| previews | 200 of 200 streams hold a picture; 40 of 40 sampled changed within 5 s |
+| wall of 200 tiles, fetched at once | 0.04 s median, 0.04 s slowest |
+| 200 snapshots at once | 0.38 s median, 0.69 s p95, 0.77 s slowest, 0.8 s for all of them |
+| snapshot outcomes | 200 stored - no fallback to the harvester's older picture, none empty |
+| 200 recordings started at once | 0.13 s median, 0.20 s slowest |
+| 200 recordings running | all 200 on the gauge, ingest unchanged |
+| documents | 200 of 200 stored, 1042 MiB, the last arriving 18.4 s after they were measured running |
+| ingest throughout | 0.74 Mbit/s per stream, no loss, no kernel drops |
+
+**Previews are not the dominant cost here, and they are keeping up.** `baseline.md`'s third defect
+called the always-on preview the dominant cost in the whole design; on this machine at 200 streams it
+is part of a 1.4-core total and every one of the 40 sampled previews was moving. That is a real
+difference from the earlier measurement and the freshness check is the reason it can be claimed at
+all: the decoder's own subscription is skip-to-live and `JpegEncoder.Encode` returning null leaves the
+old picture in place, counting nothing, so a stale preview is invisible in every figure the service
+publishes.
+
+**Capture work does not disturb ingest.** Two hundred simultaneous decodes and two hundred
+simultaneous recordings left the delivered rate and the loss counters untouched, because each feed has
+its own thread and its own buffer. That is the design working.
+
+## The 76-second snapshot, and why it was mostly the rig
+
+One configuration produced something much worse. With **500 relayed readers** attached, the same 200
+snapshots took **23.5 s median, 50.1 s p95, 76.4 s for all of them**, the process's thread count went
+from 428 to 926, the readers' throughput collapsed from 0.87 to 0.02 Mbit/s with 2,638 subscribers
+skipping to live, and the last recording's document arrived 128 s late instead of 18 s.
+
+It is worth writing down what that was, because the obvious reading of it is wrong:
+
+| readers during the 200-snapshot storm | median | slowest | threads | document tail |
+| --- | --- | --- | --- | --- |
+| 50 real players, no relayed | 0.38 s | 0.77 s | 428 | 18.4 s |
+| 300 real players, no relayed | 0.60 s | 1.17 s | 430 | 18.7 s |
+| 500 relayed + 50 real players | 23.51 s | 76.35 s | 926 | 127.9 s |
+
+**The relayed readers in this rig drain inside the service's own process**, as thread-pool work, so
+when the pool filled with snapshot decodes their drains were delayed, their response pipes filled, the
+synchronous writes feeding them blocked, and the pool injected about one thread per stalled reader -
+926 threads is 428 plus the 500 readers. In a real deployment those readers are other pods behind
+kernel sockets and that particular feedback loop does not exist. **So the 76 seconds is substantially
+an artifact of the measuring apparatus, and this page is not claiming a 76-second snapshot latency.**
+
+What it did do is point at a mechanism, which then reproduced on purpose and without the artifact.
+
+## The real one: a viewer that does not drain holds a thread
+
+```
+LIVE_SCALE=1 LIVE_SCALE_STREAMS=100 LIVE_SCALE_READERS=100,200 \
+  LIVE_SCALE_SLOW_READERS=200 LIVE_SCALE_SLOW_DELAY_MS=3000
+```
+
+A slow client is not a hypothesis; it is a phone on a bad network. These readers pause three seconds
+between reads, which is what that looks like from the pod.
+
+| relayed readers, all slow | their rate | pool threads | process threads | skips | ingest |
+| --- | --- | --- | --- | --- | --- |
+| 0 | - | 12 | 234 | 0 | 0.73 Mbit/s |
+| 100 | 0.17 of 0.87 Mbit/s | 118 | 341 | 0 | 0.75 |
+| 200 | 0.17 of 0.87 Mbit/s | 219 | 441 | 0 | 0.75 |
+
+**One thread-pool worker per slow viewer, and nothing bounds it.** The pool went from twelve workers
+to two hundred and nineteen, tracking the slow readers one for one, because
+`LiveStreamCoordinator.Serve` writes to a viewer through `PacketMuxer` synchronously - libav's muxer
+has no asynchronous write callback, which is exactly why the relay route sets
+`AllowSynchronousIO = true` - so a consumer that will not take the bytes does not make the viewer fall
+behind, it holds the thread that was writing to it.
+
+**And the protection that exists did not engage.** `skip` is zero in every row: not one subscriber
+overflowed. `Live:ViewerQueuePackets` is 2,000 **packets**, and a packet here is a video frame, so at
+25 fps that queue is **eighty seconds deep**. A viewer eighty seconds behind live is not a viewer any
+more, and until it gets there the skip-to-live policy has nothing to say while a thread stays held.
+The depth is in the wrong unit for the job: what a live viewer's queue wants to be measured in is
+seconds of media, and `RecorderQueuePackets` at 20,000 has the same shape for the same reason (800
+seconds at this frame rate, where the intent was "enough that truncation is genuinely rare").
+
+Ingest never noticed any of it, again: 0.75 Mbit/s per stream, the receive worker at nine percent.
+
+**The direct route is not the same and was not measured.** A player on the consumption port is written
+to by `SrtSocketStream.Write`, which is `srt_sendmsg` in libsrt's blocking mode - but SRT is a live
+protocol and drops packets it can no longer deliver in time rather than blocking its sender
+indefinitely, so a slow SRT viewer should lose picture where a slow relayed viewer holds a thread.
+That is code reading rather than measurement, and it is worth measuring: `ffmpeg -readrate 0.3` is a
+slow player, and this rig can hold three hundred of them.
+
+## Bottlenecks, ranked by what to do about them
+
+1. **A slow relayed viewer costs a thread, unbounded.** Measured: 219 pool workers for 200 slow
+   viewers. It bounds viewers per pod by threads rather than by bandwidth, and it is the relay route,
+   which in a cluster is how every viewer that reached the wrong pod is served. Wanted: a bounded set
+   of writers with a queue that drops, or an asynchronous write path with the muxer writing into a
+   buffer, or a cap that disconnects a viewer that cannot keep up. Any of the three beats a thread.
+2. **The viewer and recorder queues are sized in packets, so their real depth is a frame rate away
+   from whatever was intended.** Eighty seconds of lag before a live viewer is skipped forward.
+   Seconds of media is the unit that matches the intent.
+3. **Nothing bounds concurrent snapshot decodes.** `LibavMediaAnalyzer.OnAFileAsync` spills each
+   request to a temp file and runs libav in `Task.Run`, with no valve: 200 at once is 200 temp files
+   and 200 decodes competing with everything else on the pool. It is cheap per snapshot here - about
+   15 ms - so it passes at this scale and would not at a thousand streams with a detector triggering
+   captures. A semaphore the width of the processor count would make the same work take the same time
+   without the queue.
+4. **The document tail is about eleven a second.** 200 recordings finishing together took 18 s for the
+   last document, consistently, in every healthy run. It is the storage write plus the document write,
+   and on this configuration that is LiteDB, which serializes writers. Fine at 200; it is a queue, and
+   it scales with the stream count.
+5. **Ingest at camera rate**, from part one: the per-stream demultiplexer threads, 100 to 150 streams
+   per four cores.
+
+## What is still not measured
+
+- A slow **direct** player, per above.
+- Detection, KLV and forwards, none of which the rig touches. Detection in particular raises the
+  decode rate, which is the one thing that would make the frame tier the dominant cost rather than a
+  third of it.
+- The socket path for relayed readers, still: they are in-memory, which is the same caveat as part one
+  and the reason the 76-second row is presented as an artifact rather than a result.

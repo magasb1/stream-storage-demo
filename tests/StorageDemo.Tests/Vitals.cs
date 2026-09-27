@@ -24,7 +24,9 @@ internal sealed record Vitals(
     long ResidentBytes,
     int Threads,
     TimeSpan Elsewhere,
-    long? KernelUdpErrors)
+    long? KernelUdpErrors,
+    int PoolThreads,
+    long Queued)
 {
     /// <summary>
     /// What <c>/proc</c> counts in, and the one number here that is not read from a file.
@@ -45,7 +47,15 @@ internal sealed record Vitals(
     {
         if (!Available)
         {
-            return new Vitals(TimeSpan.Zero, new Dictionary<string, TimeSpan>(), 0, 0, TimeSpan.Zero, null);
+            return new Vitals(
+                TimeSpan.Zero,
+                new Dictionary<string, TimeSpan>(),
+                0,
+                0,
+                TimeSpan.Zero,
+                null,
+                ThreadPool.ThreadCount,
+                ThreadPool.PendingWorkItemCount);
         }
 
         var threads = new Dictionary<string, TimeSpan>(StringComparer.Ordinal);
@@ -105,7 +115,14 @@ internal sealed record Vitals(
             resident,
             count,
             others,
-            StorageDemo.Infrastructure.Streaming.LiveMetrics.KernelUdpReceiveErrors());
+            StorageDemo.Infrastructure.Streaming.LiveMetrics.KernelUdpReceiveErrors(),
+
+            // The two figures that name a starved thread pool, which is what unbounded blocking work
+            // looks like from the outside: the pool grows a thread or two a second while items queue,
+            // so latency climbs into the tens of seconds with the processor half idle. Neither is
+            // visible in CPU, memory or any of the service's own meters.
+            ThreadPool.ThreadCount,
+            ThreadPool.PendingWorkItemCount);
     }
 
     /// <summary>
@@ -130,19 +147,25 @@ internal sealed record Vitals(
             ResidentBytes,
             Threads,
             (Elsewhere - earlier.Elsewhere).TotalSeconds / seconds,
-            KernelUdpErrors is { } now && earlier.KernelUdpErrors is { } before ? now - before : null);
+            KernelUdpErrors is { } now && earlier.KernelUdpErrors is { } before ? now - before : null,
+            PoolThreads,
+            Queued);
     }
 
     /// <param name="Cores">Shares of one core: 2.5 is two and a half cores' worth of this process.</param>
     /// <param name="ByThread">Threads by name, busiest first, anything above half a percent of a core.</param>
     /// <param name="Rig">The same for the load generator's processes, so a run can say which side ran out.</param>
+    /// <param name="PoolThreads">Thread-pool workers at the end of the window.</param>
+    /// <param name="Queued">Work items still waiting for one, which is starvation when it is not zero.</param>
     internal sealed record Load(
         double Cores,
         IReadOnlyList<(string Thread, double Share)> ByThread,
         long ResidentBytes,
         int Threads,
         double Rig,
-        long? KernelUdpErrors)
+        long? KernelUdpErrors,
+        int PoolThreads,
+        long Queued)
     {
         /// <summary>
         /// The busiest single thread whose name begins with this, which for a libsrt receive worker is

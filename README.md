@@ -175,6 +175,14 @@ two hundred streams and five hundred readers is not where this breaks (1.4 cores
 readers cost six tenths of a core, and the thread that runs out first is the per-stream
 demultiplexer rather than the SRT receive worker every earlier measurement pointed at.
 
+It also audits the work that is easy to leave out of a load test, because leaving it out is what made
+the first version of those figures look too good: the previews are checked for freshness rather than
+presence, and every stream is snapshotted and recorded at once. At 200 streams all of that holds — 200
+snapshots in 0.8 s, 200 recordings stored, ingest untouched — and the bottleneck it did find is on the
+viewer side: a relayed viewer that stops draining holds a thread, because the muxer writes to it
+synchronously, so 200 slow readers took the thread pool from 12 workers to 219 while the queue that
+was meant to protect them never overflowed.
+
 ## Migrations
 
 ```bash

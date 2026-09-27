@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.Net;
 using System.Net.Http.Json;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -79,7 +80,38 @@ public sealed class LiveScaleTests(ITestOutputHelper output) : IAsyncLifetime
     /// reads, and so how much of the direct route is measured. They cost a process each ten, so this
     /// is the axis that is sampled rather than swept.
     /// </summary>
-    private static readonly int Direct = Configured("LIVE_SCALE_DIRECT_READERS", 50);
+    private static readonly int Direct = Optional("LIVE_SCALE_DIRECT_READERS", 50);
+
+    /// <summary>
+    /// Whether to run the second half: previews audited, and a snapshot and a recording of every
+    /// stream at once. On by default, because leaving it off is how the first version of this rig
+    /// came to report a replica coasting.
+    /// </summary>
+    private static readonly bool Work =
+        Environment.GetEnvironmentVariable("LIVE_SCALE_WORK") is not "0";
+
+    /// <summary>
+    /// How many of the relayed readers drain slowly, and how long each of their reads pauses for.
+    ///
+    /// The realistic failure, and the one worth a rig of its own: a viewer on a bad network reads
+    /// slower than the stream arrives. The service writes to a viewer synchronously - libav's muxer
+    /// has no asynchronous write callback, which is why the relay route opts back into synchronous IO
+    /// - so a consumer that stops draining does not merely fall behind, it holds the thread that was
+    /// writing to it. Whether that is bounded by the viewer's own queue or unbounded in the thread
+    /// pool is the question, and one slow client per pod is not a hypothetical.
+    /// </summary>
+    private static readonly int SlowReaders = Optional("LIVE_SCALE_SLOW_READERS", 0);
+
+    private static readonly int SlowDelayMs = Configured("LIVE_SCALE_SLOW_DELAY_MS", 2000);
+
+    /// <summary>How long each recording runs, once every stream has been asked for one.</summary>
+    private static readonly int RecordSeconds = Configured("LIVE_SCALE_RECORD", 45);
+
+    /// <summary>
+    /// The preview cadence the replica is configured with, so the freshness check can wait long
+    /// enough to be sure rather than long enough to be hopeful.
+    /// </summary>
+    private const int PreviewInterval = 2;
 
     /// <summary>How long each measurement window is. Long enough to average a beat or seven.</summary>
     private static readonly int Window = Configured("LIVE_SCALE_WINDOW", 15);
@@ -120,6 +152,7 @@ public sealed class LiveScaleTests(ITestOutputHelper output) : IAsyncLifetime
     private WebApplicationFactory<Program> _factory = null!;
     private HttpClient _client = null!;
     private HttpClient _readers = null!;
+    private HttpClient _storms = null!;
     private int _ingestPort;
     private string _pattern = null!;
     private int _direct;
@@ -152,7 +185,9 @@ public sealed class LiveScaleTests(ITestOutputHelper output) : IAsyncLifetime
             builder.UseSetting("Live:MaxStreams", "0");
             builder.UseSetting("Live:FeedTimeoutSeconds", "5");
             builder.UseSetting("Live:GracePeriodSeconds", "10");
-            builder.UseSetting("Live:PreviewIntervalSeconds", "2");
+            builder.UseSetting(
+                "Live:PreviewIntervalSeconds",
+                PreviewInterval.ToString(CultureInfo.InvariantCulture));
             builder.UseEnvironment("Production");
         });
 
@@ -166,6 +201,14 @@ public sealed class LiveScaleTests(ITestOutputHelper output) : IAsyncLifetime
         // body as well as the headers: without this every reader is torn down after a hundred
         // seconds and the rig quietly measures a reconnect storm of its own making.
         _readers.Timeout = Timeout.InfiniteTimeSpan;
+
+        _storms = _factory.CreateClient();
+        _storms.DefaultRequestHeaders.Add("X-Storage-Token", Token);
+
+        // Two hundred snapshots at once are two hundred decodes with nothing in front of them, and
+        // the default hundred seconds would turn a slow replica into a rig that gave up on it. Five
+        // minutes, so the measurement is the latency rather than the timeout.
+        _storms.Timeout = TimeSpan.FromMinutes(5);
 
         return ValueTask.CompletedTask;
     }
@@ -184,6 +227,7 @@ public sealed class LiveScaleTests(ITestOutputHelper output) : IAsyncLifetime
 
         _client.Dispose();
         _readers.Dispose();
+        _storms.Dispose();
         await _factory.DisposeAsync();
 
         for (var attempt = 0; attempt < 3 && Directory.Exists(_root); attempt++)
@@ -223,7 +267,10 @@ public sealed class LiveScaleTests(ITestOutputHelper output) : IAsyncLifetime
         Report($"machine          {Environment.ProcessorCount} cores"
             + (Vitals.Available ? string.Empty : ", /proc not readable here so no thread breakdown"));
         Report($"rig              {PerSender} streams per sender process,"
-            + $" {Direct} of the readers are real players on the consumption port");
+            + $" {Direct} of the readers are real players on the consumption port"
+            + (SlowReaders > 0
+                ? $", {SlowReaders} relayed readers pause {SlowDelayMs} ms per read"
+                : string.Empty));
         Report(string.Empty);
         Report(Row.Header);
 
@@ -286,7 +333,12 @@ public sealed class LiveScaleTests(ITestOutputHelper output) : IAsyncLifetime
 
             while (_relays.Count < target)
             {
-                _relays.Add(Relay.Open(_readers, Name(_relays.Count % streams)));
+                // The slow ones first, so a step small enough to be all of them is all of them.
+                var slowly = _relays.Count < SlowReaders
+                    ? TimeSpan.FromMilliseconds(SlowDelayMs)
+                    : TimeSpan.Zero;
+
+                _relays.Add(Relay.Open(_readers, Name(_relays.Count % streams), slowly));
             }
 
             var expected = target + _direct;
@@ -297,6 +349,12 @@ public sealed class LiveScaleTests(ITestOutputHelper output) : IAsyncLifetime
                 Viewers);
 
             Add(await Measure(meters, source, wire, streams, await Carrying(), expected, attached));
+        }
+
+        // ---- Everything else a replica is asked to do, at that load -------------------------
+        if (Work)
+        {
+            await Working(meters, source, wire, streams);
         }
 
         // ---- What broke, and where -------------------------------------------------------
@@ -315,6 +373,232 @@ public sealed class LiveScaleTests(ITestOutputHelper output) : IAsyncLifetime
 
         Assert.NotNull(final);
         Assert.NotEmpty(_rows);
+    }
+
+    /// <summary>
+    /// The rest of what a replica does, at the load the ramps ended on: the previews it is supposed
+    /// to be keeping current, a snapshot of every stream at once, and a recording of every stream at
+    /// once.
+    ///
+    /// This half exists because the ramps flattered the service. Ingest and fan-out are the two
+    /// cheapest things this process does - they move bytes and never decode - so a rig that measures
+    /// only those two reports a replica coasting at a third of its cores, and every expensive thing
+    /// it does sits outside the measurement. A preview is a decode per keyframe and a JPEG encode per
+    /// interval, per stream, always on. A snapshot is a container opened, decoded and encoded, per
+    /// request. A recording is a muxer, a file, an object store and a document write, per stream.
+    ///
+    /// The previews are audited rather than assumed. They fail quietly by design: the decoder's own
+    /// subscription is skip-to-live, so a decoder that cannot keep up drops packets rather than
+    /// blocking, and <c>JpegEncoder.Encode</c> returning null leaves the old picture in place and
+    /// counts nothing at all. A stale preview is therefore invisible in every figure the service
+    /// publishes, which is exactly why it is checked here by fetching the same picture twice.
+    /// </summary>
+    private async Task Working(Meters meters, double source, double wire, int streams)
+    {
+        Report(string.Empty);
+
+        // ---- The previews, which nothing else here would notice were stale -----------------
+        var listing = await Listing();
+        var pictured = listing.Values.Count(stream => stream.HasPreview);
+
+        var wall = await Storm(streams, index => _client.GetAsync($"/api/live/preview/{Name(index)}"));
+
+        // A sample rather than all of them: this holds two copies of every picture it compares, and
+        // the question - are the harvesters keeping up - is answered by forty as well as by two
+        // hundred. Two preview intervals apart, so a harvester that is keeping up has certainly
+        // encoded again, and one that has not is behind rather than merely unlucky.
+        var sample = Enumerable.Range(0, Math.Min(40, streams)).ToArray();
+        var first = await Task.WhenAll(sample.Select(index => Tile(Name(index))));
+
+        await Task.Delay(TimeSpan.FromSeconds(PreviewInterval * 2 + 1));
+
+        var second = await Task.WhenAll(sample.Select(index => Tile(Name(index))));
+
+        var moved = sample.Count(index =>
+            first[index] is { Length: > 0 } before
+            && second[index] is { Length: > 0 } after
+            && !before.SequenceEqual(after));
+
+        Report($"previews         {pictured} of {streams} streams hold a picture;"
+            + $" {moved} of {sample.Length} sampled moved in {PreviewInterval * 2 + 1}s");
+        Report($"wall of tiles    {streams} previews fetched at once: {wall}");
+
+        // ---- A snapshot of every stream, at once -------------------------------------------
+        // The heaviest thing a caller can ask for, and the one with no queue in front of it: each is
+        // a container muxed out of the buffer, opened, decoded and JPEG-encoded, and nothing limits
+        // how many run at the same time.
+        Latencies snapshots = default;
+
+        Add(await Measure(
+            meters,
+            source,
+            wire,
+            streams,
+            await Carrying(),
+            _relays.Count + _direct,
+            await Viewers(),
+            during: async () => snapshots = await Storm(
+                streams,
+                index => _storms.PostAsync($"api/live/snapshot/{Name(index)}", null)),
+            note: $"{streams} snapshots at once"));
+
+        Report($"snapshots        {snapshots}");
+        Report($"                 outcomes {Describe(meters.Tally("live.snapshots", "outcome"))}");
+
+        // ---- A recording of every stream, at once ------------------------------------------
+        Latencies recordings = default;
+
+        Add(await Measure(
+            meters,
+            source,
+            wire,
+            streams,
+            await Carrying(),
+            _relays.Count + _direct,
+            await Viewers(),
+            during: async () => recordings = await Storm(
+                streams,
+                index => _storms.PostAsJsonAsync(
+                    $"api/live/record/{Name(index)}",
+                    new RecordRequest(RecordSeconds))),
+            note: $"{streams} recordings started"));
+
+        Report($"recordings       {recordings}");
+
+        // Waited for rather than read, because the gauge is republished once a beat: read straight
+        // after the storm it still holds the count from before any of them started.
+        var active = 0d;
+
+        await Settle(
+            async () => (active = meters.Value("live.recordings.active") ?? 0) >= streams,
+            TimeSpan.FromSeconds(30),
+            () => Task.FromResult((int)(meters.Value("live.recordings.active") ?? 0)));
+
+        // Measured while they run, because the gauge is the only thing that says how many are
+        // actually writing rather than how many were accepted.
+        Add(await Measure(
+            meters,
+            source,
+            wire,
+            streams,
+            await Carrying(),
+            _relays.Count + _direct,
+            await Viewers(),
+            note: $"{active:0} recordings running"));
+
+        var documents = 0;
+        var waited = Stopwatch.StartNew();
+
+        await Settle(
+            async () => (documents = await Captures()) >= streams,
+            TimeSpan.FromMinutes(5),
+            async () => await Captures());
+
+        waited.Stop();
+
+        Report($"documents        {documents} of {streams} recordings became documents,"
+            + $" the last {waited.Elapsed.TotalSeconds:0.0}s after the recordings were measured running"
+            + $" (each ran {RecordSeconds}s)");
+        Report($"                 outcomes {Describe(meters.Tally("live.recordings", "outcome"))}"
+            + $", {meters.Total("live.recorded.bytes") / 1024.0 / 1024:0} MiB stored");
+    }
+
+    /// <summary>
+    /// Runs one request per index, all at once, and reports what each one cost. The point is the
+    /// distribution rather than the total: a mean hides the two requests in two hundred that took
+    /// thirty seconds, and those are the ones a person notices.
+    /// </summary>
+    private static async Task<Latencies> Storm<T>(int count, Func<int, Task<T>> call)
+        where T : HttpResponseMessage
+    {
+        var timings = new double[count];
+        var codes = new HttpStatusCode?[count];
+        var clock = Stopwatch.StartNew();
+
+        await Task.WhenAll(Enumerable.Range(0, count).Select(async index =>
+        {
+            var started = clock.Elapsed;
+
+            try
+            {
+                using var response = await call(index);
+
+                codes[index] = response.StatusCode;
+            }
+            catch (Exception)
+            {
+                // A request that never came back is the finding, so it is counted rather than thrown:
+                // one failure in two hundred must not end the measurement of the other hundred and
+                // ninety-nine.
+                codes[index] = null;
+            }
+
+            timings[index] = (clock.Elapsed - started).TotalSeconds;
+        }));
+
+        clock.Stop();
+
+        Array.Sort(timings);
+
+        return new Latencies(
+            count,
+            codes.Count(code => code is >= HttpStatusCode.OK and < HttpStatusCode.MultipleChoices),
+            codes.Count(code => code is null),
+            timings.Length == 0 ? 0 : timings[timings.Length / 2],
+            timings.Length == 0 ? 0 : timings[(int)(timings.Length * 0.95)],
+            timings.Length == 0 ? 0 : timings[^1],
+            clock.Elapsed.TotalSeconds);
+    }
+
+    private readonly record struct Latencies(
+        int Asked,
+        int Answered,
+        int Faulted,
+        double Median,
+        double P95,
+        double Slowest,
+        double Wall)
+    {
+        public override string ToString()
+            => $"{Answered} of {Asked} answered"
+                + (Faulted > 0 ? $", {Faulted} never came back" : string.Empty)
+                + $"; {Median:0.00}s median, {P95:0.00}s p95, {Slowest:0.00}s slowest,"
+                + $" {Wall:0.0}s for all of them";
+    }
+
+    private static string Describe(IReadOnlyDictionary<string, int> tally)
+        => tally.Count == 0
+            ? "none"
+            : string.Join(", ", tally.OrderByDescending(entry => entry.Value).Select(e => $"{e.Value} {e.Key}"));
+
+    /// <summary>One preview's bytes, or empty where there is no picture to serve.</summary>
+    private async Task<byte[]> Tile(string name)
+    {
+        try
+        {
+            using var response = await _client.GetAsync($"/api/live/preview/{name}");
+
+            return response.IsSuccessStatusCode ? await response.Content.ReadAsByteArrayAsync() : [];
+        }
+        catch (Exception)
+        {
+            return [];
+        }
+    }
+
+    /// <summary>Stored recordings, which is how many of the ones asked for actually became files.</summary>
+    private async Task<int> Captures()
+    {
+        try
+        {
+            var documents = await _client.GetFromJsonAsync<List<DocumentResponse>>("/api/documents") ?? [];
+
+            return documents.Count(document => document.FileName.EndsWith(".ts", StringComparison.Ordinal));
+        }
+        catch (Exception)
+        {
+            return 0;
+        }
     }
 
     /// <summary>
@@ -337,7 +621,9 @@ public sealed class LiveScaleTests(ITestOutputHelper output) : IAsyncLifetime
         int streams,
         int onAir,
         int readers,
-        int attached)
+        int attached,
+        Func<Task>? during = null,
+        string note = "")
     {
         var before = Vitals.Read(_processes);
         var listedBefore = await Listing();
@@ -346,9 +632,46 @@ public sealed class LiveScaleTests(ITestOutputHelper output) : IAsyncLifetime
         var lostBefore = meters.Total("live.packets.lost") + meters.Total("live.packets.dropped");
         var skipsBefore = meters.Count("live.overflows", "policy", "skip-to-live");
 
+        var queued = 0L;
+        using var sampling = new CancellationTokenSource();
+
+        // The queue is sampled rather than read at the end, because starvation is a transient: two
+        // hundred items waiting in the middle of a storm is the finding, and by the time the storm
+        // has drained the queue is empty again and the row would say nothing happened.
+        var sampler = Task.Run(async () =>
+        {
+            while (!sampling.IsCancellationRequested)
+            {
+                queued = Math.Max(queued, ThreadPool.PendingWorkItemCount);
+
+                try
+                {
+                    await Task.Delay(TimeSpan.FromMilliseconds(100), sampling.Token);
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
+            }
+        });
+
         var clock = Stopwatch.StartNew();
-        await Task.Delay(TimeSpan.FromSeconds(Window));
+
+        // The window is a wait when the question is "what does this load cost at rest", and a body of
+        // work when it is "what does that work cost while the load runs". Both are measured the same
+        // way, which is the only way the two answers can be compared.
+        //
+        // A body still gets the full window even when it finishes sooner, because what the ingest
+        // columns are made of - the registry's per-stream byte counts - is republished once a beat.
+        // Two hundred snapshots answered in a tenth of a second would otherwise be measured against
+        // a window in which no beat happened at all, and the row would read as a pod delivering
+        // nothing. The latency figures beside the row are where a short storm is actually described.
+        await Task.WhenAll(during?.Invoke() ?? Task.CompletedTask, Task.Delay(TimeSpan.FromSeconds(Window)));
+
         clock.Stop();
+
+        await sampling.CancelAsync();
+        await sampler;
 
         var listedAfter = await Listing();
         var load = Vitals.Read(_processes).Since(before, clock.Elapsed);
@@ -400,6 +723,8 @@ public sealed class LiveScaleTests(ITestOutputHelper output) : IAsyncLifetime
             meters.Total("live.packets.lost") + meters.Total("live.packets.dropped") - lostBefore,
             packets,
             meters.Count("live.overflows", "policy", "skip-to-live") - skipsBefore,
+            queued,
+            note,
             _relays.Count(relay => relay.Fault is not null));
     }
 
@@ -467,6 +792,14 @@ public sealed class LiveScaleTests(ITestOutputHelper output) : IAsyncLifetime
         yield return $"busiest          {busiest.Busiest(6)} (summed per thread name)";
         yield return $"receive worker   {busiest.Share("SRT:RcvQ:w"):P0} of one core at the last step"
             + " (the ceiling is one core, and the measured knee about 60 %)";
+        var starved = _rows.Where(row => row.Queued > 0).ToArray();
+
+        yield return starved.Length == 0
+            ? "thread pool      never queued: no row had work items waiting for a worker"
+            : $"thread pool      queued up to {starved.Max(row => row.Queued)} work items"
+                + $" ({starved.OrderByDescending(row => row.Queued).First().Note}),"
+                + $" and the pool grew to {_rows.Max(row => row.Load.PoolThreads)} workers";
+
         yield return $"cost             pod {busiest.Cores:0.0} cores, rig {busiest.Rig:0.0} cores,"
             + $" of {Environment.ProcessorCount}; {busiest.ResidentBytes / 1024.0 / 1024 / 1024:0.00} GiB"
             + $" resident over {busiest.Threads} threads";
@@ -498,11 +831,13 @@ public sealed class LiveScaleTests(ITestOutputHelper output) : IAsyncLifetime
         double Lost,
         long Packets,
         int Skips,
+        long Queued,
+        string Note,
         int Faults)
     {
         public const string Header =
             "streams  air  readers  seen  Mbit/s in  of src  of rig  Mbit/s out  RcvQ:w  pod   rig"
-            + "   RSS       thr      udp       lost  skip  verdict";
+            + "   RSS       thr  pool  queued      udp       lost  skip  verdict     what";
 
         /// <summary>
         /// The same reading <c>baseline.md</c> takes: clean is a service demultiplexing what was sent
@@ -552,10 +887,13 @@ public sealed class LiveScaleTests(ITestOutputHelper output) : IAsyncLifetime
                 Load.Rig.ToString("0.0", CultureInfo.InvariantCulture).PadLeft(4),
                 $"{Load.ResidentBytes / 1024.0 / 1024 / 1024:0.00} GiB".PadLeft(9),
                 Load.Threads.ToString(CultureInfo.InvariantCulture).PadLeft(4),
+                Load.PoolThreads.ToString(CultureInfo.InvariantCulture).PadLeft(4),
+                Queued.ToString(CultureInfo.InvariantCulture).PadLeft(6),
                 (Load.KernelUdpErrors?.ToString(CultureInfo.InvariantCulture) ?? "-").PadLeft(7),
                 (Lost > 0 ? $"{Lost:0} ({LossShare:P1})" : "0").PadLeft(9),
                 Skips.ToString(CultureInfo.InvariantCulture).PadLeft(4),
-                Faults > 0 ? $"{Verdict}, {Faults} reader faults" : Verdict);
+                Faults > 0 ? $"{Verdict}, {Faults} reader faults" : Verdict,
+                Note);
     }
 
     /// <summary>
@@ -574,8 +912,8 @@ public sealed class LiveScaleTests(ITestOutputHelper output) : IAsyncLifetime
 
         private long _bytes;
 
-        private Relay(HttpClient client, string name)
-            => Pump = Task.Run(() => ReadAsync(client, name, _stopping.Token));
+        private Relay(HttpClient client, string name, TimeSpan slowly)
+            => Pump = Task.Run(() => ReadAsync(client, name, slowly, _stopping.Token));
 
         public Task Pump { get; }
 
@@ -583,7 +921,8 @@ public sealed class LiveScaleTests(ITestOutputHelper output) : IAsyncLifetime
 
         public long Bytes => Interlocked.Read(ref _bytes);
 
-        public static Relay Open(HttpClient client, string name) => new(client, name);
+        public static Relay Open(HttpClient client, string name, TimeSpan slowly = default)
+            => new(client, name, slowly);
 
         public async ValueTask DisposeAsync()
         {
@@ -601,7 +940,11 @@ public sealed class LiveScaleTests(ITestOutputHelper output) : IAsyncLifetime
             _stopping.Dispose();
         }
 
-        private async Task ReadAsync(HttpClient client, string name, CancellationToken stopping)
+        private async Task ReadAsync(
+            HttpClient client,
+            string name,
+            TimeSpan slowly,
+            CancellationToken stopping)
         {
             try
             {
@@ -621,6 +964,11 @@ public sealed class LiveScaleTests(ITestOutputHelper output) : IAsyncLifetime
                 while ((read = await body.ReadAsync(buffer, stopping)) > 0)
                 {
                     Interlocked.Add(ref _bytes, read);
+
+                    if (slowly > TimeSpan.Zero)
+                    {
+                        await Task.Delay(slowly, stopping);
+                    }
                 }
             }
             catch (OperationCanceledException)
@@ -657,6 +1005,20 @@ public sealed class LiveScaleTests(ITestOutputHelper output) : IAsyncLifetime
         // bitrate sweep wants no readers, and a reader sweep wants the streams it already has.
         return steps is [0] ? [] : steps.Where(step => step > 0).DefaultIfEmpty(fallback[0]).ToArray();
     }
+
+    /// <summary>
+    /// Like <see cref="Configured"/>, but zero means zero rather than unset. It matters for the
+    /// reader counts: a run isolating one route asks for none of the other, and treating that as
+    /// "unconfigured" silently gives it fifty of them - which it did, in the first measurements taken
+    /// with this rig, and the write-up had to say so.
+    /// </summary>
+    private static int Optional(string variable, int fallback)
+        => int.TryParse(
+            Environment.GetEnvironmentVariable(variable),
+            CultureInfo.InvariantCulture,
+            out var configured) && configured >= 0
+                ? configured
+                : fallback;
 
     private static int Configured(string variable, int fallback)
         => int.TryParse(

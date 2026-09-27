@@ -84,6 +84,29 @@ Scaling to a thousand streams. The plan, the reasoning and the research behind e
       clean to 100 streams, losing 6.8 percent of packets at 150 while delivering 116 percent of the
       rate through retransmits, collapsed at 200. Readers are nearly free - 2000 of them cost 0.6 of
       a core and ingest never noticed
+- [ ] A slow relayed viewer holds a thread, and nothing bounds how many. Measured: 200 readers pausing
+      three seconds a read took the pool from 12 workers to 219, one each, while not one subscriber
+      overflowed. Serve writes through PacketMuxer synchronously because libav has no async write
+      callback, so a consumer that will not take the bytes holds the thread writing to them. Viewers
+      per pod are therefore bounded by threads rather than bandwidth, on the route a cluster uses for
+      every viewer that reached the wrong pod. Bounded writers with a dropping queue, an async write
+      path, or disconnect a viewer that cannot keep up - any of the three beats a thread
+- [ ] ViewerQueuePackets is 2000 packets, which at 25 fps is eighty seconds of lag before skip-to-live
+      engages, and a viewer eighty seconds behind live is not a viewer. RecorderQueuePackets has the
+      same shape at 20000. Both want to be seconds of media rather than packets, since the packet is a
+      frame and the frame rate is the encoder's choice
+- [ ] Nothing bounds concurrent snapshot decodes: LibavMediaAnalyzer.OnAFileAsync spills every request
+      to a temp file and runs libav in Task.Run with no valve, so 200 snapshots at once are 200 temp
+      files and 200 decodes on the same pool as everything else. About 15 ms each here, so it passes at
+      200 and will not at a thousand with a detector triggering captures. A semaphore the width of the
+      processor count costs nothing and removes the queue
+- [ ] The document tail is about eleven a second: 200 recordings finishing together took 18 s for the
+      last document, in every healthy run. Storage write plus document write, serialized by LiteDB on
+      this configuration. Fine at 200, and it scales with the stream count
+- [ ] Measure a slow player on the consumption port, which the rig can now hold three hundred of
+      (ffmpeg -readrate 0.3). SRT is live and drops rather than blocking its sender, so a slow direct
+      viewer should lose picture where a slow relayed one holds a thread - that is code reading, not a
+      measurement
 - [ ] Pool StreamDemuxer.Pump's per-packet byte[]. Now measured rather than suspected: the per-stream
       demux threads are 1.8 cores at 200 camera-rate streams against the receive worker's 0.24, so
       ingest per pod is bounded by demultiplexing cost per packet and this is the thread to make
