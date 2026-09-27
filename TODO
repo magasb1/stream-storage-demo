@@ -70,6 +70,67 @@ Scaling to a thousand streams. The plan, the reasoning and the research behind e
       attaches by route, overflows, capture outcomes, the heartbeat's own latency, and on the API
       side the open server streams, document bytes by surface and the hop between replicas.
       docs/observability.md says what to alert on
+- [x] A high-load end-to-end test, and the meters checked rather than assumed: fifty encoders on one
+      ingest port, viewers opening and closing, a snapshot and a recording on every stream at once,
+      ten feeds killed with an audience and without, and every published figure held against what the
+      replica was actually doing - the owned gauge against the encoders started, recorded bytes
+      against the documents, hub bytes against the senders' own payload, and no tag carrying a name,
+      which fifty names can show and one cannot. Clean on four cores at 50 x 0.8 Mbit/s: 98 per cent
+      delivered, no kernel receive errors, a 1 ms median beat. LIVE_LOAD_STREAMS uses it as the rig
+- [x] Find the edge, on four cores, with a rig that is not its own bottleneck: LiveScaleTests ramps
+      ingest to 200 streams and readers to 500 and names what ran out, per thread, out of /proc.
+      Answers in .scratch/scale-to-1000/ingest-and-readers.md. 200 streams and 550 readers is not
+      where it breaks - 148 Mbit/s in, 437 out, 1.4 of 4 cores, nothing lost. Camera-rate ingest is:
+      clean to 100 streams, losing 6.8 percent of packets at 150 while delivering 116 percent of the
+      rate through retransmits, collapsed at 200. Readers are nearly free - 2000 of them cost 0.6 of
+      a core and ingest never noticed
+- [ ] (#4) A slow relayed viewer holds a thread, and nothing bounds how many. Measured: 200 readers pausing
+      three seconds a read took the pool from 12 workers to 219, one each, while not one subscriber
+      overflowed. Serve writes through PacketMuxer synchronously because libav has no async write
+      callback, so a consumer that will not take the bytes holds the thread writing to them. Viewers
+      per pod are therefore bounded by threads rather than bandwidth, on the route a cluster uses for
+      every viewer that reached the wrong pod. Bounded writers with a dropping queue, an async write
+      path, or disconnect a viewer that cannot keep up - any of the three beats a thread
+- [ ] (#5) ViewerQueuePackets is 2000 packets, which at 25 fps is eighty seconds of lag before skip-to-live
+      engages, and a viewer eighty seconds behind live is not a viewer. RecorderQueuePackets has the
+      same shape at 20000. Both want to be seconds of media rather than packets, since the packet is a
+      frame and the frame rate is the encoder's choice
+- [ ] (#6) Nothing bounds concurrent snapshot decodes: LibavMediaAnalyzer.OnAFileAsync spills every request
+      to a temp file and runs libav in Task.Run with no valve, so 200 snapshots at once are 200 temp
+      files and 200 decodes on the same pool as everything else. About 15 ms each here, so it passes at
+      200 and will not at a thousand with a detector triggering captures. A semaphore the width of the
+      processor count costs nothing and removes the queue
+- [ ] (#7) The document tail is about eleven a second: 200 recordings finishing together took 18 s for the
+      last document, in every healthy run. Storage write plus document write, serialized by LiteDB on
+      this configuration. Fine at 200, and it scales with the stream count
+- [ ] (#11) Measure a slow player on the consumption port, which the rig can now hold three hundred of
+      (ffmpeg -readrate 0.3). SRT is live and drops rather than blocking its sender, so a slow direct
+      viewer should lose picture where a slow relayed one holds a thread - that is code reading, not a
+      measurement
+- [ ] (#13) The scale rig exercises no detection, no KLV and no forwards. Detection is the one that
+      would move the ceiling: the frame tier decodes at keyframes for the preview, and a detector asks
+      for a rate, which makes the decoder decode everything between keyframes for those streams
+- [ ] (#14) LibavMediaAnalyzerTests.RunAsync and GrpcApiTests.SampleJpegAsync start the bundled ffmpeg
+      without LD_LIBRARY_PATH, where SrtSenders sets it, so those five tests fail on a Linux machine
+      carrying a fetched shared build in ffmpeg/linux-x64 - which is how a Linux developer gets SRT -
+      while every SRT test in the same run passes
+- [ ] (#8) Pool StreamDemuxer.Pump's per-packet byte[]. Now measured rather than suspected: the per-stream
+      demux threads are 1.8 cores at 200 camera-rate streams against the receive worker's 0.24, so
+      ingest per pod is bounded by demultiplexing cost per packet and this is the thread to make
+      cheaper. It supersedes the preview as the thing to look at first
+- [ ] (#10) baseline.md's receive-worker budget (streams/175 + pps/45000 < 1, knee at 60 percent of that
+      thread) does not hold outside the rig it was measured on. On a container over loopback the same
+      thread never passed 24 percent, at any load, including through a collapse, so the formula
+      over-predicts by an order of magnitude and must not size a Linux node. Decide whether to
+      re-measure it per environment or delete it and size from loss and kernel drops instead
+- [ ] (#9) Decide what a viewer's thread should be. Task.Factory.StartNew with an async delegate spends the
+      LongRunning thread at the first await, so 300 concurrent viewers cost no threads at all - good
+      at this scale - while one OS thread is still created and thrown away per accepted viewer, which
+      is waste during exactly the reconnect storm that produces them. Either Task.Run and a comment
+      that says so, or a genuinely synchronous serve loop
+- [ ] (#12) Find the reader ceiling with a socket in it. The 2000-reader figure is in-process HTTP against
+      the test server: it measures the subscription, the muxer and the copy, and no socket, no
+      Kestrel write path and no SRT egress. Whatever binds readers is in the part that rig replaces
 - [ ] Export the detection worker's meter too. It already publishes live.detection.duration on the
       same meter name, and nothing carries it off the pod: the worker is a separate deployment with
       no exporter wired, so today it is readable only with dotnet-counters against that process

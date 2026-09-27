@@ -145,6 +145,46 @@ the filesystem and S3 providers — are held to identical behaviour. Live stream
 same way it runs: a real SRT transport, a real demultiplexer, a real viewer. PostgreSQL's contract
 tests skip unless `POSTGRES_TEST_CONNECTION` points at a real database.
 
+One of them is a load test rather than a specification. `LiveLoadTests` puts fifty encoders on one
+ingest port, opens and closes viewers, snapshots and records every stream at the same time, and
+kills ten feeds — five of them with somebody watching — then holds every figure the replica
+publishes about itself against what it was actually doing. It runs alone, takes about a minute and
+a half, and reports its measurements in the shape `.scratch/scale-to-1000/baseline.md` uses, so a
+run is a row in that table rather than a pass:
+
+```
+load             50 streams x 0.80 Mbit/s, one ingest port
+on air           1.9 s for 50 streams (26.4 accepts/s)
+delivered        0.79 of 0.80 Mbit/s per stream (98 % of source, median), 39.3 Mbit/s over 50 streams
+meter            39.3 Mbit/s counted by the hub against 40.0 Mbit/s offered by 50 senders
+heartbeat        1 ms median, 15 ms slowest, over 38 passes
+transport        0 lost and 0 dropped of 84042 packets
+kernel udp       0 receive errors over the run
+```
+
+That run was four cores. `LIVE_LOAD_STREAMS=250 dotnet test --filter LiveLoadTests` uses the same
+test as the rig on a machine with more of them.
+
+Beside it, `LiveScaleTests` is a rig rather than a test, skipped unless `LIVE_SCALE=1`: it ramps
+ingest to two hundred streams and then readers to five hundred on top of them, and reports at every
+step what each side delivered, what the transport and the kernel lost, and — out of
+`/proc/self/task` — which threads by name were spending the machine. What it found on four cores is
+in [`.scratch/scale-to-1000/ingest-and-readers.md`](.scratch/scale-to-1000/ingest-and-readers.md):
+two hundred streams and five hundred readers is not where this breaks (1.4 cores, 148 Mbit/s in and
+437 Mbit/s out), camera-rate ingest starts losing packets between 100 and 150 streams, two thousand
+readers cost six tenths of a core, and what runs out first on a four-core box is the per-stream
+demultiplexer thread rather than the SRT receive worker every earlier measurement pointed at — with
+the caveat, stated in the write-up beside the number, that at the collapsed step the rig and the
+service together wanted more cores than the machine had, so a starved thread reads as an idle one.
+
+It also audits the work that is easy to leave out of a load test, because leaving it out is what made
+the first version of those figures look too good: the previews are checked for freshness rather than
+presence, and every stream is snapshotted and recorded at once. At 200 streams all of that holds — 200
+snapshots in 0.8 s, 200 recordings stored, ingest untouched — and the bottleneck it did find is on the
+viewer side: a relayed viewer that stops draining holds a thread, because the muxer writes to it
+synchronously, so 200 slow readers took the thread pool from 12 workers to 219 while the queue that
+was meant to protect them never overflowed.
+
 ## Migrations
 
 ```bash

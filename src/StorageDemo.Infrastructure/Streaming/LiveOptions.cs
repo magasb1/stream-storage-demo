@@ -108,6 +108,14 @@ public sealed class LiveOptions
     ///
     ///     streams/175 + pps/45000 &lt; 1
     ///
+    /// That budget, and the per-bitrate figures below, were measured on one rig and do not travel:
+    /// on a container over loopback the receive worker it describes never passed a quarter of its
+    /// core at any load, including through a collapse, so the formula over-predicts its cost by
+    /// roughly an order of magnitude and would size a Linux node far below what it can carry. Size
+    /// from what a pod is actually delivering instead - the per-stream figures in GET /api/live, and
+    /// the kernel's UDP receive errors - and treat the numbers here as the shape rather than the
+    /// scale. See .scratch/scale-to-1000/ingest-and-readers.md.
+    ///
     /// Twenty streams carrying 300 Mbit/s sit at a third of libsrt's receive thread; seventy-five
     /// streams carrying the same 300 collapse it. So this is set per deployment from the bitrate
     /// the encoders pointed at it actually send. Measured knees, one ingest port, in
