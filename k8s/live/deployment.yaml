@@ -161,6 +161,15 @@ spec:
             # a camera-like four, fewer than 20 at fifteen. Sixty is the camera-rate figure the
             # requests below are sized for.
             #
+            # That budget was measured on one rig and does not travel. Re-measured on a container
+            # over loopback (.scratch/scale-to-1000/ingest-and-readers.md), the receive worker it
+            # describes never passed a quarter of its core at any load, and what ran out first was
+            # the per-stream demultiplexer thread instead - a hundred camera-rate streams were
+            # clean on four cores where the formula says sixty. So it over-predicts here rather
+            # than under-predicting, which is the safe direction, and sixty stays as a floor a
+            # node is unlikely to fail to meet. Raise it from what a pod actually delivers on the
+            # hardware in front of you, not from the arithmetic.
+            #
             # A refused encoder retries from a fresh source port and is re-balanced to another pod
             # under every load balancer default in play - iptables and nftables random, IPVS
             # round-robin, Cilium random and maglev - which is why sessionAffinity stays None on
