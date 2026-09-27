@@ -508,8 +508,11 @@ public sealed class LiveStreamsController(
         Response.ContentType = "video/mp2t";
 
         // Asking for twenty seconds and receiving twenty-six is normal, since a stream can only be
-        // joined where a decoder can start. The SRT path has to log this because that transport has
-        // no way to say it back; here there is one, and the relaying replica logs what it was told.
+        // joined where a decoder can start. So is receiving less: a stream may not have been running
+        // that long, and a rollback deeper than a viewer's queue can hold is cut to what will fit
+        // rather than thrown away on the way in. The SRT path has to log this because that transport
+        // has no way to say it back; here there is one, and the relaying replica logs what it was
+        // told.
         Response.Headers["X-Live-Preroll"] = live
             .ResolvePreroll(name, from)
             .ToString("0.###", CultureInfo.InvariantCulture);

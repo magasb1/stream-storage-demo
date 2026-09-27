@@ -53,13 +53,20 @@ internal sealed class LiveReplicas : IAsyncDisposable
     /// How many streams this replica accepts before refusing new names. Zero, the default, is
     /// unlimited, which is what every test that is not about capacity wants.
     /// </param>
+    /// <param name="viewerQueuePackets">
+    /// The ceiling on a viewer's queue. Zero, the default, leaves the configured one, which no
+    /// ordinary test wants to touch. A test about what happens when that ceiling binds does: the
+    /// reference senders push fifteen frames a second of video and nothing else, so the real ceiling
+    /// is worth well over a minute of them and could not be reached inside a test at all.
+    /// </param>
     public WebApplicationFactory<Program> Start(
         string node,
         int ingestPort,
         ILiveStreamRegistry? registry = null,
         int graceSeconds = 5,
         WebApplicationFactory<Program>? peer = null,
-        int maxStreams = 0)
+        int maxStreams = 0,
+        int viewerQueuePackets = 0)
     {
         var host = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
         {
@@ -77,6 +84,11 @@ internal sealed class LiveReplicas : IAsyncDisposable
             builder.UseSetting("Live:GracePeriodSeconds", graceSeconds.ToString());
             builder.UseSetting("Live:FeedTimeoutSeconds", "2");
             builder.UseSetting("Live:MaxStreams", maxStreams.ToString());
+
+            if (viewerQueuePackets > 0)
+            {
+                builder.UseSetting("Live:ViewerQueuePackets", viewerQueuePackets.ToString());
+            }
 
             // One file under this fixture's own sandbox, not per node: a source is shared cluster
             // state, the same reason pod-a and pod-b share one Registry below. Without this the

@@ -209,7 +209,7 @@ public sealed class StreamForwarder : IDisposable
             // hole in a file that claims to be a recording is worse than no recording; a forward
             // makes no such promise to anybody, and the far end is watching rather than archiving.
             using var subscription = _hub.Subscribe(
-                layout.QueueDepth(_options.ViewerQueueSeconds, _options.ViewerQueuePackets),
+                _options.ViewerQueuePackets,
                 OverflowPolicy.SkipToLive,
                 streamIndexes: [],
                 preroll: 0);

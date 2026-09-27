@@ -51,17 +51,67 @@ public sealed unsafe class StreamLayoutTests
     /// <summary>
     /// What the ceiling is for. A queue in seconds is the intent, but the memory it costs is
     /// packets, and a sender is free to claim any frame rate it likes.
+    ///
+    /// A claim of ten thousand frames a second is not believed at all, which is the point: believed,
+    /// it would pin every viewer of that stream to the ceiling and so to a fifth of a second of
+    /// queue, letting a sender opt its own viewers out of ever riding out a hiccup. It is treated as
+    /// a stream that said nothing, and a low ceiling then binds on the assumption rather than on the
+    /// claim.
     /// </summary>
     [Fact]
-    public void A_stream_claiming_an_absurd_rate_is_stopped_by_the_ceiling()
+    public void A_stream_claiming_an_impossible_rate_is_not_believed()
     {
         Assert.SkipUnless(Ffmpeg.IsPresent, "No FFmpeg. Run scripts/fetch-ffmpeg.sh.");
 
         FfmpegLibrary.EnsureLoaded();
 
-        using var layout = Layout(videoFrameRate: 10_000);
+        using var claimed = Layout(videoFrameRate: 10_000);
+        using var impossible = Layout(videoFrameRate: 25, sampleRate: 48_000, frameSize: 1);
 
-        Assert.Equal(2_000, layout.QueueDepth(seconds: 4, ceiling: 2_000));
+        Assert.Equal(60, claimed.PacketsPerSecond);
+        Assert.Equal(240, claimed.QueueDepth(seconds: 4, ceiling: 2_000));
+
+        // The audio track claims 48000 packets a second, from a frame of one sample. Discarded, so
+        // this transport is twenty-five frames of picture plus the assumption for the track that
+        // said something impossible - not the forty-eight thousand it asked to be sized for.
+        Assert.Equal(85, impossible.PacketsPerSecond);
+    }
+
+    /// <summary>
+    /// The ceiling still binds where the stream is fast and honest, which is the case a viewer's
+    /// deepest rollback runs into.
+    /// </summary>
+    [Fact]
+    public void A_ceiling_below_what_was_asked_for_is_what_is_given()
+    {
+        Assert.SkipUnless(Ffmpeg.IsPresent, "No FFmpeg. Run scripts/fetch-ffmpeg.sh.");
+
+        FfmpegLibrary.EnsureLoaded();
+
+        using var layout = Layout(videoFrameRate: 50);
+
+        Assert.Equal(2_000, layout.QueueDepth(seconds: 60, ceiling: 2_000));
+    }
+
+    /// <summary>
+    /// The floor, which is in seconds because a floor in packets is the whole bug in miniature:
+    /// sixty-four packets is a moment at twenty-five frames a second and over a minute at one.
+    /// </summary>
+    [Fact]
+    public void A_slow_stream_gets_a_short_queue_rather_than_a_deep_one()
+    {
+        Assert.SkipUnless(Ffmpeg.IsPresent, "No FFmpeg. Run scripts/fetch-ffmpeg.sh.");
+
+        FfmpegLibrary.EnsureLoaded();
+
+        using var layout = Layout(videoFrameRate: 1);
+
+        // Four seconds of a one-frame-a-second stream is four packets, not sixty-four.
+        Assert.Equal(4, layout.QueueDepth(seconds: 4, ceiling: 2_000));
+
+        // And asking for less than the floor in seconds gets the floor, in that stream's own terms:
+        // half a second of this stream rounds up to one packet, and a queue has to hold a few.
+        Assert.Equal(4, layout.QueueDepth(seconds: 0.1, ceiling: 2_000));
     }
 
     /// <summary>

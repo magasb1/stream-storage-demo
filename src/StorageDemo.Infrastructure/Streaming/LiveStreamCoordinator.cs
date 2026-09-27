@@ -688,12 +688,55 @@ public sealed class LiveStreamCoordinator(
     }
 
     /// <summary>
-    /// What a viewer asking to start this far back would actually get, which is at least what it
-    /// asked for. Answered before a byte is written, so the response can say so in a header:
-    /// asking for twenty seconds and receiving twenty-six is normal rather than an error.
+    /// What a viewer asking to start this far back would actually get. Answered before a byte is
+    /// written, so the response can say so in a header: asking for twenty seconds and receiving
+    /// twenty-six is normal rather than an error, and receiving less than was asked for is what a
+    /// stream that has not been running that long has always answered.
     /// </summary>
     public double ResolvePreroll(string name, double seconds)
-        => _local.TryGetValue(name, out var entry) ? entry.Hub.ResolvePreroll(seconds) : 0;
+        => _local.TryGetValue(name, out var entry) ? entry.Hub.ResolvePreroll(Fitting(entry, seconds)) : 0;
+
+    /// <summary>
+    /// The rollback to actually ask the buffer for: what the viewer asked for, cut to what its queue
+    /// can hold.
+    ///
+    /// <see cref="StreamHub.Subscribe"/> seeds a viewer's queue from the buffer before a live packet
+    /// reaches it, and a seed larger than the queue does not cost the part that did not fit - it
+    /// costs all of it. Every seeded packet is offered as not starting a segment, so the first
+    /// overflow puts the subscription into resynchronising and discards the lot, leaving the viewer
+    /// at the live edge after the header had already promised it thirty seconds. That is a real
+    /// case rather than a theoretical one: at twenty-five frames a second beside AAC audio, a full
+    /// thirty-second rollback is about 2150 packets against a ceiling of 2000.
+    ///
+    /// So the ask is cut here, where both the header and the seed read it, and a viewer is told the
+    /// shorter figure it will actually be given. <see cref="LiveOptions.ViewerQueueSeconds"/> is
+    /// held back out of the room, because the queue has to hold the live flow as well as the
+    /// history, and it doubles as the margin the rounding needs: a rollback starts at the keyframe
+    /// at or before what was asked for, which reaches further back than the ask by up to one
+    /// keyframe interval. Where it reaches past what the queue can hold even so, the overshoot is
+    /// taken off the ask and the buffer is asked again. A sender whose keyframe interval is longer
+    /// than the whole live slack can still land outside on the second answer, which costs that
+    /// viewer its rollback and nothing else - exactly what happened to every viewer before this.
+    /// </summary>
+    private double Fitting(LiveStreamEntry entry, double asked)
+    {
+        if (asked <= 0 || entry.Hub.Layout is not { } layout)
+        {
+            return asked;
+        }
+
+        var room = (_options.ViewerQueuePackets / layout.PacketsPerSecond) - _options.ViewerQueueSeconds;
+
+        if (room <= 0)
+        {
+            return 0;
+        }
+
+        var ask = Math.Min(asked, room);
+        var reaches = entry.Hub.ResolvePreroll(ask);
+
+        return reaches <= room ? ask : Math.Max(0, ask - (reaches - room));
+    }
 
     public Task<double> WriteToViewerAsync(
         ViewerRequest request,
@@ -741,20 +784,31 @@ public sealed class LiveStreamCoordinator(
             return continueFromSeconds;
         }
 
+        // The same figure the header promised this viewer, and for the reason Fitting gives: a
+        // rollback bigger than the queue costs the viewer all of it rather than the part that did
+        // not fit.
+        var preroll = Fitting(entry, request.Preroll);
+
         // The rollback is part of the depth, because Subscribe fills the queue from the buffer
         // before a live packet ever reaches it: sized for the live slack alone, a viewer asking to
         // start twenty seconds back would overflow on the way in and lose exactly the rollback it
         // asked for.
-        var queued = _options.ViewerQueueSeconds + entry.Hub.ResolvePreroll(request.Preroll);
+        var queued = _options.ViewerQueueSeconds + entry.Hub.ResolvePreroll(preroll);
 
         using var subscription = entry.Hub.Subscribe(
             layout.QueueDepth(queued, _options.ViewerQueuePackets),
             OverflowPolicy.SkipToLive,
             streamIndexes: [],
-            request.Preroll);
+            preroll);
 
         // The muxer writes into memory and this loop writes memory to the viewer, rather than the
         // muxer writing to the viewer itself. See the note above on what the difference is worth.
+        //
+        // Declared in this order so that they are disposed in the other one. The buffer lends libav
+        // a pooled array, and the muxer is what libav writes through: returning that array while a
+        // muxer could still write to it would hand one viewer's bytes to whatever rented it next.
+        // MuxerBuffer refuses a write after it has been disposed rather than leaving that to the
+        // order of two lines, but the order is still the reason nothing has to.
         using var buffer = new MuxerBuffer();
         using var muxer = new PacketMuxer(buffer, layout, "mpegts", continueFromSeconds);
 

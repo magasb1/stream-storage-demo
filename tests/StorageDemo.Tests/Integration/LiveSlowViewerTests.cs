@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Microsoft.Extensions.DependencyInjection;
 using StorageDemo.Core.Streaming;
 using StorageDemo.Infrastructure.Streaming;
 using StorageDemo.Tests.Infrastructure;
@@ -17,8 +18,15 @@ namespace StorageDemo.Tests.Integration;
 /// Cheap on purpose: one stream, a couple of dozen readers that pause between reads, and a
 /// measurement of what the process is holding while they do. The scale rig measures the same thing
 /// at five hundred readers and takes minutes; this asks the one question that has an answer either
-/// way in about twenty seconds.
+/// way in about half a minute.
+///
+/// In <see cref="LoadCollection"/>, which is not a detail. The thread counts here are the whole
+/// process's, and the pool's size is the process's too: run beside the rest of the suite, the pool
+/// is already grown past two dozen workers, blocking two dozen of them needs no new ones, and the
+/// growth this measures reads as zero whether the fault is present or not. A test that passes for
+/// the wrong reason is worse than one that flakes.
 /// </summary>
+[Collection(LoadCollection.Name)]
 public sealed class LiveSlowViewerTests(ITestOutputHelper output) : IAsyncLifetime
 {
     /// <summary>
@@ -37,10 +45,11 @@ public sealed class LiveSlowViewerTests(ITestOutputHelper output) : IAsyncLifeti
 
     /// <summary>
     /// How long the readers are left stalled before the process is asked what it is holding. The
-    /// thread pool injects roughly a worker or two a second once its own are all blocked, so this
-    /// has to be long enough for that to be visible rather than pending.
+    /// thread pool injects roughly a worker or two a second once its own are all blocked, so a
+    /// fault that costs a thread each needs about twenty of them injected before it is unmistakable,
+    /// and a window of eight seconds would be measuring the injection rate rather than the fault.
     /// </summary>
-    private static readonly TimeSpan Stalled = TimeSpan.FromSeconds(8);
+    private static readonly TimeSpan Stalled = TimeSpan.FromSeconds(15);
 
     private readonly LiveReplicas _replicas = new();
 
@@ -64,6 +73,10 @@ public sealed class LiveSlowViewerTests(ITestOutputHelper output) : IAsyncLifeti
         const string name = "slow-audience";
 
         var a = _replicas.Start("pod-a", _ingest);
+
+        // Started before the readers, because a counter is an event: a listener attached afterwards
+        // sees nothing of what it already counted.
+        using var meters = new Meters(a.Services.GetRequiredService<LiveMetrics>());
 
         _replicas.Send(_ingest, name);
 
@@ -97,10 +110,13 @@ public sealed class LiveSlowViewerTests(ITestOutputHelper output) : IAsyncLifeti
             output.WriteLine($"before: {before}");
             output.WriteLine($"after {Readers} slow readers: {after}");
 
-            // A third of the readers, not zero. A pool that grows a worker for a reason of its own
-            // while this runs is ordinary, and the failure this exists to catch is not subtle: one
-            // thread per slow viewer, which at this count is twenty-four of them.
-            var allowed = Readers / 3;
+            // Half the readers, and the figure is measured rather than chosen. Two dozen concurrent
+            // readers cost this pool five workers when they read at full speed and nine when they
+            // stall, because a pool grows on queued work whether or not anything is blocked; the
+            // fault this exists to catch cost twenty-three, which is one per slow reader and the
+            // signature of the thing itself. Half the readers sits at twice the honest figure and
+            // half the faulty one.
+            var allowed = Readers / 2;
 
             Assert.True(
                 after.Pool - before.Pool <= allowed,
@@ -117,6 +133,23 @@ public sealed class LiveSlowViewerTests(ITestOutputHelper output) : IAsyncLifeti
             Assert.All(readers, reader => Assert.True(
                 reader.Bytes > 0,
                 $"a slow reader received nothing; it reported {reader.Fault?.Message ?? "no fault"}"));
+
+            // The other half of the same design, and the half the thread count cannot show. A viewer
+            // reading a fifth of what is sent it has to reach the end of its queue and be skipped
+            // forward; the queue used to be eighty seconds deep at camera rates, so a reader this
+            // slow could stall for over a minute without ever reaching it, and the rig's skip column
+            // read zero at two hundred slow readers. Four seconds of media is reached in about four
+            // seconds, which is what makes this an assertion rather than a rig run.
+            var skips = meters
+                .Of("live.overflows")
+                .Where(overflow => overflow.Tags.Contains(
+                    new KeyValuePair<string, object?>("policy", "skip-to-live")))
+                .Sum(overflow => overflow.Value);
+
+            Assert.True(
+                skips > 0,
+                "no viewer was skipped forward, so nothing reached the end of its queue in "
+                + $"{Stalled.TotalSeconds:0} seconds of reading a fifth of the stream");
         }
         finally
         {

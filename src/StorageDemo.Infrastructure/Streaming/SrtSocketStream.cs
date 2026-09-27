@@ -272,11 +272,17 @@ public sealed unsafe class SrtSocketStream : Stream, IWireWriter
     ///
     /// libsrt has no asynchronous send: a send blocks until the socket has room, and making that
     /// non-blocking would mean libsrt's own epoll rather than anything a .NET task can express. A
-    /// write to an SRT peer therefore occupies a thread whatever this method does, and the only
-    /// thing an override changes is how many. The base class hands the blocking send to a
-    /// thread-pool worker and waits for it, which costs one thread more than doing it here on the
-    /// thread already serving this one connection - and a viewer or a forward is written to once per
-    /// packet.
+    /// write to an SRT peer therefore occupies a thread whatever this method does. What the base
+    /// class does is not wrong so much as pointless here: it moves the blocking send to a
+    /// thread-pool worker and releases the caller while it runs, which for a consumer that has
+    /// nothing else to do until the write finishes buys a hop and a <see cref="Task"/> and no
+    /// concurrency at all.
+    ///
+    /// The load-bearing part is what that costs the viewer path. Serving a viewer drains its muxed
+    /// bytes with an await per packet, and against a destination like this one that await completes
+    /// synchronously and the loop simply carries on. Left to the base class, every packet for every
+    /// direct viewer would instead suspend the loop and queue a work item, which is a per-packet
+    /// pool dispatch on the busiest path this service has.
     /// </summary>
     public override ValueTask WriteAsync(
         ReadOnlyMemory<byte> buffer,

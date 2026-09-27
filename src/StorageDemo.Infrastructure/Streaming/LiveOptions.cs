@@ -208,6 +208,11 @@ public sealed class LiveOptions
     /// in. A viewer's queue is therefore sized per stream, from what the sender is actually
     /// sending, plus whatever rollback that viewer asked to start from.
     ///
+    /// It is as honest as the sender's own declaration, which is what the rate is read from: a
+    /// sender that overstates its frame rate gets a queue shallower in real seconds than this asks
+    /// for, and one that understates it a deeper one. <see cref="ViewerQueuePackets"/> is what
+    /// bounds the cost of the second case, and a sanity clamp on the declared rate the first.
+    ///
     /// This used to be stated in packets, and 2000 of them read as a generous queue right up until
     /// somebody worked out what it was worth: a packet here is one demultiplexed frame, so at
     /// twenty-five a second that queue was eighty seconds deep. Skip-to-live never engaged, because
@@ -223,40 +228,38 @@ public sealed class LiveOptions
     public double ViewerQueueSeconds { get; init; } = 4;
 
     /// <summary>
-    /// The ceiling on a viewer's queue, in packets, whatever <see cref="ViewerQueueSeconds"/> works
-    /// out to. It is what stops a sender claiming an absurd frame rate from sizing a queue per
-    /// viewer that this replica cannot afford, and it is why the depth above can be expressed in
-    /// seconds at all.
+    /// The ceiling on a viewer's queue, in packets, whatever <see cref="ViewerQueueSeconds"/> and a
+    /// rollback work out to. It is what stops a sender claiming an absurd frame rate from sizing a
+    /// queue per viewer that this replica cannot afford, and it is why the depth above can be
+    /// expressed in seconds at all.
     ///
     /// Kept under its old name and its old value, so a deployment that tuned it keeps a bound it
-    /// recognises. What changed is that it is now the greater of the two figures rather than the
-    /// only one: a deployment that lowered it still gets no more than it asked for, and one that
-    /// raised it no longer gets a queue measured in minutes.
+    /// recognises. What changed is that it is a ceiling rather than the depth itself: a deployment
+    /// that lowered it still gets no more than it asked for, and one that left it alone no longer
+    /// gets a queue measured in minutes.
+    ///
+    /// It is not a formality. At twenty-five frames a second beside AAC audio it is about
+    /// twenty-eight seconds of media, which is less than the rolling buffer's own window, so it is
+    /// this rather than <see cref="ViewerQueueSeconds"/> that decides how far back the deepest
+    /// rollback a viewer can be given actually reaches - see the pre-roll clamp in
+    /// <c>LiveStreamCoordinator</c>, which is where the two meet.
+    ///
+    /// A forward still takes this figure as its depth outright rather than as a ceiling. A forward
+    /// is not a viewer - it is one configured far end rather than one of a thousand arriving
+    /// players - and sizing it is not what this option was changed for.
     /// </summary>
     [Range(64, 100_000)]
     public int ViewerQueuePackets { get; init; } = 2_000;
 
     /// <summary>
-    /// Queue depth for a recorder, in seconds of media, and the pre-roll is added to it as a
-    /// viewer's rollback is. Larger than a viewer's, because overflowing here is not a skip: it
-    /// ends the recording and marks the document truncated, and that must be genuinely rare.
+    /// Queue depth for a recorder. Larger, because overflowing here is not a skip: it ends the
+    /// recording and marks the document truncated, and that must be genuinely rare.
     ///
-    /// It has a different job from a viewer's queue, and the figure follows the job. A recorder
-    /// writes to a local file, so it is never the slow consumer a viewer can be; what it has to
-    /// ride out is the gap between parts, where the part just finished is uploaded to storage
-    /// before anything is read from the queue again. Sixty seconds is a very slow upload of a
-    /// five-minute part, and a recording that cannot keep up with a minute of that has a storage
-    /// problem the queue cannot solve.
-    /// </summary>
-    [Range(1, 600)]
-    public double RecorderQueueSeconds { get; init; } = 60;
-
-    /// <summary>
-    /// The ceiling on a recorder's queue, in packets. The same guard
-    /// <see cref="ViewerQueuePackets"/> is, and kept under its old name for the same reason, but it
-    /// is a real bound here rather than a formality: sixty seconds of a contribution-quality feed
-    /// is tens of megabytes of queued packets, and a recording holding all of it while it uploads a
-    /// part is memory this replica has to have.
+    /// Still in packets, and deliberately left that way. A recorder wants the same treatment a
+    /// viewer has just been given and cannot safely have it yet: overflowing costs data rather than
+    /// a moment, and its queue has to cover a part upload, which happens between reads with nothing
+    /// draining the channel. A figure in seconds that did not account for that would turn a slow
+    /// storage backend into truncated recordings. Tracked as its own change.
     /// </summary>
     [Range(64, 1_000_000)]
     public int RecorderQueuePackets { get; init; } = 20_000;
