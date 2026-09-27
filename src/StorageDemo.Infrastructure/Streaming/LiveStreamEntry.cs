@@ -133,6 +133,52 @@ public sealed class LiveStreamEntry : IAsyncDisposable
 
     public void ViewerLeft() => Interlocked.Decrement(ref _viewers);
 
+    private long _meteredPackets;
+    private long _meteredBytes;
+    private long _meteredKlv;
+    private long _meteredKlvRejected;
+
+    /// <summary>
+    /// What this stream has carried since the meter last asked, and remembers that it was asked.
+    ///
+    /// The hub and the extractor keep running totals because that is what a reconnect can carry
+    /// across; a counter wants the interval. Taking the difference here rather than in
+    /// <see cref="LiveMetrics"/> is what makes the meter's figures exact however often the
+    /// heartbeat describes a stream: the second call in one beat reports nothing because nothing
+    /// arrived between them.
+    ///
+    /// Under the entry's own lock, because the heartbeat is not the only thread that describes a
+    /// stream - a claim and a manual creation both do - and two of them reading the same totals
+    /// would count an interval twice.
+    /// </summary>
+    /// <param name="lost">Packets libsrt reported missing over its own interval, which it has already cleared.</param>
+    /// <param name="dropped">Packets that arrived too late, over that same interval.</param>
+    public StreamFeed TakeFeed(int lost, int dropped)
+    {
+        lock (_gate)
+        {
+            var packets = Hub.Packets;
+            var bytes = Hub.Bytes;
+            var klv = Klv.Packets;
+            var rejected = Klv.Rejected;
+
+            var feed = new StreamFeed(
+                packets - _meteredPackets,
+                bytes - _meteredBytes,
+                klv - _meteredKlv,
+                rejected - _meteredKlvRejected,
+                lost,
+                dropped);
+
+            _meteredPackets = packets;
+            _meteredBytes = bytes;
+            _meteredKlv = klv;
+            _meteredKlvRejected = rejected;
+
+            return feed;
+        }
+    }
+
     /// <summary>
     /// Hands the entry a new connection, cancelling whatever was feeding it.
     ///

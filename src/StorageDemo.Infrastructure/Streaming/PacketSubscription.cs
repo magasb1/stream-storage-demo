@@ -34,17 +34,31 @@ public sealed class PacketSubscription : IDisposable
     private readonly OverflowPolicy _policy;
     private readonly Action _detach;
 
+    /// <summary>
+    /// Told when this subscriber falls behind, or null where nothing is measuring - a hub built by
+    /// a test or by the detection worker, neither of which publishes a meter. Overflowing is a
+    /// fault and therefore rare, so it is the one thing on this path counted as it happens rather
+    /// than sampled by the heartbeat.
+    /// </summary>
+    private readonly LiveMetrics? _metrics;
+
     /// <summary>Only these stream indexes are delivered. Empty means all of them.</summary>
     private readonly int[] _streamIndexes;
 
     /// <summary>Set after an overflow, until the next position a decoder can start from.</summary>
     private bool _resynchronising;
 
-    internal PacketSubscription(int capacity, OverflowPolicy policy, int[] streamIndexes, Action detach)
+    internal PacketSubscription(
+        int capacity,
+        OverflowPolicy policy,
+        int[] streamIndexes,
+        Action detach,
+        LiveMetrics? metrics = null)
     {
         _policy = policy;
         _streamIndexes = streamIndexes;
         _detach = detach;
+        _metrics = metrics;
 
         _packets = Channel.CreateBounded<MediaPacket>(new BoundedChannelOptions(capacity)
         {
@@ -91,6 +105,7 @@ public sealed class PacketSubscription : IDisposable
         }
 
         Overflows++;
+        _metrics?.Overflowed(_policy);
 
         if (_policy == OverflowPolicy.Fail)
         {

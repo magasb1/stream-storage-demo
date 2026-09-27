@@ -154,6 +154,12 @@ public sealed class LiveConsumptionService(
                         coordinator.ResolvePreroll(name, from),
                         from);
 
+                    // Counted per attach rather than per connection, because a viewer held across a
+                    // change of owner is a new attach each time and that is the event a dashboard
+                    // reads as "how often does a stream move under somebody watching". The count of
+                    // viewers watching right now is on the census instead.
+                    metrics.Viewing("direct");
+
                     timeline = await coordinator.WriteToViewerAsync(
                         new ViewerRequest(name, from),
                         viewer,
@@ -162,6 +168,8 @@ public sealed class LiveConsumptionService(
                 }
                 else
                 {
+                    metrics.Viewing("relayed");
+
                     await RelayAsync(stream, from, Carried(), viewer, stopping);
 
                     timeline = Carried();

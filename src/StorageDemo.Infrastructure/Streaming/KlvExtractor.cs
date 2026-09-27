@@ -33,6 +33,13 @@ public sealed class KlvExtractor(StreamHub hub, ILogger logger)
     /// <summary>Packets that were ST 0601 but failed their checksum, and were dropped.</summary>
     public long Rejected { get; private set; }
 
+    /// <summary>
+    /// Every packet this extractor has decoded, for the life of the hub. Cumulative, like the hub's
+    /// own counts, because the heartbeat reports the interval since it last looked and a total is
+    /// the only thing a reconnect can carry across without a second concept.
+    /// </summary>
+    public long Packets { get; private set; }
+
     public KlvSample? Latest
     {
         get { lock (_gate) { return _count == 0 ? null : _ring[(_next - 1 + RingSize) % RingSize]; } }
@@ -132,6 +139,7 @@ public sealed class KlvExtractor(StreamHub hub, ILogger logger)
 
             lock (_gate)
             {
+                Packets++;
                 _ring[_next] = sample;
                 _next = (_next + 1) % RingSize;
                 _count = Math.Min(_count + 1, RingSize);

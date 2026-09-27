@@ -1,5 +1,4 @@
-using System.Collections.Concurrent;
-using System.Diagnostics.Metrics;
+using Microsoft.Extensions.Logging.Abstractions;
 using StorageDemo.Infrastructure.Streaming;
 
 namespace StorageDemo.Tests.Infrastructure;
@@ -24,6 +23,42 @@ public sealed class LiveMetricsTests
         metrics.StreamsOwned = 0;
 
         Assert.Equal(0, meters.Value("live.streams.owned"));
+    }
+
+    /// <summary>
+    /// The six figures a beat publishes are one picture of one moment, which is the reason they
+    /// travel as a record: a scrape landing between six separate writes could report a replica
+    /// holding ten streams with eleven of them interrupted.
+    /// </summary>
+    [Fact]
+    public void A_census_publishes_every_figure_the_beat_found()
+    {
+        using var metrics = new LiveMetrics
+        {
+            Census = new LiveCensus(
+                Streams: 12,
+                Interrupted: 3,
+                Unstartable: 2,
+                Viewers: 40,
+                Recordings: 5,
+                Forwards: 1),
+        };
+
+        using var meters = new Meters(metrics);
+
+        Assert.Equal(12, meters.Value("live.streams.owned"));
+        Assert.Equal(3, meters.Value("live.streams.interrupted"));
+        Assert.Equal(2, meters.Value("live.streams.unstartable"));
+        Assert.Equal(40, meters.Value("live.viewers"));
+        Assert.Equal(5, meters.Value("live.recordings.active"));
+        Assert.Equal(1, meters.Value("live.forwards.active"));
+
+        // The shortcut the heartbeat uses before it has walked anything must not silently reset the
+        // rest of the picture.
+        metrics.StreamsOwned = 11;
+
+        Assert.Equal(11, meters.Value("live.streams.owned"));
+        Assert.Equal(3, meters.Value("live.streams.interrupted"));
     }
 
     /// <summary>
@@ -54,6 +89,141 @@ public sealed class LiveMetricsTests
                 new KeyValuePair<string, object?>("reason", "conflict"),
             ],
             reject.Tags);
+    }
+
+    /// <summary>
+    /// A fed interval reaches all six counters untagged, so a thousand streams are one time series
+    /// each rather than a thousand.
+    /// </summary>
+    [Fact]
+    public void A_fed_interval_is_counted_once_and_carries_no_tags()
+    {
+        using var metrics = new LiveMetrics();
+        using var meters = new Meters(metrics);
+
+        metrics.Fed(new StreamFeed(
+            Packets: 900,
+            Bytes: 1_200_000,
+            KlvPackets: 20,
+            KlvRejected: 1,
+            PacketsLost: 4,
+            PacketsDropped: 2));
+
+        Assert.Equal(900, meters.Total("live.packets"));
+        Assert.Equal(1_200_000, meters.Total("live.bytes"));
+        Assert.Equal(20, meters.Total("live.klv.packets"));
+        Assert.Equal(1, meters.Total("live.klv.rejected"));
+        Assert.Equal(4, meters.Total("live.packets.lost"));
+        Assert.Equal(2, meters.Total("live.packets.dropped"));
+
+        Assert.Empty(meters.Tags("live.packets"));
+        Assert.Empty(meters.Tags("live.bytes"));
+    }
+
+    /// <summary>
+    /// A stream carrying no KLV and losing nothing - which is nine out of ten of them - costs the
+    /// meter nothing per beat rather than four measurements of zero.
+    /// </summary>
+    [Fact]
+    public void A_quiet_stream_reports_nothing_rather_than_zeros()
+    {
+        using var metrics = new LiveMetrics();
+        using var meters = new Meters(metrics);
+
+        metrics.Fed(new StreamFeed(Packets: 10, Bytes: 500, 0, 0, 0, 0));
+
+        Assert.Equal(10, meters.Total("live.packets"));
+        Assert.Empty(meters.Of("live.klv.packets"));
+        Assert.Empty(meters.Of("live.packets.lost"));
+        Assert.Empty(meters.Of("live.packets.dropped"));
+    }
+
+    /// <summary>
+    /// Every outcome tag is a word this class chose. None of them can be reached from anything a
+    /// caller sent, which is the rule that keeps a public port from choosing this meter's
+    /// cardinality.
+    /// </summary>
+    [Fact]
+    public void Outcomes_are_tagged_from_a_fixed_vocabulary()
+    {
+        using var metrics = new LiveMetrics();
+        using var meters = new Meters(metrics);
+
+        metrics.Claimed("resumed");
+        metrics.Ended("displaced");
+        metrics.Viewing("relayed");
+        metrics.Snapshotted("preview");
+        metrics.Recorded("truncated");
+        metrics.Overflowed(OverflowPolicy.Fail);
+        metrics.Overflowed(OverflowPolicy.SkipToLive);
+        metrics.BeatFailed("registry");
+
+        Assert.Equal([new KeyValuePair<string, object?>("outcome", "resumed")], meters.Tags("live.claims"));
+        Assert.Equal([new KeyValuePair<string, object?>("reason", "displaced")], meters.Tags("live.streams.ended"));
+        Assert.Equal([new KeyValuePair<string, object?>("route", "relayed")], meters.Tags("live.viewer.sessions"));
+        Assert.Equal([new KeyValuePair<string, object?>("outcome", "preview")], meters.Tags("live.snapshots"));
+        Assert.Equal([new KeyValuePair<string, object?>("outcome", "truncated")], meters.Tags("live.recordings"));
+        Assert.Equal([new KeyValuePair<string, object?>("stage", "registry")], meters.Tags("live.heartbeat.failures"));
+
+        Assert.Equal(
+            ["fail", "skip-to-live"],
+            meters.Of("live.overflows").Select(recording => recording.Tags.Single().Value).ToArray());
+    }
+
+    /// <summary>The beat is two seconds, so its histogram has to be able to say so in seconds.</summary>
+    [Fact]
+    public void The_heartbeat_reports_in_seconds()
+    {
+        using var metrics = new LiveMetrics();
+        using var meters = new Meters(metrics);
+
+        metrics.Beat(TimeSpan.FromMilliseconds(250));
+
+        Assert.Equal(0.25, meters.Value("live.heartbeat.duration"));
+    }
+
+    /// <summary>
+    /// The one thing on the fan-out path counted where it happens rather than sampled by the beat.
+    /// It goes through the hub, because a subscription is not something a caller builds.
+    /// </summary>
+    [Fact]
+    public void A_subscriber_that_falls_behind_is_counted_through_the_hub()
+    {
+        using var metrics = new LiveMetrics();
+        using var meters = new Meters(metrics);
+        using var hub = new StreamHub("overflowing", new LiveOptions(), NullLogger.Instance, metrics);
+
+        using var subscription = hub.Subscribe(capacity: 1, OverflowPolicy.SkipToLive, streamIndexes: []);
+
+        // Two past its capacity of one, with nothing reading: the second is what overflows, and the
+        // third arrives while it is waiting to resynchronise and is simply not delivered.
+        for (var i = 0; i < 3; i++)
+        {
+            hub.Publish(new MediaPacket(0, [1, 2, 3], i, i, 1, IsKeyframe: false), i);
+        }
+
+        Assert.Equal(1, subscription.Overflows);
+        Assert.Equal(1, meters.Total("live.overflows"));
+        Assert.Equal(
+            [new KeyValuePair<string, object?>("policy", "skip-to-live")],
+            meters.Tags("live.overflows"));
+    }
+
+    /// <summary>
+    /// A hub with nowhere to report to has to work exactly as well, because two of the three things
+    /// that build one - the detection worker and the tests - publish no meter at all.
+    /// </summary>
+    [Fact]
+    public void A_hub_with_no_meter_still_fans_out()
+    {
+        using var hub = new StreamHub("unmeasured", new LiveOptions(), NullLogger.Instance);
+        using var subscription = hub.Subscribe(capacity: 1, OverflowPolicy.Fail, streamIndexes: []);
+
+        hub.Publish(new MediaPacket(0, [1], 0, 0, 1, IsKeyframe: true), 0);
+        hub.Publish(new MediaPacket(0, [1], 1, 1, 1, IsKeyframe: true), 1);
+
+        Assert.Equal(1, subscription.Overflows);
+        Assert.True(subscription.Faulted);
     }
 
     /// <summary>
@@ -92,64 +262,4 @@ public sealed class LiveMetricsTests
 
         Assert.Equal(OperatingSystem.IsLinux(), meters.Value("live.udp.receive.errors") is not null);
     }
-}
-
-/// <summary>
-/// Collects one <see cref="LiveMetrics"/> instance's measurements, and only that instance's, for as
-/// long as it is not disposed.
-///
-/// The filter is the meter's scope rather than its name: several hosts run in one test process and
-/// each publishes a meter of the same name.
-///
-/// It has to be started before whatever it is measuring, because a counter is an event and not a
-/// value: a listener that starts afterwards sees nothing at all, however many times the counter was
-/// added to. Observable instruments are the other way round and report only when asked.
-/// </summary>
-internal sealed class Meters : IDisposable
-{
-    internal readonly record struct Recording(
-        string Instrument,
-        long Value,
-        IReadOnlyList<KeyValuePair<string, object?>> Tags);
-
-    private readonly ConcurrentQueue<Recording> _seen = new();
-
-    private readonly MeterListener _listener;
-
-    public Meters(LiveMetrics metrics)
-    {
-        _listener = new MeterListener
-        {
-            InstrumentPublished = (instrument, listening) =>
-            {
-                if (ReferenceEquals(instrument.Meter.Scope, metrics))
-                {
-                    listening.EnableMeasurementEvents(instrument);
-                }
-            },
-        };
-
-        _listener.SetMeasurementEventCallback<long>((instrument, value, tags, _) => Add(instrument, value, tags));
-        _listener.SetMeasurementEventCallback<int>((instrument, value, tags, _) => Add(instrument, value, tags));
-        _listener.Start();
-    }
-
-    public IReadOnlyList<Recording> Read()
-    {
-        _listener.RecordObservableInstruments();
-
-        return [.. _seen];
-    }
-
-    /// <summary>The newest measurement of one instrument, or null if it reported none.</summary>
-    public long? Value(string instrument)
-        => Read()
-            .Where(recording => recording.Instrument == instrument)
-            .Select(recording => (long?)recording.Value)
-            .LastOrDefault();
-
-    public void Dispose() => _listener.Dispose();
-
-    private void Add(Instrument instrument, long value, ReadOnlySpan<KeyValuePair<string, object?>> tags)
-        => _seen.Enqueue(new Recording(instrument.Name, value, tags.ToArray()));
 }

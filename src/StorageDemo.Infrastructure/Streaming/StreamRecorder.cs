@@ -50,6 +50,13 @@ public sealed class StreamRecorder
     /// <summary>The detection that asked for this recording, when one did. Null when a person did.</summary>
     private readonly DetectionReference? _detection;
 
+    /// <summary>
+    /// Told what this recording produced, and told about each part as it is stored rather than only
+    /// at the end: a six-hour recording that reports nothing until it finishes is invisible for six
+    /// hours. Null where nothing is measuring, which is how the tests build one.
+    /// </summary>
+    private readonly LiveMetrics? _metrics;
+
     private DateTimeOffset _endsAt;
 
     /// <summary>Bytes of the parts already stored, so the running total survives a part roll.</summary>
@@ -62,7 +69,8 @@ public sealed class StreamRecorder
         ILogger logger,
         TimeSpan? duration,
         Func<string?>? classification = null,
-        DetectionReference? detection = null)
+        DetectionReference? detection = null,
+        LiveMetrics? metrics = null)
     {
         _hub = hub;
         _options = options;
@@ -70,6 +78,7 @@ public sealed class StreamRecorder
         _logger = logger;
         _classification = classification ?? (() => null);
         _detection = detection;
+        _metrics = metrics;
 
         StartedAt = DateTimeOffset.UtcNow;
         _endsAt = StartedAt + (duration ?? TimeSpan.FromSeconds(options.DefaultRecordingSeconds));
@@ -158,6 +167,8 @@ public sealed class StreamRecorder
             _logger.LogWarning("'{Name}' has no layout yet, so there is nothing to record", _hub.Name);
             Finished = true;
 
+            _metrics?.Recorded("empty");
+
             return null;
         }
 
@@ -221,10 +232,16 @@ public sealed class StreamRecorder
                     "The recording of '{Name}' captured nothing, so it is not stored",
                     _hub.Name);
 
+                _metrics?.Recorded("empty");
+
                 return null;
             }
 
             DocumentId = stored.Id;
+
+            // Truncated is still stored: the document is real and short, and saying which it was is
+            // the whole reason the flag exists.
+            _metrics?.Recorded(Truncated ? "truncated" : "stored");
 
             _logger.LogInformation(
                 "The recording of '{Name}' finished as {DocumentId}: {Parts} parts, {Bytes} bytes",
@@ -238,6 +255,8 @@ public sealed class StreamRecorder
         catch (Exception ex)
         {
             _logger.LogError(ex, "The recording of '{Name}' failed", _hub.Name);
+
+            _metrics?.Recorded("failed");
 
             return DocumentId;
         }
@@ -308,6 +327,8 @@ public sealed class StreamRecorder
             _stored += written;
             Parts++;
             Bytes = _stored;
+
+            _metrics?.RecordedBytes(written);
         }
 
         Delete(path);
