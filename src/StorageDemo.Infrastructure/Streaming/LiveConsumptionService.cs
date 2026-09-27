@@ -108,8 +108,6 @@ public sealed class LiveConsumptionService(
                         coordinator.ResolvePreroll(name, from),
                         from);
 
-                    metrics.Viewing("direct");
-
                     timeline = await coordinator.WriteToViewerAsync(
                         new ViewerRequest(name, from),
                         viewer,
@@ -118,8 +116,6 @@ public sealed class LiveConsumptionService(
                 }
                 else
                 {
-                    metrics.Viewing("relayed");
-
                     await RelayAsync(stream, from, Carried(), viewer, stopping);
 
                     timeline = Carried();

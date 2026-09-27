@@ -444,7 +444,8 @@ public sealed class LiveStreamsController(
         HttpContext.Features.Get<IHttpBodyControlFeature>()!.AllowSynchronousIO = true;
 
         await live.WriteToViewerAsync(
-            new ViewerRequest(name, from),
+            // Relayed by definition: only a replica that does not own the stream calls this route.
+            new ViewerRequest(name, from, Relayed: true),
             Response.Body,
             @continue,
             cancellationToken);

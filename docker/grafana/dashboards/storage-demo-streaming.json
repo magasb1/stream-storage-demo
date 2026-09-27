@@ -916,7 +916,7 @@
     {
       "id": 17,
       "type": "timeseries",
-      "title": "Viewer attaches",
+      "title": "Viewers served",
       "datasource": {
         "type": "prometheus",
         "uid": "storage-demo-prometheus"
@@ -972,7 +972,7 @@
           "sort": "desc"
         }
       },
-      "description": "Counted per attach, not per connection: a viewer held across a change of owner re-attaches, which is how often a stream moves under somebody watching. Mostly relayed means most viewers land on a replica that does not own their stream - a load-balancer question, and an extra hop each."
+      "description": "Counted once a viewer is actually subscribed, by the replica that owns its stream: a player that reached another pod is fetched from the owner and counts there, tagged relayed. Per attach rather than per connection, so a viewer held across a change of owner counts again - which is how often a stream moves under somebody watching. Mostly relayed means most viewers land on a replica that does not own their stream, which is a load-balancer question rather than a fault."
     },
     {
       "id": 18,

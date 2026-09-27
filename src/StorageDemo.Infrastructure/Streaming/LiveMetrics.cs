@@ -4,8 +4,8 @@ using System.Globalization;
 namespace StorageDemo.Infrastructure.Streaming;
 
 /// <summary>
-/// What one heartbeat pass found, published to the meter as a set so the six numbers describe one
-/// moment rather than six.
+/// What one heartbeat pass found, published to the meter as one reference so that no instrument
+/// reads a half-written set of six.
 /// </summary>
 /// <param name="Streams">Streams this replica holds the connection for, interrupted ones included.</param>
 /// <param name="Interrupted">
@@ -304,8 +304,8 @@ public sealed class LiveMetrics : IDisposable
         => _ended.Add(1, new KeyValuePair<string, object?>("reason", reason));
 
     /// <param name="route">
-    /// <c>direct</c> when this replica owns the stream the viewer asked for, <c>relayed</c> when it
-    /// fetched it from the replica that does.
+    /// How the player reached the replica that owns its stream: <c>direct</c> on that replica's own
+    /// consumption port, <c>relayed</c> when it reached another one and is fetched from here.
     /// </param>
     public void Viewing(string route)
         => _viewerSessions.Add(1, new KeyValuePair<string, object?>("route", route));

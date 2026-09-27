@@ -1,7 +1,8 @@
 namespace StorageDemo.Core.Streaming;
 
 /// <param name="Preroll">How far back the caller asked to start, in seconds.</param>
-public sealed record ViewerRequest(string Name, double Preroll);
+/// <param name="Relayed">True when this viewer reached another replica and is being fetched from here.</param>
+public sealed record ViewerRequest(string Name, double Preroll, bool Relayed = false);
 
 /// <summary>Live streaming, as everything outside the pipeline sees it.</summary>
 public interface ILiveStreamService

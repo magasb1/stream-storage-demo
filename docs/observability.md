@@ -112,7 +112,7 @@ What happened:
 | `live_rejects` | `port`, `reason` | Refused at the handshake. `conflict` is the name lock working; `overload` is `Live:MaxStreams` working. |
 | `live_claims` | `outcome` | `taken`, `resumed`, `refused`. A rolling update should read as resumed, which is what a move looks like when nothing is lost. |
 | `live_streams_ended` | `reason` | `stopped`, `expired`, `source-off`, `displaced`, `shutdown`. |
-| `live_viewer_sessions` | `route` | `direct` or `relayed`, counted per attach: a viewer held across a change of owner re-attaches. |
+| `live_viewer_sessions` | `route` | How a player reached the replica that owns its stream: `direct` on that replica's own consumption port, `relayed` when it reached another one and is fetched from there. Counted by the owner, once the viewer is actually subscribed, so one viewer is one session however many pods it passed through and a retrying attach is not a session at all. |
 | `live_overflows` | `policy` | A subscriber fell behind. `skip-to-live` is a viewer losing a moment; `fail` is a recorder stopping. |
 | `live_snapshots` | `outcome` | `stored`, `preview` — served from the harvester's older, smaller picture — or `none`. |
 | `live_recordings`, `live_recorded_bytes` | `outcome` | `stored`, `truncated`, `empty`, `failed`. Bytes are counted as each part is stored, so a six-hour recording reports while it runs. |

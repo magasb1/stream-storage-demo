@@ -597,6 +597,10 @@ public sealed class LiveStreamCoordinator(
         // call arrived, and left in a finally so a fault below still lets the count go down.
         entry.ViewerJoined();
 
+        // The session is counted here, for the same reason and at the same moment: past the layout
+        // check above, a viewer is being served rather than merely attempted.
+        metrics.Viewing(request.Relayed ? "relayed" : "direct");
+
         try
         {
             await foreach (var packet in subscription.Packets.ReadAllAsync(cancellationToken))
