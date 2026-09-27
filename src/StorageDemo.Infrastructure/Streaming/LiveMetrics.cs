@@ -9,8 +9,16 @@ namespace StorageDemo.Infrastructure.Streaming;
 ///
 /// A record rather than six fields, because an observable instrument is read on the collection
 /// thread and that thread must never take a lock: one reference swapped under
-/// <see cref="LiveMetrics.Census"/> is atomic, where six independent writes would let a scrape land
-/// between them and report a replica holding ten streams with eleven interrupted.
+/// <see cref="LiveMetrics.Census"/> means every instrument reads a whole census rather than a
+/// half-written set of six.
+///
+/// It narrows the window rather than closing it. A collection pass calls the six callbacks one
+/// after another and the heartbeat can swap the reference between two of them, so a scrape can
+/// still straddle two beats and show, say, a stream count from one and an interrupted count from
+/// the next. What that costs is two seconds of skew on figures that are a beat stale anyway; what
+/// the record buys is that neither figure is ever torn. Closing it entirely would mean one
+/// instrument with a state tag, since only measurements from the same callback are collected
+/// together, and that is a worse shape for six figures in four different units.
 /// </summary>
 /// <param name="Streams">Streams this replica holds the connection for, interrupted ones included.</param>
 /// <param name="Interrupted">
@@ -376,9 +384,12 @@ public sealed class LiveMetrics : IDisposable
         => _ended.Add(1, new KeyValuePair<string, object?>("reason", reason));
 
     /// <param name="route">
-    /// <c>direct</c> when this replica owns the stream the viewer asked for, <c>relayed</c> when it
-    /// fetched it from the replica that does. A cluster where most viewers are relayed is paying an
-    /// extra hop for every one of them, which is a load-balancer question rather than a fault.
+    /// How the player reached the replica that owns its stream: <c>direct</c> when it connected to
+    /// this replica's own consumption port, <c>relayed</c> when it reached another one and is being
+    /// fetched from here. Counted by the owner either way, because that is where a viewer is
+    /// actually served, so one viewer is one session however many pods it passed through. A cluster
+    /// where most viewers are relayed is paying an extra hop for every one of them, which is a
+    /// load-balancer question rather than a fault.
     /// </param>
     public void Viewing(string route)
         => _viewerSessions.Add(1, new KeyValuePair<string, object?>("route", route));

@@ -738,6 +738,14 @@ public sealed class LiveStreamCoordinator(
         // call arrived, and left in a finally so a fault below still lets the count go down.
         entry.ViewerJoined();
 
+        // The session is counted here, for the same reason and at the same moment: past the layout
+        // check above, a viewer is being served. Counting where the attach was decided instead made
+        // this a count of attempts - the consumption port retries every quarter second, so a stream
+        // with no layout yet, or an owner whose address the registry never recorded, scored a
+        // session several times a second for as long as the player stayed connected, which is
+        // exactly the incident the figure exists to describe.
+        metrics.Viewing(request.Relayed ? "relayed" : "direct");
+
         try
         {
             await foreach (var packet in subscription.Packets.ReadAllAsync(cancellationToken))
