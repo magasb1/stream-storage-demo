@@ -5,19 +5,20 @@ using StorageDemo.Infrastructure.Media;
 namespace StorageDemo.Tests.Infrastructure;
 
 /// <summary>
-/// The valve on the blocking libav section: how many calls may be inside the analyzer at once.
+/// The valve in front of libav: how many calls may be inside the analyzer at once.
 ///
 /// Counted rather than timed. Every call is handed a stream that announces itself as the analyzer
 /// starts reading it and then holds, so what the analyzer admitted while all of them were held is a
 /// number and not an interval. Two hundred unbounded snapshots on four cores answered in under a
-/// second, which is exactly why a test that watched the clock would have proved nothing.
+/// second, which is why a test that watched the clock would have proved nothing.
 ///
 /// It observes the gate at the spill, the first thing inside it. A bound narrowed to the decode
 /// alone would fail these, which is deliberate: the temp file is part of what the width costs.
 ///
-/// What it cannot show is that nothing else in the process decodes without coming through here, or
-/// that one per processor is the right width for any particular deployment. It shows that the
-/// number the options ask for is the number that runs, and that a call which waited still finishes.
+/// What it cannot show is that nothing else in the process decodes - a live stream's own preview is
+/// harvested outside this gate entirely - or that one per processor is the right width for any
+/// particular deployment. It shows that the number the options ask for is the number that runs, and
+/// that a call which waited still finishes.
 /// </summary>
 public sealed class MediaAnalyzerConcurrencyTests
 {
@@ -25,66 +26,95 @@ public sealed class MediaAnalyzerConcurrencyTests
     [InlineData(1)]
     [InlineData(2)]
     [InlineData(3)]
-    public async Task No_more_calls_are_inside_libav_at_once_than_the_options_allow(int limit)
-        => Assert.Equal(
-            limit,
-            await WidthAsync(new MediaOptions { MaxConcurrentDecodes = limit }, callers: 8));
+    public Task No_more_calls_are_inside_libav_at_once_than_the_options_allow(int limit)
+        => AdmitsAsync(new MediaOptions { MaxConcurrentDecodes = limit }, expected: limit, callers: 8);
 
-    /// <summary>One per processor, which is what a deployment that configures nothing gets.</summary>
+    /// <summary>
+    /// One per processor, which is what a deployment that configures nothing gets, and never fewer
+    /// than two however few processors it was given.
+    /// </summary>
     [Fact]
-    public async Task A_deployment_that_configures_nothing_decodes_one_call_per_processor()
-        => Assert.Equal(
-            Environment.ProcessorCount,
-            await WidthAsync(new MediaOptions(), callers: Environment.ProcessorCount * 2));
+    public Task A_deployment_that_configures_nothing_decodes_one_call_per_processor()
+    {
+        var expected = Math.Max(2, Environment.ProcessorCount);
+
+        return AdmitsAsync(new MediaOptions(), expected, callers: expected * 2);
+    }
 
     /// <summary>
     /// Starts <paramref name="callers"/> calls at once, each of which stops inside the analyzer, and
-    /// answers how many of them got that far.
+    /// asserts that exactly <paramref name="expected"/> of them got that far.
+    ///
+    /// Waiting for the gate to fill needs no clock: a call that is admitted announces itself before
+    /// it can block, so the last admission has already happened by the time the calls are all
+    /// started. Proving that nothing further got in does need one, because it is an absence. If the
+    /// gate never fills at all - what a libav that would not load looks like - the calls themselves
+    /// are awaited for their own exception rather than left to run that clock down.
     ///
     /// Everyone is then let go and has to finish. A permit that leaked would leave the rest waiting
     /// on one that never comes, so that wait is the assertion that the gate opens again as well as
     /// closing.
     /// </summary>
-    private static async Task<int> WidthAsync(MediaOptions options, int callers)
+    private static async Task AdmitsAsync(MediaOptions options, int expected, int callers)
     {
         var analyzer = new LibavMediaAnalyzer(
             Options.Create(options),
             NullLogger<LibavMediaAnalyzer>.Instance);
 
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var filled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var overflowed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
         var inside = 0;
+
+        void Announce()
+        {
+            var now = Interlocked.Increment(ref inside);
+
+            if (now == expected)
+            {
+                filled.TrySetResult();
+            }
+            else if (now > expected)
+            {
+                overflowed.TrySetResult();
+            }
+        }
 
         var calls = Enumerable
             .Range(0, callers)
             .Select(_ => analyzer.LatestFrameAsync(
-                new AnnouncingStream(() => Interlocked.Increment(ref inside), release.Task),
+                new AnnouncingStream(Announce, release.Task),
                 "snapshot.ts"))
             .ToArray();
 
-        // Waits for the count to stop growing rather than for a chosen moment, so an analyzer with
-        // no bound is reported as the number it actually admitted rather than as a timeout. The
-        // deadline is there only so that nothing arriving at all still ends the test.
-        var width = 0;
-        var settled = 0;
-        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+        var answered = Task.WhenAll(calls);
 
-        while (settled < 10 && DateTime.UtcNow < deadline)
+        if (await Task.WhenAny(filled.Task, answered).WaitAsync(TimeSpan.FromSeconds(30)) != filled.Task)
         {
-            await Task.Delay(TimeSpan.FromMilliseconds(100));
+            // Nothing is holding the gate and yet it never filled, so every call answered without
+            // ever reading its stream. Awaiting them reports why - a libav that would not load
+            // throws here - rather than failing on a count that is only the symptom of it.
+            await answered;
 
-            var now = Volatile.Read(ref inside);
-
-            settled = now == width && now > 0 ? settled + 1 : 0;
-            width = now;
+            Assert.Fail($"only {Volatile.Read(ref inside)} of {callers} calls reached the analyzer");
         }
+
+        // The one wait with a clock in it, because a bound is an absence: a call that should be
+        // queued behind the held ones has this long to slip past them. Generous rather than tuned -
+        // with no bound at all, every caller is admitted before the first of them can block, so this
+        // has already failed by the time it is reached.
+        var escaped = await Task.WhenAny(overflowed.Task, Task.Delay(TimeSpan.FromSeconds(1)));
+
+        Assert.False(
+            escaped == overflowed.Task,
+            $"{Volatile.Read(ref inside)} calls were inside the analyzer at once, not {expected}");
 
         release.SetResult();
 
-        await Task.WhenAll(calls).WaitAsync(TimeSpan.FromSeconds(30));
+        await answered.WaitAsync(TimeSpan.FromSeconds(30));
 
         Assert.Equal(callers, Volatile.Read(ref inside));
-
-        return width;
     }
 
     /// <summary>
