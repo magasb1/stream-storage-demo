@@ -10,7 +10,6 @@ using StorageDemo.Core.Documents;
 using StorageDemo.Core.Streaming;
 using StorageDemo.Api.Grpc;
 using StorageDemo.Grpc;
-using StorageDemo.Infrastructure.Media;
 using StorageDemo.Infrastructure.Streaming;
 using StorageDemo.Tests.Infrastructure;
 
@@ -600,27 +599,24 @@ public sealed class GrpcApiTests : IAsyncLifetime
             return path;
         }
 
-        var startInfo = new System.Diagnostics.ProcessStartInfo(Ffmpeg.ExecutablePath)
-        {
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-        };
+        string[] arguments =
+        [
+            "-hide_banner", "-loglevel", "error",
+            "-f", "lavfi", "-i", "testsrc=size=64x64:duration=1:rate=1",
+            "-frames:v", "1", "-y", path,
+        ];
 
-        foreach (var argument in new[]
-                 {
-                     "-hide_banner", "-loglevel", "error",
-                     "-f", "lavfi", "-i", "testsrc=size=64x64:duration=1:rate=1",
-                     "-frames:v", "1", "-y", path,
-                 })
-        {
-            startInfo.ArgumentList.Add(argument);
-        }
+        using var process = BundledFfmpeg.Start(BundledFfmpeg.Tool.Ffmpeg, arguments);
 
-        using var process = System.Diagnostics.Process.Start(startInfo)!;
         await process.WaitForExitAsync();
+        process.WaitForExit();
 
-        Assert.True(File.Exists(path), "ffmpeg did not generate the sample image");
+        // What ffmpeg said, in the message. A missing shared library is the likeliest reason this
+        // ever fails, and "did not generate the sample image" on its own sends the reader into the
+        // upload path instead of at the loader.
+        Assert.True(
+            File.Exists(path),
+            $"ffmpeg did not generate the sample image: {BundledFfmpeg.Complaints(process)}");
 
         return path;
     }

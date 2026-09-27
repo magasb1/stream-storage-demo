@@ -82,9 +82,36 @@ public sealed class LiveConsumptionService(
         var from = StreamName.Position(socket.StreamId) ?? 0;
         var viewer = new SrtSocketStream(socket.Release(), writable: true);
 
-        _ = Task.Factory.StartNew(
-            () => ServeAsync(name, from, viewer, _stopping),
-            TaskCreationOptions.LongRunning);
+        // Pool work, and now it says so. Serving a viewer is an await loop, so the LongRunning
+        // thread this used to ask for lived only until the first await that actually yielded: the
+        // registry read on the loop's first line, or the channel read inside Serve a moment later
+        // when an in-memory registry answers that first one synchronously. Either way it was an OS
+        // thread created and thrown away per accepted viewer - LongRunning threads are not pooled -
+        // paid during exactly the reconnect storm that produces viewers in bulk. Three hundred
+        // concurrent viewers moved this process's thread count by nothing: the pool was already
+        // carrying them, and the flag stated an intent the code did not have.
+        //
+        // The accept thread is strictly better off, which is what matters at this end: queueing a
+        // work item costs it less than creating a thread, and time spent here is time the
+        // consumption port is not listening. Task.Run also binds TaskScheduler.Default where
+        // StartNew bound TaskScheduler.Current, so this no longer inherits a scheduler from
+        // whoever called it.
+        //
+        // The pool is not strictly better off, which should be read before this is taken for a win
+        // everywhere. A viewer's writes block inline in srt_sendmsg2 and no SRTO_SNDTIMEO is set on
+        // these sockets, so a viewer that is slow but still alive pins whatever thread is serving it
+        // for as long as it likes. That used to be a thread of its own and is now a pool thread, so
+        // a pool saturated by such sends makes a newly accepted viewer queue for its own body to
+        // begin - and that body is what disposes the socket accepted just above. The missing send
+        // timeout is #20; this change does not pretend to be its fix.
+        //
+        // Ingest is the other way round, and the difference is the point: the listener started above
+        // and the coordinator's feed are synchronous from their first line to their last, blocking
+        // inside libsrt and libav, so their dedicated threads are real and keep the flag.
+        //
+        // No cancellation token: an already cancelled one would make Task.Run skip the body, and the
+        // body is what disposes that socket. Shutdown is the token ServeAsync itself watches.
+        _ = Task.Run(() => ServeAsync(name, from, viewer, _stopping));
     }
 
     /// <summary>

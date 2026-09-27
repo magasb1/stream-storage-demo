@@ -145,6 +145,16 @@ the filesystem and S3 providers — are held to identical behaviour. Live stream
 same way it runs: a real SRT transport, a real demultiplexer, a real viewer. PostgreSQL's contract
 tests skip unless `POSTGRES_TEST_CONNECTION` points at a real database.
 
+The SRT tests skip rather than fail when SRT is missing, and name the script to run:
+`scripts/fetch-libsrt.sh` for the listener's own `libsrt`, `scripts/fetch-ffmpeg.sh` for an FFmpeg
+built with it, which is what dials out for a pulled stream or a relayed viewer. Both are Windows
+only — the FFmpeg one fetches a win64 build into `ffmpeg/win-x64` — while `Directory.Build.targets`
+overlays every runtime folder it finds under `ffmpeg/`. That overlay is how a Linux developer gets
+the FFmpeg half: a shared build of the pinned version, placed in `ffmpeg/linux-x64` by hand. The
+listener's own libsrt is a separate matter and comes from the system loader path, the distro package
+(`libsrt1.5-openssl`, as `docker/Dockerfile` does). Without both the live suite still runs green,
+having covered less.
+
 One of them is a load test rather than a specification. `LiveLoadTests` puts fifty encoders on one
 ingest port, opens and closes viewers, snapshots and records every stream at the same time, and
 kills ten feeds — five of them with somebody watching — then holds every figure the replica

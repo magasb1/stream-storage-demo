@@ -1,11 +1,8 @@
-using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Globalization;
 using System.Net;
 using System.Net.Sockets;
-using System.Text;
 using System.Text.RegularExpressions;
-using StorageDemo.Infrastructure.Media;
 
 namespace StorageDemo.Tests.Infrastructure;
 
@@ -26,8 +23,6 @@ internal static class SrtSenders
     /// breaks one place rather than three tests.
     /// </summary>
     private const string RefusalPrefix = "Connection to srt://";
-
-    private static readonly ConcurrentDictionary<int, StringBuilder> Stderr = new();
 
     /// <summary>An encoder pushing into a listening port. Null presents no identifier at all.</summary>
     /// <param name="callerOptions">
@@ -127,41 +122,30 @@ internal static class SrtSenders
         string? picture = null,
         string? bitrate = null)
     {
-        var startInfo = new ProcessStartInfo(Ffmpeg.ExecutablePath)
-        {
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-        };
+        string[] arguments =
+        [
+            "-hide_banner", "-loglevel", "error", "-y",
+            .. image is null
+                ? (string[])
+                [
+                    "-f", "lavfi", "-i", picture ?? "testsrc=size=320x240:rate=15",
+                    "-c:v", "mpeg2video", "-b:v", bitrate ?? "800k",
+                ]
+                : ["-loop", "1", "-framerate", "15", "-i", image, "-c:v", "mpeg2video", "-q:v", "2", "-pix_fmt", "yuv420p"],
+            "-g", "15",
+            "-t", seconds.ToString(CultureInfo.InvariantCulture),
+            "-f", "mpegts", path,
+        ];
 
-        foreach (var argument in (string[])
-                 [
-                     "-hide_banner", "-loglevel", "error", "-y",
-                     .. image is null
-                         ? (string[])
-                         [
-                             "-f", "lavfi", "-i", picture ?? "testsrc=size=320x240:rate=15",
-                             "-c:v", "mpeg2video", "-b:v", bitrate ?? "800k",
-                         ]
-                         : ["-loop", "1", "-framerate", "15", "-i", image, "-c:v", "mpeg2video", "-q:v", "2", "-pix_fmt", "yuv420p"],
-                     "-g", "15",
-                     "-t", seconds.ToString(CultureInfo.InvariantCulture),
-                     "-f", "mpegts", path,
-                 ])
-        {
-            startInfo.ArgumentList.Add(argument);
-        }
+        using var process = BundledFfmpeg.Start(BundledFfmpeg.Tool.Ffmpeg, arguments);
 
-        if (!OperatingSystem.IsWindows())
-        {
-            startInfo.Environment["LD_LIBRARY_PATH"] = Ffmpeg.Directory;
-        }
-
-        using var process = Process.Start(startInfo)!;
-        var complaints = process.StandardError.ReadToEnd();
+        // The parameterless overload, which also waits for the drain, so a failure message has
+        // whatever ffmpeg said in it rather than the first half of it.
         process.WaitForExit();
 
-        Assert.True(process.ExitCode == 0, $"ffmpeg could not render the video: {complaints}");
+        Assert.True(
+            process.ExitCode == 0,
+            $"ffmpeg could not render the video: {BundledFfmpeg.Complaints(process)}");
     }
 
     /// <summary>
@@ -220,37 +204,24 @@ internal static class SrtSenders
     /// </summary>
     public static double PayloadMbps(string path, int seconds)
     {
-        var startInfo = new ProcessStartInfo(Ffmpeg.ProbePath)
-        {
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-        };
+        string[] arguments = ["-v", "error", "-show_entries", "packet=size", "-of", "csv=p=0", path];
 
-        foreach (var argument in (string[])
-                 ["-v", "error", "-show_entries", "packet=size", "-of", "csv=p=0", path])
-        {
-            startInfo.ArgumentList.Add(argument);
-        }
+        // Through the same helper as every other launch here, so the library path is set in one
+        // place: this is the seventh site, and it arrived with the load rigs after the other six had
+        // already been consolidated. A launcher of its own would have quietly made BundledFfmpeg's
+        // "only place that starts the bundled binary" untrue while merging without a conflict.
+        using var probe = BundledFfmpeg.Start(BundledFfmpeg.Tool.Ffprobe, arguments, readOutput: true);
 
-        if (!OperatingSystem.IsWindows())
-        {
-            startInfo.Environment["LD_LIBRARY_PATH"] = Ffmpeg.Directory;
-        }
-
-        using var probe = Process.Start(startInfo)!;
-
-        // Standard error is drained on another thread while standard output is read here. One pipe
-        // read to completion before the other is started deadlocks the moment the unread one fills,
-        // and a packet listing for a long file is easily large enough to make that a real risk rather
-        // than a theoretical one - it is the same trap Start's BeginErrorReadLine avoids.
-        var complaints = probe.StandardError.ReadToEndAsync();
+        // Standard output is read here while the helper drains standard error on another thread. One
+        // pipe read to completion before the other is started deadlocks the moment the unread one
+        // fills, and a packet listing for a long file is easily large enough to make that real.
         var sizes = probe.StandardOutput.ReadToEnd();
 
         probe.WaitForExit();
 
-        Assert.True(probe.ExitCode == 0, $"ffprobe could not read '{path}': {complaints.Result}");
+        Assert.True(
+            probe.ExitCode == 0,
+            $"ffprobe could not read '{path}': {BundledFfmpeg.Complaints(probe)}");
 
         // One line per packet, and the size is its first field: ffprobe's CSV writer still emits the
         // separator for the side-data column it was not asked about, so "8058," is a whole line.
@@ -397,57 +368,12 @@ internal static class SrtSenders
         => streamId.Replace("#", "%23", StringComparison.Ordinal);
 
     private static Process Start(string[] arguments)
-    {
-        var startInfo = new ProcessStartInfo(Ffmpeg.ExecutablePath)
-        {
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-        };
+        => BundledFfmpeg.Start(BundledFfmpeg.Tool.Ffmpeg, arguments);
 
-        foreach (var argument in arguments)
-        {
-            startInfo.ArgumentList.Add(argument);
-        }
-
-        if (!OperatingSystem.IsWindows())
-        {
-            startInfo.Environment["LD_LIBRARY_PATH"] = Ffmpeg.Directory;
-        }
-
-        var caller = Process.Start(startInfo)!;
-
-        // Drained, not merely redirected. A pipe nobody reads fills and stops the caller, and the
-        // test then fails as "nothing was accepted" with the reason sitting unread in the pipe.
-        var complaints = new StringBuilder();
-        Stderr[caller.Id] = complaints;
-
-        caller.ErrorDataReceived += (_, line) =>
-        {
-            if (line.Data is not null)
-            {
-                lock (complaints)
-                {
-                    complaints.AppendLine(line.Data);
-                }
-            }
-        };
-
-        caller.BeginErrorReadLine();
-
-        return caller;
-    }
-
-    private static string Said(Process caller)
-    {
-        if (!Stderr.TryGetValue(caller.Id, out var text))
-        {
-            return string.Empty;
-        }
-
-        lock (text)
-        {
-            return text.ToString().Trim();
-        }
-    }
+    /// <summary>
+    /// What this caller complained about. Drained from the moment it started, which is not a detail:
+    /// a pipe nobody reads fills and stops the caller, and the test then fails as "nothing was
+    /// accepted" with the reason sitting unread in the pipe.
+    /// </summary>
+    private static string Said(Process caller) => BundledFfmpeg.Complaints(caller);
 }
