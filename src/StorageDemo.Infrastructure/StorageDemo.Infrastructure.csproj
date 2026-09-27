@@ -3,9 +3,8 @@
     <!-- libav is called through pointers; there is no other way to talk to it. -->
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <!-- Each ORT provider package supplies a different native library with the same filename, so
-         exactly one belongs in a publish. Windows defaults to OpenVINO because it can use an
-         Intel NPU, GPU, or CPU; the Linux container keeps CUDA for NVIDIA production nodes.
-         Override with -p:OnnxRuntimeFlavor=DirectML, Cuda, OpenVino, or Cpu. -->
+         exactly one belongs in a publish. Override with
+         -p:OnnxRuntimeFlavor=DirectML, Cuda, OpenVino, or Cpu. -->
     <OnnxRuntimeFlavor Condition="'$(OnnxRuntimeFlavor)' == '' and '$(OS)' == 'Windows_NT'">OpenVino</OnnxRuntimeFlavor>
     <OnnxRuntimeFlavor Condition="'$(OnnxRuntimeFlavor)' == ''">Cuda</OnnxRuntimeFlavor>
   </PropertyGroup>
@@ -14,8 +13,7 @@
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="AWSSDK.S3" Version="4.0.103" />
-    <!-- Ships ffmpeg/ffprobe and the libav libraries for every RID we run on, so the host never
-         needs its own FFmpeg install and every environment probes with the same build. -->
+    <!-- Ships ffmpeg/ffprobe and the libav libraries for every RID we run on. -->
     <PackageReference Include="DevEnvy.FFmpeg.Binaries.LGPL" Version="8.0.1.4" />
     <!-- Pinned to the FFmpeg 8.0 ABI that the binaries package ships. These move together. -->
     <PackageReference Include="FFmpeg.AutoGen.Abstractions" Version="8.0.0.1" />
@@ -28,7 +26,7 @@
     <PackageReference Include="Microsoft.Extensions.Diagnostics.HealthChecks" Version="10.0.0" />
     <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.0" />
     <!-- The in-cluster hop between two replicas is HTTP, and a relayed viewer holds one of these
-         open for hours, so it wants the factory's handler pooling rather than a client of its own. -->
+         open for hours, so it wants the factory's handler pooling. -->
     <PackageReference Include="Microsoft.Extensions.Http" Version="10.0.0" />
     <PackageReference Include="Microsoft.Extensions.Options.DataAnnotations" Version="10.0.0" />
     <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.0" />

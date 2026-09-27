@@ -1,10 +1,8 @@
 #!/usr/bin/env bash
 # Fetches Esri's "Sample video for Full Motion Video" tutorial transport stream, which the MISB
 # decoder test uses as its one piece of real-world evidence.
-#
 # Run it once; the result is gitignored and stays out of the repository, which carries no binary
-# fixtures. Skip it and Misb0601RealStreamTests skips itself.
-#
+# fixtures.
 # 96 MB. Esri publish the item with no stated licence, which is the other reason it is fetched
 # rather than committed.
 set -euo pipefail

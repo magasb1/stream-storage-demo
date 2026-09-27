@@ -2,13 +2,7 @@ using StorageDemo.Api.Observability;
 
 namespace StorageDemo.Tests.Application;
 
-/// <summary>
-/// What the request surfaces publish that the framework does not publish for them.
-///
-/// Every one of these is about a shape a request-timing meter cannot express: a call that has not
-/// ended, bytes rather than requests, and a hop to another replica that looks like the same route on
-/// both pods.
-/// </summary>
+/// <summary>What the request surfaces publish that the framework does not publish for them.</summary>
 public sealed class ApiMetricsTests
 {
     [Fact]

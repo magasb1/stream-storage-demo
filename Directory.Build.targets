@@ -2,17 +2,9 @@
 
   <!--
     Overlays an FFmpeg fetched by scripts/fetch-ffmpeg.sh over the bundled LGPL build, which is how
-    SRT gets enabled: the LGPL package has no libsrt, and this one does.
-
-    It lives here rather than in a single project because the binaries package copies itself into
-    every consuming project's own output, so the replacement has to happen in each of them too.
-
-    AfterTargets names a target the binaries package defines. In a project that does not reference
-    that package, such as the WPF client, the target simply never fires, so nothing is copied where
-    it would only waste space.
-
-    Skipped entirely when the folder is absent, so a fresh clone builds and runs on the bundled
-    build with no setup, minus SRT. Forward slashes because MSBuild accepts them everywhere.
+    SRT gets enabled: the LGPL package has no libsrt, and this one does. It lives here rather than in
+    one project because the binaries package copies itself into every consuming project's output, and
+    it is skipped entirely when the folder is absent, so a fresh clone builds on the bundled build.
   -->
   <Target Name="OverlayFetchedFfmpeg" AfterTargets="CopyFFmpegBinaries">
     <ItemGroup>

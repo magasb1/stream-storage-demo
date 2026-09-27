@@ -39,8 +39,7 @@ public sealed class DocumentServiceTests
 
     /// <summary>
     /// A snapshot knows which live stream it came from and when it was captured, and a recording
-    /// knows whether it was truncated. No media probe can work any of that out, so the uploader
-    /// carries it and the document keeps it.
+    /// knows whether it was truncated.
     /// </summary>
     [Fact]
     public async Task Upload_keeps_what_the_uploader_knew_that_a_probe_could_not()
@@ -60,11 +59,7 @@ public sealed class DocumentServiceTests
         Assert.Equal("2026-01-01 12:00:00Z", document.Metadata["Captured"]);
     }
 
-    /// <summary>
-    /// The other half of provenance: from a detection, every document it produced. Two captures
-    /// from the same frame and a third from the target next to them, which is the case a
-    /// three-part key exists to separate.
-    /// </summary>
+    /// <summary>The other half of provenance: from a detection, every document it produced.</summary>
     [Fact]
     public async Task Documents_are_found_by_the_detection_that_caused_them()
     {

@@ -2,18 +2,7 @@ using StorageDemo.Core.Streaming;
 
 namespace StorageDemo.Tests.Application;
 
-/// <summary>
-/// The two windows a silent owner is judged by, which are deliberately different numbers.
-///
-/// <see cref="LiveStreamStaleness.IsGone"/> decides what a person sees: an entry stays listed as
-/// interrupted for the whole grace period, because a tile that vanishes and returns is worse than
-/// one showing a state. <see cref="LiveStreamStaleness.OwnerAlive"/> decides who may publish the
-/// name, and lets go after three beats, because a dead pod's encoders are already reconnecting and
-/// making them wait out the grace period would cost half a minute of black screen.
-///
-/// Conflating the two is the easy mistake, and it is invisible until a pod is killed, so both
-/// thresholds are pinned either side.
-/// </summary>
+/// <summary>The two windows a silent owner is judged by, which are deliberately different numbers.</summary>
 public sealed class LiveStreamStalenessTests
 {
     private static readonly TimeSpan Beat = TimeSpan.FromSeconds(2);

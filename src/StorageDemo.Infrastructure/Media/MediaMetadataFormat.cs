@@ -2,11 +2,7 @@ using System.Globalization;
 
 namespace StorageDemo.Infrastructure.Media;
 
-/// <summary>
-/// How a probed value is phrased for a reader. Kept apart from the code that reads libav structs,
-/// because deciding what is worth showing and how to word it is the fiddly half and the half worth
-/// testing on its own.
-/// </summary>
+/// <summary>How a probed value is phrased for a reader.</summary>
 public static class MediaMetadataFormat
 {
     /// <summary>Skips values that say nothing: empty, or one of libav's placeholders.</summary>
@@ -48,10 +44,7 @@ public static class MediaMetadataFormat
     public static string Capitalise(string value)
         => value.Length == 0 ? value : char.ToUpperInvariant(value[0]) + value[1..];
 
-    /// <summary>
-    /// Labels a stream. Only numbered when a file has more than one of that kind, so the common
-    /// case reads "Video codec" rather than "Video 1 codec".
-    /// </summary>
+    /// <summary>Labels a stream.</summary>
     public static string StreamLabel(string type, int ordinal)
         => ordinal > 1 ? $"{Capitalise(type)} {ordinal}" : Capitalise(type);
 }

@@ -4,15 +4,6 @@ namespace StorageDemo.Infrastructure.Streaming;
 
 /// <summary>
 /// What the streams inside one transport are: their codecs, their parameters and their clocks.
-///
-/// It is held apart from the demultiplexer that produced it because it outlives one. A stream
-/// whose feed stops keeps its hub, its buffer and any recording alive through the grace period,
-/// and everything attached to it still needs to know what it is carrying. It is also what decides
-/// whether a returning encoder can be appended to or has to start a new document: a file whose
-/// codec configuration changes halfway is not something anything will reliably play.
-///
-/// The parameters are libav's own, copied and owned here, because that is the form both the
-/// muxers and the decoder want them in.
 /// </summary>
 public sealed unsafe class StreamLayout : IDisposable
 {
@@ -30,19 +21,12 @@ public sealed unsafe class StreamLayout : IDisposable
     /// <summary>The stream a keyframe means something on, or -1 when there is no picture.</summary>
     public int VideoIndex { get; }
 
-    /// <summary>
-    /// The MISB metadata stream, or -1 when there is none. In MPEG-TS it is a data stream whose
-    /// registration descriptor says KLVA, which libav reports as the SMPTE KLV codec; a data
-    /// stream carrying anything else is not metadata this service understands.
-    /// </summary>
+    /// <summary>The MISB metadata stream, or -1 when there is none.</summary>
     public int KlvIndex { get; }
 
     public int Count => _parameters.Length;
 
-    /// <summary>
-    /// The clock everything is measured against. The video stream when there is one, so a segment
-    /// boundary and a rollback position are on the same scale as the pictures they refer to.
-    /// </summary>
+    /// <summary>The clock everything is measured against.</summary>
     public AVRational ReferenceTimeBase => _timeBases[VideoIndex >= 0 ? VideoIndex : 0];
 
     public double SecondsPerTick => ffmpeg.av_q2d(ReferenceTimeBase);
@@ -90,10 +74,9 @@ public sealed unsafe class StreamLayout : IDisposable
     }
 
     /// <summary>
-    /// Recreates these streams on a container being written, so a consumer's muxer carries the
-    /// same tracks the sender presented.
+    /// Recreates these streams on a container being written, so a consumer's muxer carries the same
+    /// tracks the sender presented.
     /// </summary>
-    /// <returns>Input stream index to output stream index; -1 for a stream this container refused.</returns>
     public int[] ApplyTo(AVFormatContext* output)
     {
         var mapping = new int[Count];
@@ -121,13 +104,7 @@ public sealed unsafe class StreamLayout : IDisposable
         return mapping;
     }
 
-    /// <summary>
-    /// Whether a returning feed is the same shape as the one that went away.
-    ///
-    /// Compared field by field rather than by identity, because the encoder that comes back opened
-    /// a new connection and libav built a fresh context for it. What matters is whether the bytes
-    /// still fit the file already being written.
-    /// </summary>
+    /// <summary>Whether a returning feed is the same shape as the one that went away.</summary>
     public bool Matches(StreamLayout other)
     {
         if (Count != other.Count)
@@ -153,7 +130,7 @@ public sealed unsafe class StreamLayout : IDisposable
             }
 
             // Extradata carries the decoder configuration itself: the sequence header, the SPS and
-            // PPS. Two streams agreeing on codec and size but not on this are not interchangeable.
+            // PPS.
             if (mine->extradata_size > 0
                 && new ReadOnlySpan<byte>(mine->extradata, mine->extradata_size)
                     .SequenceEqual(new ReadOnlySpan<byte>(theirs->extradata, theirs->extradata_size)) is false)

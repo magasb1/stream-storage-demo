@@ -43,8 +43,8 @@ def export_float() -> Path:
     from ultralytics import YOLO
 
     model = YOLO(str(WEIGHTS))
-    # nms=False -> one-to-one head; dynamic=True is the only way to get a dynamic batch axis;
-    # opset pinned because ultralytics otherwise picks it from the installed torch/onnx.
+    # nms=False -> one-to-one head; dynamic=True is the only way to get a dynamic batch axis; opset
+    # pinned because ultralytics otherwise picks it from the installed torch/onnx.
     path = model.export(format="onnx", nms=False, dynamic=True, imgsz=RES, opset=18, simplify=False, verbose=False)
     return Path(path)
 
@@ -71,7 +71,7 @@ def bake_preprocessing(float_path: Path, out_path: Path) -> None:
         g.node.insert(i, n)
 
     # The exporter labels output dim 2 "anchors", which is true of the raw head and false of this
-    # one; the one-to-one head emits a fixed (batch, 300, 6). Say so, so the contract reads right.
+    # one; the one-to-one head emits a fixed (batch, 300, 6).
     g.output.remove(g.output[0])
     g.output.insert(0, helper.make_tensor_value_info("output0", TensorProto.FLOAT, ["batch", MAX_DET, 6]))
 
@@ -138,15 +138,12 @@ def verify(float_path: Path, out_path: Path) -> None:
     for score, cid, name, b in top:
         print(f"  {score:.3f} {cid:2d} {name:<12} {b[0]:6.1f} {b[1]:6.1f} {b[2]:6.1f} {b[3]:6.1f}")
     # Not a dog: yolo26n's one-to-one head does not find the beagle RF-DETR scores at 0.686, and
-    # neither does the .pt through its one-to-many head. Assert what it does see instead.
+    # neither does the .pt through its one-to-many head.
     assert top[0][2] == "dining table" and top[0][0] > 0.8, top[0]
     assert {"umbrella", "chair", "person", "cup"} <= {name for _, _, name, _ in top}, top
 
     # Strongest single check: the whole chain (letterbox, /255 in the graph, decode, inverse) must
-    # land where ultralytics' own predict lands. The reference is predict on the *float ONNX* --
-    # not on the .pt, whose end2end flag is off, so it runs the one-to-many head plus NMS and
-    # legitimately produces different scores. rect=False forces the full-square letterbox a static
-    # consumer uses; ultralytics would otherwise pad only to the next stride multiple.
+    # land where ultralytics' own predict lands.
     from ultralytics import YOLO
 
     r = YOLO(float_path).predict(img, imgsz=RES, conf=0.25, rect=False, verbose=False)[0].boxes

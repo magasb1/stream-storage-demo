@@ -6,17 +6,12 @@ namespace StorageDemo.Infrastructure.Streaming;
 
 /// <summary>
 /// The packet subscriber that is always attached, keeping a stream's MISB metadata current.
-///
-/// It names the KLV stream index and so never sees a video packet, and it touches no decoder,
-/// which is what makes it close to free at a thousand streams. It keeps a short ring rather than
-/// only the newest packet, because a worker geo-locating a detection asks for the KLV nearest to
-/// a frame's timestamp, and that frame was decoded a moment ago.
 /// </summary>
 public sealed class KlvExtractor(StreamHub hub, ILogger logger)
 {
     /// <summary>
-    /// Bounded by count, not time: 64 packets is about six seconds at the usual 10 Hz and two and
-    /// a half at a per-frame 25 Hz, either of which outlasts the decode a worker is aligning to.
+    /// Bounded by count, not time: 64 packets is about six seconds at the usual 10 Hz and two and a
+    /// half at a per-frame 25 Hz, either of which outlasts the decode a worker is aligning to.
     /// </summary>
     private const int RingSize = 64;
 
@@ -33,11 +28,7 @@ public sealed class KlvExtractor(StreamHub hub, ILogger logger)
     /// <summary>Packets that were ST 0601 but failed their checksum, and were dropped.</summary>
     public long Rejected { get; private set; }
 
-    /// <summary>
-    /// Every packet this extractor has decoded, for the life of the hub. Cumulative, like the hub's
-    /// own counts, because the heartbeat reports the interval since it last looked and a total is
-    /// the only thing a reconnect can carry across without a second concept.
-    /// </summary>
+    /// <summary>Every packet this extractor has decoded, for the life of the hub.</summary>
     public long Packets { get; private set; }
 
     public KlvSample? Latest
@@ -50,7 +41,7 @@ public sealed class KlvExtractor(StreamHub hub, ILogger logger)
 
     /// <summary>
     /// The synchronous sample closest to a presentation time on the reference clock, or null when
-    /// the ring holds none. Asynchronous samples have no such clock and are not candidates.
+    /// the ring holds none.
     /// </summary>
     public KlvSample? Nearest(long referencePts)
     {
@@ -71,11 +62,7 @@ public sealed class KlvExtractor(StreamHub hub, ILogger logger)
         }
     }
 
-    /// <summary>
-    /// Runs until the hub closes or the token is cancelled. Waits for a layout the same way the
-    /// decoder does, and starts again when the layout changes, since a reconnect can add or move
-    /// the KLV stream.
-    /// </summary>
+    /// <summary>Runs until the hub closes or the token is cancelled.</summary>
     public async Task RunAsync(CancellationToken cancellationToken)
     {
         try

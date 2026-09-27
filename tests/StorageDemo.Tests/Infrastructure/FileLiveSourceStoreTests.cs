@@ -7,8 +7,7 @@ namespace StorageDemo.Tests.Infrastructure;
 
 /// <summary>
 /// The store exists because a source is a setting rather than a reading, so the property under test
-/// throughout is that a save reaches a disk and a later process finds it there. Everything else
-/// here - replacing a row, removing one, surviving a corrupt file - is what that costs.
+/// throughout is that a save reaches a disk and a later process finds it there.
 /// </summary>
 public sealed class FileLiveSourceStoreTests : IDisposable
 {
@@ -17,7 +16,7 @@ public sealed class FileLiveSourceStoreTests : IDisposable
         "storage-demo-tests",
         Guid.NewGuid().ToString("N"));
 
-    /// <summary>A store over the shared temp file. Call it twice to get two processes' worth.</summary>
+    /// <summary>A store over the shared temp file.</summary>
     private FileLiveSourceStore Store()
         => new(
             Options.Create(new LiveOptions { SourceFile = Path.Combine(_directory, "sources.json") }),
@@ -44,11 +43,7 @@ public sealed class FileLiveSourceStoreTests : IDisposable
         Assert.True(forward.Enabled);
     }
 
-    /// <summary>
-    /// The reason the file exists at all. A second store over the same path stands in for the next
-    /// process: if this passes only because the first instance still held the row in memory, the
-    /// store would be an in-memory one with extra steps.
-    /// </summary>
+    /// <summary>The reason the file exists at all.</summary>
     [Fact]
     public async Task A_new_store_over_the_same_file_sees_what_the_last_one_saved()
     {
@@ -73,10 +68,7 @@ public sealed class FileLiveSourceStoreTests : IDisposable
         Assert.Equal(["south"], (await Store().ListAsync()).Select(source => source.Name));
     }
 
-    /// <summary>
-    /// Saving is by name, so editing a source's URL has to replace the row. A second row under the
-    /// same name would be a source the operator can see but never delete.
-    /// </summary>
+    /// <summary>Saving is by name, so editing a source's URL has to replace the row.</summary>
     [Fact]
     public async Task Saving_an_existing_name_replaces_it_rather_than_duplicating()
     {
@@ -92,8 +84,7 @@ public sealed class FileLiveSourceStoreTests : IDisposable
 
     /// <summary>
     /// A file half-written by a killed process must not stop the service from starting, because
-    /// every stream an encoder is pushing needs no source at all and would go down with it. It is
-    /// moved aside instead, so the operator still has their URLs to read back.
+    /// every stream an encoder is pushing needs no source at all and would go down with it.
     /// </summary>
     [Fact]
     public async Task A_corrupt_file_reads_as_empty_and_is_kept_beside_the_new_one()
@@ -110,7 +101,7 @@ public sealed class FileLiveSourceStoreTests : IDisposable
 
     /// <summary>
     /// Every save rewrites the whole file, so two of them at once is exactly the case where one
-    /// overwrites the other's row. That is what the lock is for.
+    /// overwrites the other's row.
     /// </summary>
     [Fact]
     public async Task Concurrent_saves_of_different_names_both_survive()
@@ -123,17 +114,7 @@ public sealed class FileLiveSourceStoreTests : IDisposable
         Assert.Equal(names, (await Store().ListAsync()).Select(source => source.Name));
     }
 
-    /// <summary>
-    /// A save that cannot reach the disk must change nothing at all.
-    ///
-    /// The file is the authority, so a store that adopted the change in memory and then failed to
-    /// write it would report a row that a restart silently removes - and the operator, having seen
-    /// the save succeed, would have no reason to look. Failing the write is fine; failing it while
-    /// claiming otherwise is not.
-    ///
-    /// The failure is provoked by putting a directory where the temporary file wants to be, which
-    /// is the one way to make the write fail that behaves the same on every platform.
-    /// </summary>
+    /// <summary>A save that cannot reach the disk must change nothing at all.</summary>
     [Fact]
     public async Task A_save_that_cannot_be_written_leaves_the_previous_list_alone()
     {
@@ -150,7 +131,6 @@ public sealed class FileLiveSourceStoreTests : IDisposable
         Directory.Delete(Path.Combine(_directory, "sources.json.tmp"));
         Assert.Equal("north", Assert.Single(await Store().ListAsync()).Name);
     }
-
 
     public void Dispose()
     {

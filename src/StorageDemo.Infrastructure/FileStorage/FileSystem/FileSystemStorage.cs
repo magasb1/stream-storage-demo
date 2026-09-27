@@ -4,7 +4,7 @@ using StorageDemo.Core.Storage;
 
 namespace StorageDemo.Infrastructure.FileStorage.FileSystem;
 
-/// <summary>Stores objects as files under a configured root. Works on Windows and Linux.</summary>
+/// <summary>Stores objects as files under a configured root.</summary>
 public sealed class FileSystemStorage : IFileStorage
 {
     /// <summary>The buffer size Stream.CopyTo uses by default.</summary>

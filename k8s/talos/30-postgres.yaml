@@ -1,11 +1,7 @@
 # PostgreSQL under CloudNativePG.
-#
 # Two instances: one primary and one replica streaming from it, with the operator promoting the
-# replica if the primary's node goes. That matters here because the cluster's three nodes are the
-# same three nodes the application runs on, so losing one is the case being tested.
-#
-# The operator publishes three Services and a Secret. The application uses:
-#
+# replica if the primary's node goes.
+# The operator publishes three Services and a Secret.
 #   pg-rw      the current primary, which follows a failover
 #   pg-app     username and password for the database created below
 #
@@ -20,8 +16,8 @@ spec:
   instances: 2
 
   storage:
-    # Ceph rather than the node's own disk, so a replacement instance on another node finds its
-    # data where it left it. local-path would pin each instance to one node permanently.
+    # Ceph rather than the node's own disk, so a replacement instance on another node finds its data
+    # where it left it.
     storageClass: ceph-block
     size: 10Gi
 

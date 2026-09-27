@@ -12,7 +12,7 @@ namespace StorageDemo.Tests.Infrastructure;
 
 /// <summary>
 /// Inference saturates every core for seconds at a time, and the live-stream integration tests
-/// measure grace periods on a wall clock; run alongside, five of them time out. So this runs alone.
+/// measure grace periods on a wall clock; run alongside, five of them time out.
 /// </summary>
 [CollectionDefinition(Name, DisableParallelization = true)]
 public sealed class OnnxCollection
@@ -22,8 +22,7 @@ public sealed class OnnxCollection
 
 /// <summary>
 /// What both detectors' tests need and neither owns: the checkout, a picture decoded by libav, a
-/// blank frame, and a log the test can read back. The expectations stay apart, per model, because
-/// the two disagree on the contents of the same scene (models/README.md, "There is no dog").
+/// blank frame, and a log the test can read back.
 /// </summary>
 public abstract unsafe class DetectorTests : IDisposable
 {
@@ -44,7 +43,10 @@ public abstract unsafe class DetectorTests : IDisposable
         GC.SuppressFinalize(this);
     }
 
-    /// <summary>The first picture in a file, decoded by libav; a JPEG arrives as yuvj420p, which is the runner's problem.</summary>
+    /// <summary>
+    /// The first picture in a file, decoded by libav; a JPEG arrives as yuvj420p, which is the
+    /// runner's problem.
+    /// </summary>
     protected IntPtr Decode(string path)
     {
         FfmpegLibrary.EnsureLoaded();
@@ -148,10 +150,6 @@ public abstract unsafe class DetectorTests : IDisposable
 
 /// <summary>
 /// RF-DETR Nano through the real runner, against the sample image models/README.md documents.
-/// The model is 108 MB and gitignored, so these skip rather than fail when it is absent.
-///
-/// Thresholds and tolerances rather than equality throughout: the README says the resize
-/// convention alone moves scores by hundredths and boxes by a pixel or two.
 /// </summary>
 [Collection(OnnxCollection.Name)]
 public sealed class OnnxDetectorTests(ITestOutputHelper output) : DetectorTests
@@ -193,16 +191,18 @@ public sealed class OnnxDetectorTests(ITestOutputHelper output) : DetectorTests
     {
         Assert.SkipUnless(File.Exists(Model), NoModel);
 
-        // The README says an all-black frame scores 0.000; the file as exported does not: fed
-        // zeros from Python with the same runtime it says "potted plant" at 0.115 over the whole
-        // frame, and this runner says exactly the same, which is the actual evidence that the
-        // bytes arrive as intended. The exporter's own check is "below 0.3", so 0.2 it is.
+        // The README says an all-black frame scores 0.000; the file as exported does not: fed zeros
+        // from Python with the same runtime it says "potted plant" at 0.115 over the whole frame,
+        // and this runner says exactly the same, which is the actual evidence that the bytes arrive
+        // as intended.
         using var detector = Detector(threshold: 0.2f);
 
         Assert.Empty(detector.Detect(Blank(384, 384)));
     }
 
-    /// <summary>The dynamic batch axis took at export, and the second frame is decoded as its own picture.</summary>
+    /// <summary>
+    /// The dynamic batch axis took at export, and the second frame is decoded as its own picture.
+    /// </summary>
     [Fact]
     public void A_batch_of_two_gives_each_frame_its_own_identical_result()
     {
@@ -242,11 +242,7 @@ public sealed class OnnxDetectorTests(ITestOutputHelper output) : DetectorTests
         output.WriteLine($"{detector.Provider}: one frame {one.TotalMilliseconds:F0} ms, batch of two {two.TotalMilliseconds:F0} ms");
     }
 
-    /// <summary>
-    /// The one number the worker has no other way to see. An instrument nobody reads until the day
-    /// a pod is slow is exactly the kind that breaks silently, so the name, the unit and the tags
-    /// are asserted as <c>dotnet-counters</c> would read them.
-    /// </summary>
+    /// <summary>The one number the worker has no other way to see.</summary>
     [Fact]
     public void A_detection_is_timed_onto_the_pods_meter_by_provider_and_batch()
     {
@@ -290,7 +286,9 @@ public sealed class OnnxDetectorTests(ITestOutputHelper output) : DetectorTests
             two => Assert.Equal(2, two.Batch));
     }
 
-    /// <summary>Where a wrong table would ship: the README's sparse id, not a position in an 80-name list.</summary>
+    /// <summary>
+    /// Where a wrong table would ship: the README's sparse id, not a position in an 80-name list.
+    /// </summary>
     [Fact]
     public void Class_18_is_the_dog()
     {

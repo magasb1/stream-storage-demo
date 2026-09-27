@@ -3,10 +3,7 @@ using StorageDemo.Core.Documents;
 
 namespace StorageDemo.Infrastructure.Database.LiteDb;
 
-/// <summary>
-/// LiteDB is synchronous and file-based; calls are wrapped so the interface stays async.
-/// A separate persistence record keeps LiteDB's type quirks (no DateTimeOffset) out of the domain.
-/// </summary>
+/// <summary>LiteDB is synchronous and file-based; calls are wrapped so the interface stays async.</summary>
 public sealed class LiteDbDocumentRepository(ILiteDatabase database) : IDocumentRepository
 {
     public const string CollectionName = "documents";
@@ -67,7 +64,7 @@ internal sealed class DocumentRecord
     /// <summary>Media metadata is free-form, so it is stored as JSON rather than as columns.</summary>
     public string? MetadataJson { get; set; }
 
-    /// <summary>The pieces of a document written a piece at a time, in order. Empty for the rest.</summary>
+    /// <summary>The pieces of a document written a piece at a time, in order.</summary>
     public string? PartsJson { get; set; }
 
     public static DocumentRecord FromDomain(Document document) => new()

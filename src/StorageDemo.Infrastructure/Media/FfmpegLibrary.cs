@@ -6,10 +6,6 @@ namespace StorageDemo.Infrastructure.Media;
 
 /// <summary>
 /// Points the libav bindings at the libraries bundled with this application and loads them once.
-///
-/// Dynamically loaded rather than statically bound, so the search path is ours to set. Without
-/// that the loader would fall back to whatever FFmpeg the machine happens to have, which is the
-/// thing this project deliberately never uses.
 /// </summary>
 public static unsafe partial class FfmpegLibrary
 {
@@ -42,8 +38,6 @@ public static unsafe partial class FfmpegLibrary
 
     /// <summary>
     /// Which transport protocols the loaded libraries actually support, lowercase and sorted.
-    /// Worth asking rather than assuming: an LGPL build has udp and rtp but not srt, and the
-    /// difference is invisible until a stream fails to open.
     /// </summary>
     public static IReadOnlyList<string> InputProtocols() => Enumerate(output: 0);
 
@@ -63,13 +57,7 @@ public static unsafe partial class FfmpegLibrary
         return (forOutput ? OutputProtocols() : InputProtocols()).Contains(scheme);
     }
 
-    /// <summary>
-    /// Turns a libav negative return code into its message.
-    ///
-    /// Here rather than in the one class that used to hold it, because a libav error number in an
-    /// exception is worth nothing to whoever reads the log: "Connection refused" says what to do
-    /// about a forward that will not open and "-111" does not.
-    /// </summary>
+    /// <summary>Turns a libav negative return code into its message.</summary>
     public static unsafe string Describe(int error)
     {
         const int size = 256;

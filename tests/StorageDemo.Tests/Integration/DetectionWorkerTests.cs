@@ -19,10 +19,9 @@ namespace StorageDemo.Tests.Integration;
 
 /// <summary>
 /// The detection worker end to end, in-process against the real application: the README's dog
-/// picture pushed as a still video over SRT, detection switched on at one a second, and the
-/// worker claiming the stream, decoding at that rate, detecting, tracking and posting VMTI frames
-/// the owner then serves. In the ONNX collection because inference saturates every core and the
-/// live tests beside it measure grace periods on a wall clock.
+/// picture pushed as a still video over SRT, detection switched on at one a second, and the worker
+/// claiming the stream, decoding at that rate, detecting, tracking and posting VMTI frames the
+/// owner then serves.
 /// </summary>
 [Collection(OnnxCollection.Name)]
 public sealed class DetectionWorkerTests(ITestOutputHelper output) : IAsyncLifetime
@@ -122,7 +121,6 @@ public sealed class DetectionWorkerTests(ITestOutputHelper output) : IAsyncLifet
         Assert.Equal(HttpStatusCode.OK, toggled.StatusCode);
 
         // The worker talks to the test host through its handler, the way a pod talks to a Service.
-        // The owner recorded no peer address on this single replica, so the worker uses the API's.
         using var delivery = new StallingDelivery(_factory.Server.CreateHandler());
         using var workerHttp = new HttpClient(delivery) { Timeout = Timeout.InfiniteTimeSpan };
         var completed = 0;
@@ -152,8 +150,8 @@ public sealed class DetectionWorkerTests(ITestOutputHelper output) : IAsyncLifet
         {
             VmtiSample? sample = null;
 
-            // Generous: the model loads, the worker claims on its first beat, subscribes, waits
-            // for a keyframe, and RF-DETR Nano takes about half a second a frame on a processor.
+            // Generous: the model loads, the worker claims on its first beat, subscribes, waits for
+            // a keyframe, and RF-DETR Nano takes about half a second a frame on a processor.
             await SrtSenders.WaitUntilAsync(
                 () => (sample = Detections(name).GetAwaiter().GetResult()) is { }
                     && sample.Frame.Detections.Any(d => d.OntologyClass == "dog"),
@@ -185,8 +183,8 @@ public sealed class DetectionWorkerTests(ITestOutputHelper output) : IAsyncLifet
             var packet = Vmti.Decode(sample.Raw);
             Assert.Contains(packet.Targets, pack => pack.Id == dog.Id && pack.Items.ContainsKey(104));
 
-            // The frame's timestamp is derived from its presentation time: the next frame served
-            // is later by about the detection interval, not by whatever the wall clock said.
+            // The frame's timestamp is derived from its presentation time: the next frame served is
+            // later by about the detection interval, not by whatever the wall clock said.
             var first = sample.Frame.Timestamp;
             await SrtSenders.WaitUntilAsync(
                 () => (sample = Detections(name).GetAwaiter().GetResult()) is { } && sample.Frame.Timestamp > first,

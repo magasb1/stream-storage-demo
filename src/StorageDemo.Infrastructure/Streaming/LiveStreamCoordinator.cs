@@ -13,14 +13,6 @@ namespace StorageDemo.Infrastructure.Streaming;
 /// <summary>
 /// Owns every stream this replica holds, and keeps the shared registry telling the truth about
 /// them.
-///
-/// The split that matters: the connection and everything hanging off it are local, because they
-/// cannot be anything else, while what a caller asks about is in the registry, because a caller
-/// may reach any replica. A request that needs the actual bytes is forwarded to the owner; the
-/// rest are answered from the registry by whoever received them.
-///
-/// A stream never becomes a document by itself. Documents come only from snapshots and recordings
-/// someone asked for, which is what makes unattended ingest safe to leave running.
 /// </summary>
 public sealed class LiveStreamCoordinator(
     StreamDemuxer demuxer,
@@ -34,26 +26,18 @@ public sealed class LiveStreamCoordinator(
     LiveMetrics metrics,
     ILogger<LiveStreamCoordinator> logger) : ILiveStreamService, IAsyncDisposable
 {
-    /// <summary>
-    /// How often the registry is refreshed and the local streams reconsidered. Short next to the
-    /// grace period, so an interruption is noticed well inside it, and it is also the unit
-    /// <see cref="LiveStreamStaleness.OwnerAlive"/> counts in.
-    /// </summary>
+    /// <summary>How often the registry is refreshed and the local streams reconsidered.</summary>
     public static readonly TimeSpan Beat = TimeSpan.FromSeconds(2);
 
     private readonly ConcurrentDictionary<string, LiveStreamEntry> _local = new(StringComparer.Ordinal);
 
     /// <summary>
     /// The registry as it looked at the last heartbeat, which is the only form the handshake can
-    /// read. See <see cref="AdmitPublisher"/>.
+    /// read.
     /// </summary>
     private readonly ConcurrentDictionary<string, LiveStream> _known = new(StringComparer.Ordinal);
 
-    /// <summary>
-    /// When this replica last tried to pick up each configured source. A source whose URL the
-    /// allowlist refuses, or whose camera is switched off, would otherwise be dialled on every beat
-    /// for as long as it stays that way, by every replica at once.
-    /// </summary>
+    /// <summary>When this replica last tried to pick up each configured source.</summary>
     private readonly ConcurrentDictionary<string, DateTimeOffset> _attempted = new(StringComparer.Ordinal);
 
     private readonly LiveOptions _options = options.Value;
@@ -81,9 +65,9 @@ public sealed class LiveStreamCoordinator(
     {
         var streams = await registry.ListAsync(cancellationToken);
 
-        // A stream whose owner has stopped heartbeating is gone, and after that it leaves no
-        // trace: the registry is a picture of what is live now, and the documents a stream
-        // produced are what outlives it.
+        // A stream whose owner has stopped heartbeating is gone, and after that it leaves no trace:
+        // the registry is a picture of what is live now, and the documents a stream produced are
+        // what outlives it.
         return [.. streams.Where(stream => !LiveStreamStaleness.IsGone(stream, Grace))];
     }
 
@@ -164,8 +148,8 @@ public sealed class LiveStreamCoordinator(
 
     /// <summary>
     /// Changes something about a local stream and publishes it at once rather than on the next
-    /// beat, because the caller is answered with the stream as it now stands and a worker lists
-    /// the registry rather than asking the owner. Null when the stream is not here.
+    /// beat, because the caller is answered with the stream as it now stands and a worker lists the
+    /// registry rather than asking the owner.
     /// </summary>
     private async Task<LiveStream?> Publish(string name, Action<LiveStreamEntry> change, CancellationToken cancellationToken)
     {
@@ -185,25 +169,6 @@ public sealed class LiveStreamCoordinator(
 
     /// <summary>
     /// Whether a publisher presenting this name may connect, answered on libsrt's receiver thread.
-    ///
-    /// A name is held while its owner is alive and its feed is live, and nobody else may publish it.
-    /// Free means the feed is interrupted, the owner has stopped heartbeating, or nothing owns the
-    /// name at all; a free name is admitted and, if it was interrupted, resumes the same stream.
-    ///
-    /// Answered from <see cref="_known"/> and not from the registry, because this runs on the thread
-    /// carrying every packet for every socket on the ingest port: one Redis round trip here stalls
-    /// packet processing for the whole port. The cache is therefore up to one beat stale, which
-    /// leaves a window where two replicas each admit the same name. <see cref="ClaimAsync"/> closes
-    /// it.
-    ///
-    /// A full replica also refuses here, which is the other half of the same decision and is why it
-    /// is made in one place: both answers are about whether this name may connect right now, both
-    /// are read off state only this replica has, and both have to be given before a connection
-    /// exists. <see cref="LiveOptions.MaxStreams"/> is the limit, zero meaning none, and a name
-    /// already held here is admitted whatever the count - an encoder reconnecting after a blip is a
-    /// stream this replica is already responsible for, and refusing it would strand it.
-    ///
-    /// Only the ingest port asks. A viewer is not a publisher and is never refused by this rule.
     /// </summary>
     public int? AdmitPublisher(Admission admission)
     {
@@ -215,14 +180,7 @@ public sealed class LiveStreamCoordinator(
         }
 
         // ponytail: a count, for a ceiling that is really a joint budget of sockets and packet
-        // rate. A replica holding ten streams at fifteen megabits is past the knee the baseline
-        // measured while one holding a hundred and fifty at half a megabit is not, and this cannot
-        // tell them apart, so the number has to be set per deployment from the expected bitrate.
-        // The honest signal exists - live.udp.receive.errors is the collapse itself, zero on a
-        // quiet pod and thirteen thousand a second on a broken one - but it arrives after the pod
-        // is already failing, and a handshake has to answer before that. Refuse on the kernel
-        // counter's recent trend instead of on a count when something is willing to own a
-        // hysteresis rule that does not flap at the knee.
+        // rate.
         return _options.MaxStreams > 0
             && _local.Count >= _options.MaxStreams
             && !_local.ContainsKey(admission.Name)
@@ -230,14 +188,7 @@ public sealed class LiveStreamCoordinator(
                 : null;
     }
 
-    /// <summary>
-    /// Takes an accepted socket off the accept thread. Everything real happens on another thread,
-    /// because every millisecond spent here is a millisecond the ingest port is not listening.
-    ///
-    /// A <see cref="SrtSocketStream"/> and not yet an <see cref="AvioReader"/>: the reader's
-    /// context is freed by the demultiplexer and by nothing else, so it is built only where
-    /// <c>demuxer.Run</c> is certain to be called. Everything up to that point carries the stream.
-    /// </summary>
+    /// <summary>Takes an accepted socket off the accept thread.</summary>
     public void OnAccepted(AcceptedSocket socket)
     {
         var name = socket.Name;
@@ -258,9 +209,7 @@ public sealed class LiveStreamCoordinator(
             if (!await ClaimAsync(entry, cancellationToken: CancellationToken.None))
             {
                 // The handshake cache said the name was free and the registry says otherwise, which
-                // is the one-beat window two replicas can both admit in. Closing the socket is all
-                // this side can do: the connection already exists, so there is no rejection code
-                // left to send, and the encoder sees a drop and retries.
+                // is the one-beat window two replicas can both admit in.
                 logger.LogInformation(
                     "'{Name}' is held elsewhere, so the connection accepted here is being closed",
                     name);
@@ -287,15 +236,7 @@ public sealed class LiveStreamCoordinator(
         }
     }
 
-    /// <summary>
-    /// Wraps the socket as a libav transport and demultiplexes it until the feed ends.
-    ///
-    /// The reader is built here, a line before the call that consumes it, and never earlier. Only
-    /// <see cref="StreamDemuxer.Run(AVIOContext*, StreamHub, CancellationToken)"/> frees an
-    /// <c>AVIOContext</c>, so one allocated on a path that can still bail - a claim lost while
-    /// attaching - would be leaked. Disposing the reader afterwards closes the socket and nothing
-    /// else, the context being already gone.
-    /// </summary>
+    /// <summary>Wraps the socket as a libav transport and demultiplexes it until the feed ends.</summary>
     private unsafe void Feed(LiveStreamEntry entry, Stream transport, CancellationToken feed)
     {
         using var reader = new AvioReader(transport);
@@ -328,23 +269,6 @@ public sealed class LiveStreamCoordinator(
     /// <summary>
     /// Records this replica as the owner of the name, or refuses because somebody else still holds
     /// it.
-    ///
-    /// A live name is locked. While the owner is alive and its feed is live nobody else may publish
-    /// that name, and this is the authoritative half of that rule: the handshake answers from a
-    /// cache that is up to one beat old, so two replicas can both admit the same name, and exactly
-    /// one of them gets past here. A name whose feed is interrupted, or whose owner has stopped
-    /// heartbeating, is free and is taken - the replica losing it stands down on its next heartbeat.
-    ///
-    /// The design on record said the opposite, that the newest connection wins, on the grounds that
-    /// an encoder actively pushing bytes is more real than a socket that has not noticed its peer is
-    /// gone. The repository owner reversed it, and the cost is stated rather than hidden: a dead
-    /// pod's names stay held for about three beats, and an encoder that reconnects before its old
-    /// socket has timed out is refused until the feed timeout declares the old one interrupted.
-    ///
-    /// The claim is the owner field of the registry entry, and the distributed lock serialises the
-    /// moment of taking it rather than being held for the stream's life. See the map: the design
-    /// said the claim was held on the lock and renewed by the heartbeat, and the lock this
-    /// repository has can neither be taken over nor renewed. Nothing waits on it.
     /// </summary>
     private async Task<bool> ClaimAsync(LiveStreamEntry entry, CancellationToken cancellationToken)
     {
@@ -378,12 +302,7 @@ public sealed class LiveStreamCoordinator(
             {
                 resumed = true;
 
-                // The same stream resuming, so it keeps the start time it has always had. Without
-                // this a stream that moved replicas looked identical to a new one with the same
-                // name: same registry entry, but a start time that jumped to the moment the new
-                // owner built its entry. docs/replica-failover.md claims the start time survives a
-                // move; on one host it did, because the entry was reused, and across two pods it
-                // did not. Observed on k3s; see .scratch/scale-to-1000/cross-pod.md.
+                // The same stream resuming, so it keeps the start time it has always had.
                 entry.Resumes(existing);
 
                 if (existing.Owner != Owner)
@@ -397,9 +316,6 @@ public sealed class LiveStreamCoordinator(
 
             await registry.UpsertAsync(Describe(entry, LiveStreamState.Live), cancellationToken);
 
-            // A move and a reconnect are both "resumed", which is the distinction that matters to
-            // anyone reading this: a rolling update should show a resume for every stream it moved
-            // and no new stream at all.
             metrics.Claimed(resumed ? "resumed" : "taken");
 
             return true;
@@ -413,11 +329,7 @@ public sealed class LiveStreamCoordinator(
         }
     }
 
-    /// <summary>
-    /// Throws away an entry this replica turned out not to own. The hub and harvester were built by
-    /// <see cref="Create"/> before the claim was asked for, and without this they would sit here
-    /// unowned and unfed until the heartbeat noticed.
-    /// </summary>
+    /// <summary>Throws away an entry this replica turned out not to own.</summary>
     private async Task DiscardAsync(LiveStreamEntry entry)
     {
         if (_local.TryRemove(new KeyValuePair<string, LiveStreamEntry>(entry.Name, entry)))
@@ -435,10 +347,6 @@ public sealed class LiveStreamCoordinator(
 
         if (entry is null)
         {
-            // The same lock an encoder meets at the handshake. A pulled stream has no handshake to
-            // be refused at, so the refusal is the answer to the request that asked for it - which
-            // is exactly why the reconcile pass calls the shared path below rather than this one:
-            // losing a claim is a request failing here and an ordinary beat there.
             throw new InvalidOperationException($"'{name}' is already live on another replica.");
         }
 
@@ -447,15 +355,7 @@ public sealed class LiveStreamCoordinator(
 
     /// <summary>
     /// Claims a name and opens a pulled input on it, for a protocol that cannot name itself.
-    ///
-    /// Both callers go through here, rather than the reconcile pass calling
-    /// <see cref="CreateManualAsync"/>, because they disagree about one thing only and it is the
-    /// return type: a person asking for a stream needs to be told the name was taken, and a replica
-    /// reconciling a thousand sources against a dozen peers expects to lose most of the time and
-    /// must not raise an exception each time it does. Everything else - the name check, the
-    /// allowlist, the claim, the demultiplexer on its own thread - is shared, which is the point.
     /// </summary>
-    /// <returns>The running entry, or null when another replica holds the name.</returns>
     private async Task<LiveStreamEntry?> PullAsync(string name, string url, CancellationToken cancellationToken)
     {
         if (!StreamName.TryParse(name, out var parsed, out var rejection))
@@ -465,8 +365,6 @@ public sealed class LiveStreamCoordinator(
 
         RequireAllowed(url);
 
-        // One namespace and one claim. A manual stream is simply one that claimed its name early,
-        // and an encoder presenting that name is the same conflict as any other.
         var entry = _local.GetOrAdd(parsed, _ => Create(parsed, manual: true, manualUrl: url));
 
         if (!await ClaimAsync(entry, cancellationToken))
@@ -505,8 +403,6 @@ public sealed class LiveStreamCoordinator(
             return null;
         }
 
-        // The note is set only where the harvester's older, smaller picture had to stand in, so it
-        // is also the honest answer to "how good was this snapshot".
         metrics.Snapshotted(note is null ? "stored" : "preview");
 
         var takenAt = DateTimeOffset.UtcNow;
@@ -528,12 +424,7 @@ public sealed class LiveStreamCoordinator(
             metadata["Classification"] = marking;
         }
 
-        // Provenance, not a second trigger: a detector arrives on this same call. The document
-        // then appears on the change feed carrying this, which is the alert, with the evidence
-        // attached rather than a message pointing at something that may not exist yet.
-        //
-        // ponytail: so a detection that captures nothing raises nothing. A bare alert needs a feed
-        // of its own; add one when something asks for an alert without evidence.
+        // Provenance, not a second trigger: a detector arrives on this same call.
         if (detection is not null)
         {
             metadata[DetectionReference.MetadataKey] = detection.ToString();
@@ -544,9 +435,6 @@ public sealed class LiveStreamCoordinator(
 
         using var content = new MemoryStream(bytes);
 
-        // Named by stream and wall-clock capture time, matching recordings, so the two sit
-        // together and read as related. A live feed has no beginning, so an offset into it would
-        // mean nothing to a person.
         var document = await documents.UploadAsync(
             $"{FileName(name)}-{takenAt:yyyyMMdd-HHmmss}.jpg",
             content,
@@ -559,18 +447,7 @@ public sealed class LiveStreamCoordinator(
         return document.Id;
     }
 
-    /// <summary>
-    /// A snapshot is a fresh decode of the newest segment, not the harvester's frame.
-    ///
-    /// The harvester decodes keyframes only at the rate a preview needs, so what it holds is stale
-    /// by up to a keyframe interval plus the preview cadence: about three seconds for a fine sender
-    /// and about twelve for a coarse one. A snapshot is a deliberate act performed once, and one
-    /// decode is nothing next to being twelve seconds wrong about the moment somebody meant to
-    /// capture.
-    ///
-    /// When the stream has nowhere to start, the harvester's picture is all there is, and the
-    /// document says so rather than quietly being older than it looks.
-    /// </summary>
+    /// <summary>A snapshot is a fresh decode of the newest segment, not the harvester's frame.</summary>
     private async Task<(byte[]? Bytes, string? Note)> CaptureAsync(
         LiveStreamEntry entry,
         CancellationToken cancellationToken)
@@ -600,11 +477,8 @@ public sealed class LiveStreamCoordinator(
 
     private static void Mux(LiveStreamEntry entry, MediaPacket[] packets, Stream destination)
     {
-        // ponytail: the layout is read in a second lock acquisition, so a reconnect landing
-        // between the copy and this line would mux old packets against a newer layout. It cannot
-        // crash - retired layouts are kept alive until the hub is disposed - and the worst case is
-        // one malformed snapshot during a reconnect that reconfigured the encoder. Take both under
-        // one lock if that ever shows up as a real complaint.
+        // ponytail: the layout is read in a second lock acquisition, so a reconnect landing between
+        // the copy and this line would mux old packets against a newer layout.
         using var muxer = new PacketMuxer(destination, entry.Hub.Layout!);
 
         foreach (var packet in packets)
@@ -626,12 +500,7 @@ public sealed class LiveStreamCoordinator(
             return Task.FromResult<RecordingStatus?>(null);
         }
 
-        // One recording at a time per stream. A trigger arriving while one runs extends its end
-        // rather than starting a second, so continuous detection produces one clip covering the
-        // whole event instead of a drift of overlapping near-duplicates.
-        // ponytail: an extending trigger keeps the first detection's reference, so a document names
-        // what started it rather than everything that kept it going. Keep a list on the recorder if
-        // naming every detection in one clip ever matters.
+        // One recording at a time per stream.
         if (entry.Recorder is { Finished: false } running)
         {
             running.Extend(duration);
@@ -657,9 +526,6 @@ public sealed class LiveStreamCoordinator(
             recorder.Id,
             recorder.EndsAt);
 
-        // Returns immediately. The recording then runs here and has no further relationship with
-        // whoever asked for it: closing the client, losing it, or never having had one changes
-        // nothing.
         return Task.FromResult<RecordingStatus?>(recorder.Status);
     }
 
@@ -689,8 +555,7 @@ public sealed class LiveStreamCoordinator(
 
     /// <summary>
     /// What a viewer asking to start this far back would actually get, which is at least what it
-    /// asked for. Answered before a byte is written, so the response can say so in a header:
-    /// asking for twenty seconds and receiving twenty-six is normal rather than an error.
+    /// asked for.
     /// </summary>
     public double ResolvePreroll(string name, double seconds)
         => _local.TryGetValue(name, out var entry) ? entry.Hub.ResolvePreroll(seconds) : 0;
@@ -704,13 +569,7 @@ public sealed class LiveStreamCoordinator(
             ? Serve(entry, request, destination, continueFromSeconds, cancellationToken)
             : throw new InvalidOperationException($"'{request.Name}' is not running on {Owner}.");
 
-    /// <summary>
-    /// Feeds one viewer until it leaves or the stream ends.
-    ///
-    /// During an interruption this simply has nothing to write, and the connection stays open. The
-    /// client already knows the stream is interrupted from its state, and closing would push every
-    /// viewer into reconnecting at the exact moment a reconnect storm is under way on ingest.
-    /// </summary>
+    /// <summary>Feeds one viewer until it leaves or the stream ends.</summary>
     private async Task<double> Serve(
         LiveStreamEntry entry,
         ViewerRequest request,
@@ -753,7 +612,6 @@ public sealed class LiveStreamCoordinator(
         }
         catch (OperationCanceledException)
         {
-            // The viewer closed the player. Normal.
         }
         catch (Exception ex)
         {
@@ -772,15 +630,13 @@ public sealed class LiveStreamCoordinator(
     }
 
     /// <summary>
-    /// One pass of the heartbeat: republish what is running here, stand down where this replica
-    /// has lost a name, retire streams whose grace period has expired, close recordings that have
+    /// One pass of the heartbeat: republish what is running here, stand down where this replica has
+    /// lost a name, retire streams whose grace period has expired, close recordings that have
     /// reached their end, and take a copy of the registry for the handshake to read.
     /// </summary>
     public async Task TickAsync(CancellationToken cancellationToken)
     {
-        // Timed in a finally, so a pass that threw is timed too. That is the reading that matters:
-        // a registry taking longer than the beat is what a slow pass usually is, and it throws at
-        // the end of the wait rather than at the start of it.
+        // Timed in a finally, so a pass that threw is timed too.
         var started = TimeProvider.System.GetTimestamp();
 
         try
@@ -799,9 +655,7 @@ public sealed class LiveStreamCoordinator(
                 }
             }
 
-            // After the pass, so it counts what survived it. One beat stale at worst, which is the
-            // same freshness as everything else a replica publishes about itself, and an autoscaler
-            // that cared about two seconds would be reacting to a reconnect.
+            // After the pass, so it counts what survived it.
             metrics.Census = Census();
 
             try
@@ -810,9 +664,6 @@ public sealed class LiveStreamCoordinator(
             }
             catch (Exception)
             {
-                // Counted and rethrown, unlike the two passes around it. The caller already treats a
-                // failed beat as survivable, and losing this read is what makes the handshake answer
-                // from a stale copy of what is claimed, so it has to leave more than a log line.
                 metrics.BeatFailed("registry");
 
                 throw;
@@ -825,9 +676,7 @@ public sealed class LiveStreamCoordinator(
             catch (Exception ex)
             {
                 // The store is a second thing that can be unreachable, and unlike the registry its
-                // implementations let a failure out rather than swallowing it. A Redis that has gone
-                // away must cost the cluster new pull streams, not the heartbeat that keeps the ones
-                // already running listed.
+                // implementations let a failure out rather than swallowing it.
                 logger.LogWarning(ex, "Reconciling configured sources failed");
 
                 metrics.BeatFailed("sources");
@@ -843,17 +692,12 @@ public sealed class LiveStreamCoordinator(
     /// Counts what this replica is holding, for the six figures a dashboard reads as the shape of a
     /// pod: how many streams, how many of them are broken in the two ways that matter, and how much
     /// work is hanging off them.
-    ///
-    /// A second walk of the local streams rather than an accumulation through the pass above,
-    /// because the pass removes entries as it goes and a count taken while it ran would include
-    /// streams that are no longer here. One hub lock per stream per beat, which is the same cost
-    /// describing them already pays.
     /// </summary>
     private LiveCensus Census()
     {
         // Counted in the walk rather than read off the dictionary afterwards, so the total and the
-        // figures inside it describe the same set: a stream arriving between the two would otherwise
-        // leave a census claiming more interrupted streams than streams.
+        // figures inside it describe the same set: a stream arriving between the two would
+        // otherwise leave a census claiming more interrupted streams than streams.
         var streams = 0;
         var interrupted = 0;
         var unstartable = 0;
@@ -891,12 +735,6 @@ public sealed class LiveStreamCoordinator(
     /// <summary>
     /// Picks up configured pull sources that are not live anywhere, by whichever replica gets there
     /// first.
-    ///
-    /// There is no scheduler and no assignment: every replica sees the same list every beat and
-    /// races for what is missing, and <see cref="ClaimAsync"/>'s distributed lock is what makes that
-    /// safe. Losing is the normal outcome - with a thousand sources and many replicas most attempts
-    /// lose - so it is not logged as a failure and does not count as an attempt worth backing off
-    /// from any differently than a success.
     /// </summary>
     private async Task AdoptAsync(CancellationToken cancellationToken)
     {
@@ -914,16 +752,10 @@ public sealed class LiveStreamCoordinator(
             .Where(source => !_local.ContainsKey(source.Name))
             .Where(source => !LiveElsewhere(source.Name))
             .Where(source => !_attempted.TryGetValue(source.Name, out var last) || now - last >= backoff)
-            // Shuffled, which is the whole of the anti-stampede measure. A thousand replicas reading
-            // one list in one order would all reach for the same source on the same beat and all but
-            // one would waste a lock acquisition on it; in a different order each they spread across
-            // the work and the lock is contended by a handful rather than by everybody.
+            // Shuffled, which is the whole of the anti-stampede measure.
             .OrderBy(_ => Random.Shared.Next())
             .ToList();
 
-        // Names the store no longer carries, in the idiom RefreshKnownAsync uses on the registry.
-        // Without it a source deleted and recreated under a new name leaves its back-off behind for
-        // the life of the process.
         foreach (var name in _attempted.Keys.Except(
                      configured.Select(source => source.Name),
                      StringComparer.Ordinal))
@@ -937,13 +769,11 @@ public sealed class LiveStreamCoordinator(
             {
                 // The same ceiling the handshake refuses publishers at, and for the same reason: a
                 // replica at its limit taking pulled streams as well would abandon what it already
-                // holds. Re-read each time round, because this loop is what moves the count.
+                // holds.
                 return;
             }
 
-            // Recorded before the attempt and whatever the outcome. A URL the allowlist refuses and
-            // a far end that is down both throw below, and without this every replica would dial an
-            // unreachable camera every two seconds for as long as it stays unreachable.
+            // Recorded before the attempt and whatever the outcome.
             _attempted[source.Name] = DateTimeOffset.UtcNow;
 
             try
@@ -965,15 +795,13 @@ public sealed class LiveStreamCoordinator(
     }
 
     /// <summary>
-    /// Whether this replica is at the ceiling <see cref="AdmitPublisher"/> refuses publishers at. A
-    /// pulled stream costs what a pushed one costs, so the two are counted against one limit.
+    /// Whether this replica is at the ceiling <see cref="AdmitPublisher"/> refuses publishers at.
     /// </summary>
     private bool Full() => _options.MaxStreams > 0 && _local.Count >= _options.MaxStreams;
 
     /// <summary>
     /// Whether some other replica is already running this name, read from the heartbeat's copy of
-    /// the registry on exactly the rule <see cref="ClaimAsync"/> would apply. Getting it wrong here
-    /// costs a lock acquisition and a refusal, not a second stream.
+    /// the registry on exactly the rule <see cref="ClaimAsync"/> would apply.
     /// </summary>
     private bool LiveElsewhere(string name)
         => _known.TryGetValue(name, out var held)
@@ -984,14 +812,6 @@ public sealed class LiveStreamCoordinator(
     /// <summary>
     /// The one registry read the handshake depends on, taken last so that what this pass just
     /// published about its own streams is in the copy rather than a beat behind it.
-    ///
-    /// A whole listing every beat, which is what makes the callback a dictionary lookup. It is also
-    /// the ceiling on this design: at a thousand streams it is a thousand entries deserialised every
-    /// two seconds on every replica.
-    ///
-    /// ponytail: the registry has no "what changed" and adding one would mean a second Redis
-    /// structure to keep honest. If the listing ever shows up in a profile, publish claims on the
-    /// change feed that already exists and keep the listing as the periodic repair.
     /// </summary>
     private async Task RefreshKnownAsync(CancellationToken cancellationToken)
     {
@@ -1028,15 +848,10 @@ public sealed class LiveStreamCoordinator(
 
         if (shared is not null && shared.Owner != Owner && !LiveStreamStaleness.IsGone(shared, Grace))
         {
-            // Displaced. The name was free when the other replica took it - this feed had stopped,
-            // or this pod had stopped saying it was alive - so everything here shuts down and any
-            // recording closes as a complete document rather than moving.
             logger.LogInformation("'{Name}' now belongs to {Owner}; standing down", entry.Name, shared.Owner);
 
             // Not EndAsync: the registry entry belongs to the new owner now and removing it would
-            // delete a live stream out from under it. The meter still hears about it, because a pod
-            // shedding streams it thought were its own is the same event from here whichever way it
-            // is written.
+            // delete a live stream out from under it.
             metrics.Ended("displaced");
 
             _local.TryRemove(entry.Name, out _);
@@ -1061,24 +876,13 @@ public sealed class LiveStreamCoordinator(
 
         // ponytail: one store read per stream per beat, which at a thousand streams is a thousand
         // more round trips every two seconds on top of the thousand the registry already costs
-        // here. The store says of itself that it is read-heavy and rarely written, so both
-        // implementations can serve this from memory; if one ever cannot, read the whole list once
-        // per beat beside RefreshKnownAsync and reconcile every entry from that copy.
+        // here.
         var source = await sources.GetAsync(entry.Name, cancellationToken);
 
         if (entry.Manual && source is { Enabled: false })
         {
             // Parking a source stops this service dialling out, which is the only reading of
-            // "disabled" an operator who has just switched one off will accept. Leaving the pull
-            // running would make the toggle mean "stop trying again later", and the row would sit
-            // there disabled while its camera carried on arriving.
-            //
-            // Deliberately narrow, in two ways. Only a pulled stream: a pushed one is an encoder's
-            // to stop, and refusing it is the name lock's business rather than this toggle's. And
-            // only when the row exists and says false: an absent row must not sweep anything,
-            // because a stream created straight through the manual endpoint has no row at all, and
-            // because deleting a configuration is not a licence to yank a live feed from its
-            // viewers - that is the stop endpoint, asked for explicitly.
+            // "disabled" an operator who has just switched one off will accept.
             _local.TryRemove(entry.Name, out _);
 
             await EndAsync(entry, "source-off", "its source was switched off");
@@ -1095,20 +899,7 @@ public sealed class LiveStreamCoordinator(
 
     /// <summary>
     /// Brings the forwards running for this stream into line with what was configured for its name.
-    ///
-    /// It happens here, in the per-stream heartbeat, and that is the design decision behind the
-    /// whole shape: the forwards hang off the local entry, so they follow the stream's owner with no
-    /// arrangement of their own. A name that moves to another pod is claimed there and reconciled
-    /// there on the next beat, while the pod that lost it stands down and disposes the entry, which
-    /// stops its copies. A forward lease would be a second claim to keep in step with the first, and
-    /// the failure it would exist to prevent - two pods pushing one stream to one far end - is
-    /// already prevented by the name claim, because only one pod has the bytes.
     /// </summary>
-    /// <param name="source">
-    /// The configured row for this name, read once by the caller because the same read also decides
-    /// whether a parked pull should still be running. Null when nothing was configured, which is the
-    /// ordinary case for a stream an encoder simply pushed.
-    /// </param>
     private void ReconcileForwards(LiveStreamEntry entry, LiveSource? source)
     {
         // A disabled source silences its forwards without forgetting them, which is what parking a
@@ -1153,9 +944,6 @@ public sealed class LiveStreamCoordinator(
 
             if (refusal is null && entry.Hub.Layout is null)
             {
-                // Nothing has been demultiplexed yet, so there is no container to write. Starting
-                // now would fail at once and burn the retry window, and leaving it out of the
-                // dictionary means the next beat plans it again rather than waiting for a retry.
                 continue;
             }
 
@@ -1177,11 +965,7 @@ public sealed class LiveStreamCoordinator(
         }
     }
 
-    /// <summary>
-    /// Whether an interrupted stream has waited long enough. A manual stream that has never
-    /// received anything is given the same window from when it was created, so one created a
-    /// moment before its sender starts is not swept away in between.
-    /// </summary>
+    /// <summary>Whether an interrupted stream has waited long enough.</summary>
     private bool Expired(LiveStreamEntry entry, TimeSpan? silent)
         => silent is { } quiet ? quiet > Grace : DateTimeOffset.UtcNow - entry.StartedAt > Grace;
 
@@ -1192,11 +976,7 @@ public sealed class LiveStreamCoordinator(
     private bool Interrupted(LiveStreamEntry entry, TimeSpan? silent)
         => !entry.FeedRunning || silent > TimeSpan.FromSeconds(_options.FeedTimeoutSeconds);
 
-    /// <param name="reason">
-    /// One of a fixed handful, for the meter. Separate from <paramref name="why"/> because that one
-    /// is a sentence written for a person reading a log, and a tag value has to be a word this
-    /// service chose rather than a phrase somebody may reword later.
-    /// </param>
+    /// <param name="reason">One of a fixed handful, for the meter.</param>
     private async Task EndAsync(LiveStreamEntry entry, string reason, string why)
     {
         logger.LogInformation("Stream '{Name}' is gone because {Why}", entry.Name, why);
@@ -1205,8 +985,6 @@ public sealed class LiveStreamCoordinator(
 
         await entry.DisposeAsync();
 
-        // Removed rather than left as finished. After the grace period the stream leaves nothing
-        // behind: no entry, no history. The documents it produced are its trace.
         await registry.RemoveAsync(entry.Name, CancellationToken.None);
     }
 
@@ -1215,16 +993,9 @@ public sealed class LiveStreamCoordinator(
         var buffer = entry.Hub.BufferState();
 
         // Asked of libsrt here because this runs once per beat per stream and nowhere else does.
-        // The sample is the interval since the last beat, which is what makes the answer "broken
-        // now" rather than "broken at some point". A stream with no socket - pulled, or between
-        // connections - reports nothing rather than a stale figure from the connection before.
         var health = entry.Transport?.Health();
 
-        // Reported here because this is where the sample is taken. libsrt clears its interval
-        // counters on the read above, so whoever reads them owes the meter the figures or they are
-        // gone; the hub's packet and byte totals are turned into an interval by the entry, against
-        // what it last reported. Describing a stream more than once in a beat - a claim does, and so
-        // does a manual creation - therefore stays exact rather than double counting.
+        // Reported here because this is where the sample is taken.
         metrics.Fed(entry.TakeFeed(health?.Lost ?? 0, health?.Dropped ?? 0));
 
         return new LiveStream(
@@ -1262,10 +1033,7 @@ public sealed class LiveStreamCoordinator(
     }
 
     /// <param name="forOutput">
-    /// True for a forward target, which libav has to be able to write rather than read. The same
-    /// allowlist governs both: a URL is a URL, and "write this local file" is the mirror of the
-    /// attack the list was drawn up against. The support check is not the same, because an FFmpeg
-    /// build can carry one direction of a protocol and not the other.
+    /// True for a forward target, which libav has to be able to write rather than read.
     /// </param>
     private void RequireAllowed(string url, bool forOutput = false)
     {
@@ -1318,11 +1086,7 @@ public sealed class LiveStreamCoordinator(
                 // Left as interrupted rather than removed, so the replica that takes the name over
                 // finds the entry and resumes the same stream: a rolling update is a move, not an
                 // end, and deleting here reset every stream's start time once per update while a
-                // crash preserved it (.scratch/scale-to-1000/cross-pod.md). The heartbeat written
-                // here is the last this entry gets, and that is what starts the clocks: readers
-                // stop listing it after the grace period, and the retention sweeper deletes it
-                // once the owner has been silent long enough. Written before the entry is torn
-                // down, while the hub can still be described.
+                // crash preserved it (.scratch/scale-to-1000/cross-pod.md).
                 await registry.UpsertAsync(Describe(entry, LiveStreamState.Interrupted), CancellationToken.None);
                 await entry.DisposeAsync();
 

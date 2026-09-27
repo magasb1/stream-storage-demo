@@ -4,12 +4,7 @@ using StorageDemo.Tests.Infrastructure;
 
 namespace StorageDemo.Tests.Integration;
 
-/// <summary>
-/// The name lock across replicas, which is the half that cannot be seen on one host.
-///
-/// Two applications in one process sharing one registry and one lock; see <see cref="LiveReplicas"/>.
-/// Everything here asserts against the shared registry directly, because the registry is the claim.
-/// </summary>
+/// <summary>The name lock across replicas, which is the half that cannot be seen on one host.</summary>
 public sealed class LiveNameLockTests : IAsyncLifetime
 {
     private readonly LiveReplicas _replicas = new();
@@ -29,8 +24,7 @@ public sealed class LiveNameLockTests : IAsyncLifetime
 
     /// <summary>
     /// The rule the owner asked for, seen from the other pod: while a name is live on A, B refuses
-    /// it at the handshake. Fails if the handshake cache is never populated or is consulted wrongly,
-    /// which on one host would be hidden by the claim check behind it.
+    /// it at the handshake.
     /// </summary>
     [Fact]
     public async Task A_name_live_on_one_pod_is_refused_on_the_other()
@@ -64,11 +58,7 @@ public sealed class LiveNameLockTests : IAsyncLifetime
 
     /// <summary>
     /// The lock lets go three beats after a pod stops saying it is alive, not thirty seconds later
-    /// when the stream is finally delisted. A force-killed pod's encoders reconnect in one to seven
-    /// seconds, and a lock on the grace period would turn that into half a minute of black screen.
-    ///
-    /// The dead owner is a registry entry rather than a real host, because a pod that is killed
-    /// outright is exactly an entry nothing will ever update again.
+    /// when the stream is finally delisted.
     /// </summary>
     [Fact]
     public async Task A_name_whose_owner_has_stopped_heartbeating_is_free()
@@ -92,12 +82,7 @@ public sealed class LiveNameLockTests : IAsyncLifetime
 
     /// <summary>
     /// A stream that moves to another replica is the same stream resuming, so it keeps its start
-    /// time. On one host that is free, because the entry the replica already holds is reused; across
-    /// two it has to be carried through the registry, and it was not. The symptom is a stream whose
-    /// start time jumps forward every time its owner is replaced, which makes "this feed has been up
-    /// for two hours" a lie told once per rolling update.
-    ///
-    /// docs/replica-failover.md states the start time survives a move. This is that claim, tested.
+    /// time.
     /// </summary>
     [Fact]
     public async Task A_name_resumed_on_another_pod_keeps_its_start_time()
@@ -111,13 +96,10 @@ public sealed class LiveNameLockTests : IAsyncLifetime
         // The production grace period rather than this fixture's five seconds, because the window
         // this test lives in does not exist at five: a name frees three beats after its owner stops
         // heartbeating, which is six seconds, and a stream whose heartbeat is six seconds old is
-        // already gone under a five second grace. A stream that is gone leaves no trace and its name
-        // is genuinely new the next time somebody publishes it, which is why the claim only carries
-        // a start time forward for an entry that is still listed.
+        // already gone under a five second grace.
         _replicas.Start("pod-b", _bIngest, graceSeconds: 30);
 
-        // A pod that was killed outright: an entry nothing will ever update again. Eight seconds
-        // frees the name, and leaves the stream listed as interrupted rather than gone.
+        // A pod that was killed outright: an entry nothing will ever update again.
         await _replicas.Registry.UpsertAsync(LiveReplicas.Entry(name, "ghost", DateTimeOffset.UtcNow.AddSeconds(-8), began));
 
         _replicas.Send(_bIngest, name);
@@ -130,16 +112,7 @@ public sealed class LiveNameLockTests : IAsyncLifetime
         Assert.Equal(began, (await _replicas.Registry.GetAsync(name))!.StartedAt);
     }
 
-    /// <summary>
-    /// The graceful twin of the test above, and the one a rolling update exercises. A pod that is
-    /// stopped cleanly used to remove its entries, so the replica taking the name over found nothing
-    /// to resume from and the stream came back new: a crash kept the start time and a clean shutdown
-    /// lost it. Now a stopping pod leaves each entry interrupted, which is the same thing a reconnect
-    /// finds after a dropped feed, and the same claim carries the start time forward.
-    ///
-    /// The fixture's dispose is the graceful path: the host stops, the heartbeat with it, and the
-    /// coordinator is disposed by the container as it would be by SIGTERM.
-    /// </summary>
+    /// <summary>The graceful twin of the test above, and the one a rolling update exercises.</summary>
     [Fact]
     public async Task A_name_resumed_after_a_graceful_shutdown_keeps_its_start_time()
     {
@@ -172,7 +145,7 @@ public sealed class LiveNameLockTests : IAsyncLifetime
         Assert.Equal("pod-a", left.Owner);
 
         // One full beat, which is how long B's handshake copy of the registry may still say A holds
-        // the name live. A real encoder retries through that window; ffmpeg here does not.
+        // the name live.
         await Task.Delay(LiveStreamCoordinator.Beat + TimeSpan.FromSeconds(1));
 
         var second = _replicas.Send(_bIngest, name);
@@ -186,18 +159,7 @@ public sealed class LiveNameLockTests : IAsyncLifetime
         Assert.Single(await _replicas.Registry.ListAsync());
     }
 
-    /// <summary>
-    /// The second enforcement point, on its own.
-    ///
-    /// The handshake answers from a copy of the registry taken once a beat, so for up to a beat two
-    /// replicas can both admit the same name. B's copy is made blind to this name here, which is
-    /// that window held open rather than raced for: B admits the caller, and the claim behind the
-    /// handshake is what refuses it. The encoder sees a closed socket rather than a rejection,
-    /// because by then the connection exists.
-    ///
-    /// A cache bug would hide behind the handshake check in every other test in this file. This one
-    /// is the reason the claim is still authoritative.
-    /// </summary>
+    /// <summary>The second enforcement point, on its own.</summary>
     [Fact]
     public async Task The_race_window_resolves_to_one_owner()
     {
@@ -222,10 +184,6 @@ public sealed class LiveNameLockTests : IAsyncLifetime
 
     /// <summary>
     /// A registry that keeps one name out of its listing and answers for it normally otherwise.
-    ///
-    /// That is precisely the shape of the window this rule has to survive: the handshake reads a
-    /// copy of the listing and cannot see the name, while the claim reads the entry itself and can.
-    /// Holding the window open beats racing for it, which would be a test that passes by luck.
     /// </summary>
     private sealed class HiddenFromListing(ILiveStreamRegistry inner, string hidden) : ILiveStreamRegistry
     {

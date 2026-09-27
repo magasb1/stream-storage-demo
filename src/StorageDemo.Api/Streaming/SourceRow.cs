@@ -3,14 +3,7 @@ using StorageDemo.Infrastructure.Streaming;
 
 namespace StorageDemo.Api.Streaming;
 
-/// <summary>
-/// What an operator sees in the state column, which is three answers rather than two.
-///
-/// <see cref="NotOnAir"/> is the one that has to exist separately. A configured source with no
-/// stream behind it has never arrived, or arrived and finished; an interrupted one is claimed,
-/// buffered and expected back within the grace period. Collapsing them would tell an operator that
-/// a source nobody has ever pushed is merely having a bad moment.
-/// </summary>
+/// <summary>What an operator sees in the state column, which is three answers rather than two.</summary>
 public enum SourceState
 {
     NotOnAir,
@@ -19,22 +12,16 @@ public enum SourceState
 }
 
 /// <summary>
-/// One line of the sources table: the configuration, whatever is on air under its name, and the
-/// few figures derived from the pair of them.
-///
-/// A plain record built by a static method rather than logic inside the component, because this is
-/// the only part of the page worth testing and a renderer is a needlessly expensive way to ask
-/// whether a source with no stream reads as off air.
+/// One line of the sources table: the configuration, whatever is on air under its name, and the few
+/// figures derived from the pair of them.
 /// </summary>
 /// <param name="LocalOutput">
 /// The SRT address a player pulls this feed from, which is the answer to the question an operator
-/// asks most often. Present whether or not the stream is on air: it is where the feed will be, and
-/// handing it over before the encoder connects is how a viewer is set up in advance.
+/// asks most often.
 /// </param>
 /// <param name="BitsPerSecond">
 /// Null when no honest figure exists yet - the first refresh has nothing to subtract from, and a
-/// counter that went backwards means the stream restarted rather than that throughput was
-/// negative. The page shows total bytes in that case instead of inventing a rate.
+/// counter that went backwards means the stream restarted rather than that throughput was negative.
 /// </param>
 public sealed record SourceRow(
     LiveSource Source,
@@ -52,10 +39,6 @@ public sealed record SourceRow(
     /// <summary>
     /// Every configured forward beside what it is actually doing, status null when the owning
     /// replica is reporting nothing for it.
-    ///
-    /// Driven from the configuration rather than from the statuses on purpose. A forward that was
-    /// asked for and never started has no status at all, and listing only the statuses would hide
-    /// exactly the forward the operator is looking for.
     /// </summary>
     public IEnumerable<(ForwardTarget Target, ForwardStatus? Status)> Detail
         => Source.Forwards.Select(target =>
@@ -67,19 +50,7 @@ public sealed record SourceRow(
 /// </summary>
 public static class StreamingRows
 {
-    /// <summary>
-    /// Where a player pulls this source from this service.
-    ///
-    /// <see cref="LiveOptions.PublicConsumptionUrl"/> wins when set, because only the deployment
-    /// knows the address a player can actually reach: the host the browser is talking to is the API
-    /// port's, and behind an ingress or a port mapping it is frequently not where media is exposed.
-    /// Falling back to that host and the configured consumption port is still the right guess for
-    /// the standalone shape, where the two are the same machine.
-    ///
-    /// The name rides in the SRT <c>streamid</c>, escaped, in its bare form rather than the
-    /// <c>#!::r=name,m=request</c> envelope. Both are accepted on the consumption port and the bare
-    /// one is what an operator can retype into a player without counting punctuation.
-    /// </summary>
+    /// <summary>Where a player pulls this source from this service.</summary>
     public static string LocalOutput(LiveOptions options, string? host, string name)
     {
         var address = string.IsNullOrWhiteSpace(options.PublicConsumptionUrl)
@@ -92,10 +63,6 @@ public static class StreamingRows
     /// <summary>
     /// The same scheme rule the coordinator applies before it opens anything, run in the browser so
     /// a typo costs a red line under the field rather than a round trip and a stack trace.
-    ///
-    /// Deliberately only the scheme. Whether the loaded FFmpeg actually carries that transport is
-    /// a property of the server's build and cannot be answered here; the coordinator still checks
-    /// it, and this is a first pass rather than the authority.
     /// </summary>
     public static bool SchemeAllowed(string? url, IReadOnlyList<string> allowed)
     {
@@ -131,11 +98,6 @@ public static class StreamingRows
 
 /// <summary>
 /// Turns the stream's running byte total into a rate, by remembering what it was last time.
-///
-/// The registry counts bytes since the stream started, which says nothing about whether a feed is
-/// still carrying its bitrate now. Two samples a heartbeat apart do, and they are honest in a way
-/// dividing the total by the uptime is not: a feed that stalled ten minutes ago still averages
-/// nicely.
 /// </summary>
 public sealed class ThroughputMeter
 {
@@ -155,8 +117,7 @@ public sealed class ThroughputMeter
         var seconds = (at - previous.At).TotalSeconds;
 
         // A total that went backwards is a stream that ended and came back under the same name,
-        // which is the ordinary case for a reconnecting encoder. Reporting the negative rate, or
-        // clamping it to zero, would both be readings of something that did not happen.
+        // which is the ordinary case for a reconnecting encoder.
         return seconds > 0 && bytes >= previous.Bytes
             ? (bytes - previous.Bytes) * 8 / seconds
             : null;

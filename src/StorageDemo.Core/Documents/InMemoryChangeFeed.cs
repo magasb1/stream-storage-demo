@@ -3,12 +3,7 @@ using System.Threading.Channels;
 
 namespace StorageDemo.Core.Documents;
 
-/// <summary>
-/// Fan-out inside one process. Publishing to nobody is a no-op, and each subscriber gets a bounded
-/// channel that drops its oldest event when full, so one stalled client cannot back up the monitor.
-///
-/// Replicas do not see each other's changes with this one; that is what the Redis feed is for.
-/// </summary>
+/// <summary>Fan-out inside one process.</summary>
 public sealed class InMemoryChangeFeed : IChangeFeed
 {
     private readonly ConcurrentDictionary<Guid, Channel<DocumentChange>> _subscribers = new();

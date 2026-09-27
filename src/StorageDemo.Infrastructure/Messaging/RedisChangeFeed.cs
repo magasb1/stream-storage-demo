@@ -11,13 +11,6 @@ namespace StorageDemo.Infrastructure.Messaging;
 /// <summary>
 /// Fan-out through Redis pub/sub, so every replica sees every change and a client connected to one
 /// replica still hears about an upload handled by another.
-///
-/// Redis delivers a publisher its own messages, so local subscribers are served by the same path
-/// as remote ones and there is nothing to publish twice.
-///
-/// ponytail: pub/sub, not a stream. A subscriber that is offline misses what was published while
-/// it was away, which for a change feed only means a client refreshes on reconnect. Use a Redis
-/// stream with consumer groups if a missed event ever has to be recoverable.
 /// </summary>
 public sealed class RedisChangeFeed(
     IConnectionMultiplexer connection,
@@ -35,7 +28,6 @@ public sealed class RedisChangeFeed(
         catch (RedisException ex)
         {
             // A change that nobody hears about costs a client a stale tile until its next refresh.
-            // Failing the upload that triggered it would be a far worse trade.
             logger.LogWarning(ex, "Could not publish a change to Redis");
         }
     }

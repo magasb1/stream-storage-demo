@@ -1,9 +1,6 @@
 namespace StorageDemo.Core.Storage;
 
-/// <summary>
-/// Counts bytes as they are read through it. Uploads arrive as unseekable network streams, so the
-/// only honest way to record a size is to count what actually reached the store.
-/// </summary>
+/// <summary>Counts bytes as they are read through it.</summary>
 public sealed class CountingStream(Stream inner) : Stream
 {
     public long BytesRead { get; private set; }

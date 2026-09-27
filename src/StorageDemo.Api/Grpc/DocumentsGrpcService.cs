@@ -14,10 +14,7 @@ using StorageDemo.Infrastructure;
 
 namespace StorageDemo.Api.Grpc;
 
-/// <summary>
-/// The primary API surface. It is a thin translation layer: every decision lives in
-/// <see cref="IDocumentService"/>, which knows nothing about gRPC.
-/// </summary>
+/// <summary>The primary API surface.</summary>
 public sealed class DocumentsGrpcService(
     IDocumentService documents,
     ILiveStreamService live,
@@ -33,13 +30,7 @@ public sealed class DocumentsGrpcService(
 {
     private const int ChunkSize = 64 * 1024;
 
-    /// <summary>
-    /// How this surface's measurements are tagged. REST writes to the same instruments with the
-    /// surface set to <c>rest</c>, because how much was uploaded is a question about the store rather
-    /// than about the protocol - and which surface anybody is actually using is worth asking too. The
-    /// three kinds exist because a wall of a thousand live tiles and a thousand file downloads are
-    /// nothing like the same load.
-    /// </summary>
+    /// <summary>How this surface's measurements are tagged.</summary>
     private const string Surface = "grpc";
 
     private const string Document = "document";
@@ -103,8 +94,7 @@ public sealed class DocumentsGrpcService(
 
     /// <param name="kind">
     /// What is being served - a document, a thumbnail or a live preview - so the three can be told
-    /// apart on the meter. A wall of a thousand live tiles and a thousand file downloads are very
-    /// different loads and would otherwise be one number.
+    /// apart on the meter.
     /// </param>
     private async Task StreamAsync(
         Stream? source,
@@ -145,9 +135,6 @@ public sealed class DocumentsGrpcService(
         }
         finally
         {
-            // In a finally, so a client that gave up halfway is counted for what it actually read.
-            // Bytes that left this process are bytes that left it, whether or not the call ended
-            // tidily, and a download abandoned at ninety per cent is exactly the event worth seeing.
             metrics.DownloadedBytes(Surface, kind, written);
         }
     }
@@ -168,8 +155,7 @@ public sealed class DocumentsGrpcService(
 
         var metadata = requestStream.Current.Metadata;
 
-        // Pull the first data message so the type can be read from the bytes. It is handed back
-        // to the stream below, so nothing is lost and nothing is read twice.
+        // Pull the first data message so the type can be read from the bytes.
         ReadOnlyMemory<byte> head = default;
         while (await requestStream.MoveNext(context.CancellationToken))
         {
@@ -186,7 +172,6 @@ public sealed class DocumentsGrpcService(
             head,
             context.CancellationToken);
 
-        // The chunks are handed to the service as a stream, so nothing buffers the whole file.
         await using var content = new ChunkStream(requestStream, context.CancellationToken, head);
 
         var document = await documents.UploadAsync(
@@ -195,9 +180,6 @@ public sealed class DocumentsGrpcService(
             contentType,
             context.CancellationToken);
 
-        // The stored document's own size, not a count of the chunks that arrived: what was stored is
-        // the figure this is asked about, and for a provider that rewrites nothing they are the same
-        // number anyway.
         metrics.Uploaded(Surface, "stored", document.Size);
 
         return ToMessage(document);
@@ -287,9 +269,6 @@ public sealed class DocumentsGrpcService(
                 await responseStream.WriteAsync(current, context.CancellationToken);
                 previous = current;
 
-                // Only what changed is written, which is the point of this RPC and also what makes
-                // the message count worth having: a wall of streams that never changes sends nothing
-                // at all, and a message rate climbing with the stream count is the cost of the wall.
                 counted.Sent();
             }
             await Task.Delay(TimeSpan.FromSeconds(1), context.CancellationToken);
@@ -353,8 +332,8 @@ public sealed class DocumentsGrpcService(
             message.Forwards.Add(ToMessage(forward));
         }
 
-        // Absent stays absent: a pulled stream or a stream with no transport of its own has
-        // nothing to report, which is not the same answer as every field reading zero.
+        // Absent stays absent: a pulled stream or a stream with no transport of its own has nothing
+        // to report, which is not the same answer as every field reading zero.
         if (stream.Link is { } link)
         {
             message.Link = ToMessage(link);
@@ -375,8 +354,7 @@ public sealed class DocumentsGrpcService(
 
     /// <summary>
     /// Configuration rather than state, so nothing is asked of an owning replica: the store is
-    /// shared and whichever replica this call reached can answer it. Each source carries the
-    /// stream of its name when one is on air, so a client showing both makes one call.
+    /// shared and whichever replica this call reached can answer it.
     /// </summary>
     public override async Task<LiveSourceListResponse> ListLiveSources(Empty request, ServerCallContext context)
     {
@@ -393,11 +371,7 @@ public sealed class DocumentsGrpcService(
         return response;
     }
 
-    /// <summary>
-    /// Creates the source or replaces it whole. The same rules the REST route applies, from the
-    /// same place: a row this port could save and that one refuses would make the allowlist a
-    /// suggestion.
-    /// </summary>
+    /// <summary>Creates the source or replaces it whole.</summary>
     public override async Task<LiveSourceMessage> SaveLiveSource(
         LiveSourceMessage request,
         ServerCallContext context)
@@ -419,7 +393,6 @@ public sealed class DocumentsGrpcService(
 
         await sources.SaveAsync(source, context.CancellationToken);
 
-        // Returned rather than acknowledged, because the ids minted above are on it.
         return ToMessage(source);
     }
 
@@ -427,8 +400,6 @@ public sealed class DocumentsGrpcService(
     {
         RequireLive();
 
-        // The configuration only. A stream already on air under this name belongs to whoever is
-        // watching it until an operator stops it themselves.
         await sources.RemoveAsync(request.Name, context.CancellationToken);
 
         return new Empty();
@@ -500,10 +471,7 @@ public sealed class DocumentsGrpcService(
         return message;
     }
 
-    /// <summary>
-    /// Set through the owner, which is what publishes the entry a worker reads. Landing elsewhere
-    /// it is forwarded over the REST route with the caller's token, as KLV is fetched.
-    /// </summary>
+    /// <summary>Set through the owner, which is what publishes the entry a worker reads.</summary>
     public override async Task<LiveStreamMessage> SetLiveDetection(
         SetLiveDetectionRequest request,
         ServerCallContext context)
@@ -571,10 +539,7 @@ public sealed class DocumentsGrpcService(
             }
             catch (RpcException ex) when (ex.StatusCode == StatusCode.NotFound)
             {
-                // A worker may not have produced its first result yet, or ownership may move.
             }
-            // Sample the bounded latest-result ring. Remote owners use a lower frequency to
-            // bound peer traffic; slow clients never accumulate an unbounded result backlog.
             await Task.Delay(live.Owns(request.Name) ? 50 : 200, context.CancellationToken);
         }
     }
@@ -637,9 +602,6 @@ public sealed class DocumentsGrpcService(
             return;
         }
 
-        // Owned by another replica, so fetched from it, as the REST route does. Answering
-        // NOT_FOUND here instead was a documented trade-off with one replica; in a cluster it
-        // turns most of a client's grid into icons.
         var stream = await live.GetAsync(request.Name, context.CancellationToken);
 
         if (stream is null || !stream.HasPreview || live.Owns(request.Name))
@@ -691,11 +653,7 @@ public sealed class DocumentsGrpcService(
         return ToMessage(status);
     }
 
-    /// <summary>
-    /// The wire form of a detection reference, as the rest of the service knows it. A message with
-    /// no timestamp names no frame, so it matches nothing, which is the right answer to a caller
-    /// that sent half a reference.
-    /// </summary>
+    /// <summary>The wire form of a detection reference, as the rest of the service knows it.</summary>
     private static DetectionReference? Reference(DetectionReferenceMessage? detection)
         => detection is null
             ? null
@@ -754,8 +712,7 @@ public sealed class DocumentsGrpcService(
 
     /// <summary>
     /// Only the owner has the packets, so a call landing elsewhere is routed to it over the REST
-    /// route, as the controller's own forwarding does. The token the caller presented travels
-    /// with it, because the owner guards that route too.
+    /// route, as the controller's own forwarding does.
     /// </summary>
     private async Task<T?> FetchFromOwnerAsync<T>(
         string name,
@@ -806,8 +763,8 @@ public sealed class DocumentsGrpcService(
     }
 
     /// <summary>
-    /// Every null stays absent rather than becoming zero: an error indicator from the sensor and
-    /// a platform on the equator are different answers, and this is the one place they could be
+    /// Every null stays absent rather than becoming zero: an error indicator from the sensor and a
+    /// platform on the equator are different answers, and this is the one place they could be
     /// confused.
     /// </summary>
     private static Misb0601Message ToMessage(Misb0601Set set)

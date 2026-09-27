@@ -4,10 +4,7 @@ using StorageDemo.Core.Documents;
 
 namespace StorageDemo.Infrastructure.Database.PostgreSql;
 
-/// <summary>
-/// Applies migrations at startup. Convenient for the demo; in Kubernetes run this as a Job
-/// instead so replicas do not migrate concurrently. See README "Migrations".
-/// </summary>
+/// <summary>Applies migrations at startup.</summary>
 public sealed class PostgresInitializer(AppDbContext db, ILogger<PostgresInitializer> logger)
     : IDatabaseInitializer
 {

@@ -2,20 +2,7 @@ using StorageDemo.Core.Streaming;
 
 namespace StorageDemo.Infrastructure.Streaming;
 
-/// <summary>
-/// One SRT socket, as an ordinary .NET stream.
-///
-/// Everything downstream of the hub keeps writing to a
-/// <see cref="Stream"/> and never learns what is on the other end, so the recorder writes to a file
-/// and a viewer writes to a socket through the same muxer and the same code.
-///
-/// Two of libsrt's rules leak through the <see cref="Stream"/> contract and cannot be hidden:
-/// a read buffer smaller than the socket's payload size is refused with SRT_EINVALMSGAPI, and a
-/// write larger than it is refused as a message, so writes are cut into payload-sized sends.
-///
-/// Reads and writes block, so this is only ever used from a thread already dedicated to one
-/// connection.
-/// </summary>
+/// <summary>One SRT socket, as an ordinary .NET stream.</summary>
 public sealed unsafe class SrtSocketStream : Stream, IWireWriter
 {
     /// <summary>Hands a chunk to libsrt, returning what <c>srt_sendmsg</c> returned.</summary>
@@ -41,13 +28,7 @@ public sealed unsafe class SrtSocketStream : Stream, IWireWriter
     {
     }
 
-    /// <summary>
-    /// The test seam. Substituting the two calls is what lets the chunking be proved on a machine
-    /// with no libsrt, which is every machine until someone runs scripts/fetch-libsrt.sh.
-    ///
-    /// Public rather than internal only because the test project has no access to internals and
-    /// giving it some would mean editing a csproj for one constructor.
-    /// </summary>
+    /// <summary>The test seam.</summary>
     public SrtSocketStream(
         int socket,
         bool writable,
@@ -69,23 +50,16 @@ public sealed unsafe class SrtSocketStream : Stream, IWireWriter
 
     public override bool CanSeek => false;
 
-    /// <summary>
-    /// True once a send has been refused, which for a viewer means it has gone.
-    ///
-    /// Worth exposing, because the muxer swallows the exception a refused write throws: it treats
-    /// that as "stop writing" rather than as a failure. Without a flag the caller cannot tell a
-    /// stream that ended from a viewer that left, and would re-attach to a socket nobody is
-    /// listening to, forever.
-    /// </summary>
+    /// <summary>True once a send has been refused, which for a viewer means it has gone.</summary>
     public bool Faulted { get; private set; }
 
     /// <summary>What a write is cut into and the smallest buffer a read may be given.</summary>
     public int PayloadSize => _payloadSize;
 
     /// <summary>
-    /// Bytes actually handed to libsrt, which for a forward is what "bytes sent" is meant to
-    /// answer - not bytes muxed, which can differ from what leaves the socket by whatever the
-    /// container's own overhead is.
+    /// Bytes actually handed to libsrt, which for a forward is what "bytes sent" is meant to answer
+    /// - not bytes muxed, which can differ from what leaves the socket by whatever the container's
+    /// own overhead is.
     /// </summary>
     public long Written { get; private set; }
 
@@ -93,24 +67,6 @@ public sealed unsafe class SrtSocketStream : Stream, IWireWriter
     /// What this connection lost and dropped since the last time it was asked, and what libsrt
     /// itself says about the link over the same interval - or null when the socket has gone and
     /// there is nothing to ask.
-    ///
-    /// Lost and dropped are the interval, not the running total, and the <c>clear</c> argument is
-    /// what makes it one. An operator looking at a list of a thousand streams is asking which of
-    /// them is broken now: a total answers "this one lost forty packets at some point today", which
-    /// is true of a healthy stream that had one bad minute and says nothing about the last two
-    /// seconds. Only the heartbeat calls this, once per beat per stream, so the window is that beat
-    /// and the figure reads as "per two seconds" without anything having to record when it was last
-    /// cleared.
-    ///
-    /// Lost and dropped are different failures. Lost is what never arrived and could not be
-    /// retransmitted in time, which is the network or a saturated receive path; dropped is what
-    /// arrived too late for the latency window, which is usually the latency window being too small
-    /// for the link.
-    ///
-    /// One call to libsrt, not two. <c>clear</c> resets the interval counters it reads, so asking
-    /// twice in the same beat for what should be one sample would make the second call read the
-    /// remainder of the first's window rather than the same one - <see cref="Link"/> is built from
-    /// this same read for exactly that reason.
     /// </summary>
     public (int Lost, int Dropped, SrtLinkStats Link)? Health()
     {
@@ -138,17 +94,9 @@ public sealed unsafe class SrtSocketStream : Stream, IWireWriter
 
     /// <summary>
     /// The sending twin of <see cref="Health"/>: what a forward's own connection reports about
-    /// itself, over the same kind of interval and for the same reason <c>clear</c> exists there -
-    /// a second read in the same beat would see the remainder of this one's window rather than a
+    /// itself, over the same kind of interval and for the same reason <c>clear</c> exists there - a
+    /// second read in the same beat would see the remainder of this one's window rather than a
     /// fresh sample.
-    ///
-    /// Genuinely different fields, not the same ones renamed. SRT_TRACEBSTATS keeps a separate
-    /// counter for almost everything depending on which direction is asking, because a sender and
-    /// a receiver are different questions about the same connection even when it is this replica
-    /// asking both of them a beat apart on two different sockets. There is no sending analogue of
-    /// a decrypt failure - decrypting is what a receiver does - so <see cref="SrtForwardLinkStats"/>
-    /// simply carries no field for it, rather than one that would always read zero for a fact
-    /// nothing here ever asked.
     /// </summary>
     public (int Lost, int Dropped, SrtForwardLinkStats Link)? SendHealth()
     {
@@ -194,7 +142,7 @@ public sealed unsafe class SrtSocketStream : Stream, IWireWriter
         if (buffer.Length < _payloadSize)
         {
             // libsrt would answer SRT_EINVALMSGAPI, which reads as a coding error rather than as
-            // the too-small buffer it is. Say so here instead.
+            // the too-small buffer it is.
             throw new ArgumentException(
                 $"An SRT read needs at least the payload size, {_payloadSize} bytes, "
                 + $"and was given {buffer.Length}.",
@@ -212,24 +160,17 @@ public sealed unsafe class SrtSocketStream : Stream, IWireWriter
 
             if (read == 0)
             {
-                // The peer closed in an orderly way. End of stream, and nothing faulted.
+                // The peer closed in an orderly way.
                 return 0;
             }
 
             if (Srt.LastErrorCode() == Srt.SRT_ETIMEOUT)
             {
-                // SRTO_RCVTIMEO expired, which is not end of stream. It is the chance to notice
-                // that the socket has been disposed underneath us and read again if it has not,
-                // so a shutdown never waits on a silent sender.
-                //
-                // ponytail: a read can still sit one receive timeout past a Dispose, because the
-                // loop only looks between reads. Pass a CancellationToken in if that second ever
-                // shows up in a shutdown measurement.
+                // SRTO_RCVTIMEO expired, which is not end of stream.
                 continue;
             }
 
-            // A broken link, or a socket closed under us. Both mean nothing more is coming, and
-            // both are a fault rather than an ending.
+            // A broken link, or a socket closed under us.
             Faulted = true;
 
             return 0;
@@ -254,8 +195,7 @@ public sealed unsafe class SrtSocketStream : Stream, IWireWriter
 
             if (_send(chunk) < 0)
             {
-                // The socket's own error, which libsrt reports by return value. Without this a
-                // viewer who walked away would be written to forever.
+                // The socket's own error, which libsrt reports by return value.
                 Faulted = true;
 
                 throw new IOException($"The socket refused {chunk.Length} bytes: {Srt.LastError()}");

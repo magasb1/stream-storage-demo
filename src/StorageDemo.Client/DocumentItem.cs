@@ -27,13 +27,7 @@ public enum StreamHealth
     Interrupted,
 }
 
-/// <summary>
-/// One tile in the explorer.
-///
-/// A tile can exist before the server knows about it: an upload puts a pending tile on screen
-/// immediately and fills in the real document when the call returns. That, plus the thumbnail
-/// arriving later over the change feed, is what makes an upload feel instant.
-/// </summary>
+/// <summary>One tile in the explorer.</summary>
 public sealed class DocumentItem : INotifyPropertyChanged
 {
     private DocumentMessage? _document;
@@ -61,10 +55,7 @@ public sealed class DocumentItem : INotifyPropertyChanged
 
     public bool IsPending => _document is null && _live is null;
 
-    /// <summary>
-    /// A document's identifier, or a stream's name. The name is a stream's identity: a feed that
-    /// drops and reconnects under it is the same stream resuming, so there is no other key.
-    /// </summary>
+    /// <summary>A document's identifier, or a stream's name.</summary>
     public string Id => _document?.Id ?? _live?.Name ?? string.Empty;
 
     public string FileName => _document?.FileName ?? _live?.Name ?? _pendingName ?? string.Empty;
@@ -93,8 +84,8 @@ public sealed class DocumentItem : INotifyPropertyChanged
             : $"{Icon}  {HumanSize(Size)}";
 
     /// <summary>
-    /// The health bar's colour is not the only signal: this word says the same thing for anyone
-    /// who cannot tell the two warning colours apart. Still no figures on the face of a tile.
+    /// The health bar's colour is not the only signal: this word says the same thing for anyone who
+    /// cannot tell the two warning colours apart.
     /// </summary>
     private string HealthWord => Health switch
     {
@@ -105,10 +96,7 @@ public sealed class DocumentItem : INotifyPropertyChanged
 
     /// <summary>
     /// Red is held for three beats, because the figures are per heartbeat: a single bad beat would
-    /// otherwise blink once and be gone before anyone looked up. Only the colour is held; the
-    /// numbers in the tooltip are always the last beat's.
-    ///
-    /// ponytail: three beats, make it a setting if operators disagree.
+    /// otherwise blink once and be gone before anyone looked up.
     /// </summary>
     public StreamHealth Health => !IsLive
         ? StreamHealth.None
@@ -167,10 +155,7 @@ public sealed class DocumentItem : INotifyPropertyChanged
         }
     }
 
-    /// <summary>
-    /// The ST 0102 marking to print for a stream. Absent renders as UNMARKED, and so does blank:
-    /// an unmarked picture is exactly the one that must not be taken for an unclassified one.
-    /// </summary>
+    /// <summary>The ST 0102 marking to print for a stream.</summary>
     public string Marking => !IsLive
         ? string.Empty
         : string.IsNullOrWhiteSpace(_live!.Classification)
@@ -181,7 +166,7 @@ public sealed class DocumentItem : INotifyPropertyChanged
 
     /// <summary>
     /// Marking colours are the deployment's convention rather than the standard's, so they are a
-    /// table and not a rule. The text is always drawn, so the colour is never the only signal.
+    /// table and not a rule.
     /// </summary>
     public string MarkingBrush => Marking switch
     {
@@ -222,8 +207,6 @@ public sealed class DocumentItem : INotifyPropertyChanged
 
                 if (_live.Recording is { } recording)
                 {
-                    // On the stream rather than in the document list, because a document appears
-                    // only when there is a file.
                     rows.Add(new MetadataRow(
                         "Recording",
                         $"since {recording.StartedAt.ToDateTimeOffset().LocalDateTime:HH:mm:ss}, "
@@ -232,7 +215,6 @@ public sealed class DocumentItem : INotifyPropertyChanged
 
                 if (_live.DetectionEnabled)
                 {
-                    // Which worker holds it is the one thing an operator cannot see anywhere else.
                     rows.Add(new MetadataRow(
                         "Detection",
                         $"{(_live.DetectionRate > 0 ? $"{_live.DetectionRate}/s" : "default rate")}, "
@@ -249,8 +231,6 @@ public sealed class DocumentItem : INotifyPropertyChanged
 
                 if (!_live.Startable)
                 {
-                    // The operator's business: while this is true every pre-roll is empty and
-                    // every snapshot is second-hand, and the fix is at the encoder.
                     rows.Add(new MetadataRow("Warning", "No keyframe recently enough to start from."));
                 }
 
@@ -271,19 +251,15 @@ public sealed class DocumentItem : INotifyPropertyChanged
 
     public static DocumentItem ForLive(LiveStreamMessage live)
     {
-        // Through Apply, so a stream that is already losing packets when it is first seen is red
-        // on its first tile rather than on its second.
+        // Through Apply, so a stream that is already losing packets when it is first seen is red on
+        // its first tile rather than on its second.
         var item = new DocumentItem();
         item.Apply(live);
 
         return item;
     }
 
-    /// <summary>
-    /// The MISB ST 0902 minimum set as rows, in the order the standard lists it. Every field is
-    /// optional on the wire because absent is an answer: a row appears only when the packet
-    /// carried the item, since a zero the sender never sent is worse than a missing line.
-    /// </summary>
+    /// <summary>The MISB ST 0902 minimum set as rows, in the order the standard lists it.</summary>
     public static IReadOnlyList<MetadataRow> KlvRows(LiveKlvMessage klv)
     {
         var rows = new List<MetadataRow>();
@@ -300,7 +276,6 @@ public sealed class DocumentItem : INotifyPropertyChanged
 
         if (fields is null)
         {
-            // The packet was not an ST 0601 local set, so there is nothing decoded to show.
             Add("Received", klv.ReceivedAt?.ToDateTimeOffset().LocalDateTime.ToString("HH:mm:ss.fff"));
             Add("Raw packet", $"{klv.Raw.Length:N0} bytes");
 
@@ -414,10 +389,7 @@ public sealed class DocumentItem : INotifyPropertyChanged
             ? Visibility.Visible
             : Visibility.Collapsed;
 
-    /// <summary>
-    /// A tile for a file that is still uploading. Local images get a thumbnail straight away,
-    /// because the bytes are right there on disk.
-    /// </summary>
+    /// <summary>A tile for a file that is still uploading.</summary>
     public static DocumentItem Pending(string path)
     {
         var item = new DocumentItem
@@ -479,7 +451,6 @@ public sealed class DocumentItem : INotifyPropertyChanged
         }
         catch (Exception)
         {
-            // A format WPF cannot decode simply shows the type icon until the server's one lands.
             return null;
         }
     }

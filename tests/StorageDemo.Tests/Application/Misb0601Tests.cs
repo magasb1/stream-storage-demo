@@ -3,11 +3,7 @@ using StorageDemo.Tests.Infrastructure;
 
 namespace StorageDemo.Tests.Application;
 
-/// <summary>
-/// The decoder against a packet built by hand at known values. A wrong scale is invisible until
-/// somebody looks at a map, so every item of the minimum set is asserted, to within the
-/// resolution its integer encoding allows.
-/// </summary>
+/// <summary>The decoder against a packet built by hand at known values.</summary>
 public sealed class Misb0601Tests
 {
     [Fact]
@@ -51,7 +47,8 @@ public sealed class Misb0601Tests
     {
         var packet = Misb.MinimumSet();
 
-        // One bit in the last item before the checksum, which is the error this check exists to catch.
+        // One bit in the last item before the checksum, which is the error this check exists to
+        // catch.
         packet[^5] ^= 0x01;
 
         Assert.Null(Misb0601.Decode(packet));
@@ -100,9 +97,7 @@ public sealed class Misb0601Tests
 
     /// <summary>
     /// The two rotations the north arrow is made of, each on its own, at right angles where a sign
-    /// slip is unmistakable. A camera looking east has north to the left of the picture; a camera
-    /// looking north but twisted a quarter turn clockwise about its lens has north to the left too,
-    /// because twisting the camera turns the scene inside the frame the other way.
+    /// slip is unmistakable.
     /// </summary>
     [Theory]
     [InlineData(0, 0, 0, 0)]

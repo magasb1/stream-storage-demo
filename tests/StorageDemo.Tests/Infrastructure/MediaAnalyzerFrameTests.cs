@@ -8,10 +8,6 @@ namespace StorageDemo.Tests.Infrastructure;
 /// <summary>
 /// The two frame defects the fan-out design carries over: a poster frame seek that was absolute
 /// rather than relative to where the media starts, and the absence of any "picture now" verb.
-///
-/// Both are exercised against media whose timestamps do not start at zero, because that is what a
-/// recording cut from a rolling buffer looks like and it is the only case where the old code was
-/// wrong. A clip starting at zero passes either way, which is why this went unnoticed.
 /// </summary>
 public sealed class MediaAnalyzerFrameTests : IDisposable
 {
@@ -28,8 +24,8 @@ public sealed class MediaAnalyzerFrameTests : IDisposable
             NullLogger<LibavMediaAnalyzer>.Instance);
 
     /// <summary>
-    /// The counted testsrc pattern prints its frame number, so two pictures from the same clip
-    /// are byte-identical only when they are the same moment. That is the whole assertion here.
+    /// The counted testsrc pattern prints its frame number, so two pictures from the same clip are
+    /// byte-identical only when they are the same moment.
     /// </summary>
     private string Clip(string name, double startSeconds, double duration = 10)
     {
@@ -41,7 +37,7 @@ public sealed class MediaAnalyzerFrameTests : IDisposable
                 "-hide_banner", "-loglevel", "error",
                 "-f", "lavfi", "-i", $"testsrc=size=320x240:duration={duration}:rate=10",
                 "-c:v", "mpeg2video", "-b:v", "800k", "-g", "10",
-                // Where the stream claims to begin. A rolling-buffer cut lands at a big number.
+                // Where the stream claims to begin.
                 "-output_ts_offset", startSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture),
                 "-muxdelay", "0", "-muxpreload", "0",
                 "-f", "mpegts",
@@ -65,10 +61,7 @@ public sealed class MediaAnalyzerFrameTests : IDisposable
         return await Analyzer().LatestFrameAsync(content, "clip.ts");
     }
 
-    /// <summary>
-    /// Defect one. The seek target is an offset into the media, so the same offset picks the same
-    /// picture whether the media starts at zero or at an hour in.
-    /// </summary>
+    /// <summary>Defect one.</summary>
     [Fact]
     public async Task The_poster_frame_is_the_same_moment_wherever_the_timestamps_start()
     {
@@ -85,10 +78,7 @@ public sealed class MediaAnalyzerFrameTests : IDisposable
             + "frame zero");
     }
 
-    /// <summary>
-    /// And it still steers. A test that only compared two clips would pass just as well if the
-    /// seek had been removed altogether and both had returned frame zero.
-    /// </summary>
+    /// <summary>And it still steers.</summary>
     [Fact]
     public async Task The_poster_frame_moves_when_the_offset_does()
     {
@@ -102,10 +92,7 @@ public sealed class MediaAnalyzerFrameTests : IDisposable
         Assert.False(early.SequenceEqual(late), "the seek did not move the picture at all");
     }
 
-    /// <summary>
-    /// Defect two. The picture now, which is a different question from the poster frame and the
-    /// one a preview and a snapshot are actually asking.
-    /// </summary>
+    /// <summary>Defect two.</summary>
     [Fact]
     public async Task The_latest_frame_is_the_end_of_the_media_not_the_poster_frame()
     {

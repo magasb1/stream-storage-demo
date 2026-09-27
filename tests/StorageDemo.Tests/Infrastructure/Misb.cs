@@ -10,13 +10,10 @@ namespace StorageDemo.Tests.Infrastructure;
 /// <summary>
 /// Hand-built MISB ST 0601 packets with known values, and a way to get one into an MPEG-TS the
 /// bundled ffmpeg can push.
-///
-/// The encoders here are written from ST 0601.8 Table 1 independently of the decoder, so a
-/// scale that is wrong in one place fails against the other rather than agreeing with it.
 /// </summary>
 internal static unsafe class Misb
 {
-    /// <summary>The values <see cref="MinimumSet"/> carries. Chosen off-centre so a sign or hemisphere slip shows.</summary>
+    /// <summary>The values <see cref="MinimumSet"/> carries.</summary>
     public static class Known
     {
         public static readonly DateTimeOffset Timestamp = new(2024, 5, 6, 7, 8, 9, 123, TimeSpan.Zero);
@@ -148,19 +145,8 @@ internal static unsafe class Misb
     }
 
     /// <summary>
-    /// Copies a video-only MPEG-TS into a new one that also carries the packet as a KLV stream at
-    /// a fixed rate, in a private PES with a presentation timestamp.
-    ///
-    /// libav rather than the ffmpeg command line, because the command line cannot tag raw data as
-    /// SMPTE KLV: <c>-f data</c> yields <c>bin_data</c>, which the mpegts muxer writes without the
-    /// KLVA registration. The muxer here is the same libavformat, writing the same registration a
-    /// real encoder does, and ffmpeg then pushes the file with <c>-c copy</c> exactly as it would
-    /// any other KLV-carrying transport.
-    ///
-    /// Not written as stream type 0x15 (<c>AV_PROFILE_KLVA_SYNC</c>): libav's demuxer strips the
-    /// five-byte ST 1402 metadata AU cell header from such a stream, as a real encoder's output
-    /// requires, but libav's muxer does not write one, so its own round trip loses the first five
-    /// bytes of every packet.
+    /// Copies a video-only MPEG-TS into a new one that also carries the packet as a KLV stream at a
+    /// fixed rate, in a private PES with a presentation timestamp.
     /// </summary>
     public static void WriteTransportStream(string videoPath, string outputPath, byte[] klv, double intervalSeconds)
     {
@@ -237,9 +223,7 @@ internal static unsafe class Misb
 
     /// <summary>
     /// Every KLV packet in a transport stream, paired with its presentation timestamp or null when
-    /// the carriage is asynchronous. Reading it through libav is what makes the answer meaningful:
-    /// the demuxer strips the ST 1402 metadata AU cell header, so this is byte for byte what the
-    /// KLV extractor hands the decoder in production.
+    /// the carriage is asynchronous.
     /// </summary>
     public static List<(long? Pts, byte[] Data)> ReadKlv(string path)
     {

@@ -20,7 +20,7 @@ scratch/
 TestResults/
 
 # Fetched by scripts/fetch-rfdetr.sh, not committed: model weights (~470 MB) and the Python venv
-# that exports them. The README documenting the tensor contract is kept.
+# that exports them.
 models/*
 !models/README.md
 .venv/

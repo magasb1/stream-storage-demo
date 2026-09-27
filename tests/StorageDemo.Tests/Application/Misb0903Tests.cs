@@ -4,15 +4,7 @@ using StorageDemo.Tests.Infrastructure;
 
 namespace StorageDemo.Tests.Application;
 
-/// <summary>
-/// The VMTI encoder against MISB ST 0903.4, 23 October 2014.
-///
-/// A hand-built expectation would only prove the encoder agrees with whatever this file believes,
-/// so the assertions come from two directions instead. <see cref="Vmti"/> reads the packet back
-/// from the standard's structure, which is what catches a length or an offset; and the checksum,
-/// the key and the BER long form are checked against the standard's own rules, which is what
-/// catches both halves being wrong together.
-/// </summary>
+/// <summary>The VMTI encoder against MISB ST 0903.4, 23 October 2014.</summary>
 public sealed class Misb0903Tests
 {
     private const string Sensor = "EO Nose";
@@ -20,8 +12,7 @@ public sealed class Misb0903Tests
 
     /// <summary>
     /// Odd microseconds on purpose: ST 0903.4 tag 2 is a microsecond clock, not a millisecond one,
-    /// and a truncating conversion would round this off. The last tick is a zero because .NET's
-    /// 100ns resolution is finer than the standard's and that difference is not the encoder's bug.
+    /// and a truncating conversion would round this off.
     /// </summary>
     private static readonly DateTimeOffset Timestamp =
         new DateTimeOffset(2024, 5, 6, 7, 8, 9, TimeSpan.Zero).AddTicks(1_234_560);
@@ -85,8 +76,8 @@ public sealed class Misb0903Tests
         var packet = Misb0903.Encode(Frame(new VmtiDetection(1, 10, 20, 30, 40)));
         var decoded = Vmti.Decode(packet);
 
-        // ST 0903.4-17: the checksum is the last TLV, so its two bytes end the packet, and
-        // ST 0903.4-16 covers everything before them.
+        // ST 0903.4-17: the checksum is the last TLV, so its two bytes end the packet, and ST
+        // 0903.4-16 covers everything before them.
         Assert.Equal(new byte[] { 0x01, 0x02 }, packet.AsSpan(packet.Length - 4, 2).ToArray());
         Assert.Equal(
             Vmti.Checksum(packet.AsSpan(0, packet.Length - 2)),
@@ -144,9 +135,7 @@ public sealed class Misb0903Tests
     {
         var decoded = Vmti.Decode(Misb0903.Encode(Frame()));
 
-        // ST 0903.4-19: the count is always there. Zero targets is a detector that ran and found
-        // nothing, which a consumer can tell apart from metadata that never arrived.
-        // ST 0903.4-05: zero is encoded in one byte, not in the element's nominal three.
+        // ST 0903.4-19: the count is always there.
         Assert.Equal(new byte[] { 0x00 }, decoded.Items[6]);
         Assert.DoesNotContain(101, decoded.Items.Keys);
         Assert.Empty(decoded.Targets);
@@ -163,9 +152,7 @@ public sealed class Misb0903Tests
             new VmtiDetection(5, 88, 900, 214, 1010, ConfidencePercent: 55, OntologyClass: "Car")));
 
         // An ST 0601 minimum-set packet is about 120 bytes, and five detections carrying a 63-byte
-        // ontology URI apiece should cost a few hundred more, not tens and not thousands. The lower
-        // bound catches a series that silently dropped its targets; the upper catches a length
-        // field read as a repeat count.
+        // ontology URI apiece should cost a few hundred more, not tens and not thousands.
         Assert.InRange(Misb0903.Encode(Frame()).Length, 40, 100);
         Assert.InRange(packet.Length, 400, 1000);
         Assert.Equal(5, Vmti.Decode(packet).Targets.Count);

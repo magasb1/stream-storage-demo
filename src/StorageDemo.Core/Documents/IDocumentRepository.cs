@@ -8,7 +8,7 @@ public interface IDocumentRepository
 
     Task AddAsync(Document document, CancellationToken cancellationToken = default);
 
-    /// <summary>Insert or replace. Used by seeding and reconciliation, both of which must be idempotent.</summary>
+    /// <summary>Insert or replace.</summary>
     Task UpsertAsync(Document document, CancellationToken cancellationToken = default);
 
     /// <summary>Idempotent: deleting a missing id succeeds.</summary>

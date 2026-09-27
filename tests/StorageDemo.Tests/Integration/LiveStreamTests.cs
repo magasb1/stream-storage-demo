@@ -18,19 +18,12 @@ namespace StorageDemo.Tests.Integration;
 /// a name in its stream identifier, appearing without anything having been requested, showing a
 /// preview that visibly updates, recordable and snapshottable with both landing in documents, and
 /// disappearing when the feed stops.
-///
-/// It uses a real SRT sender, because everything interesting here is what libav actually does.
 /// </summary>
 public sealed class LiveStreamTests : IAsyncLifetime
 {
     private const string Token = "live-test-token";
 
-    /// <summary>
-    /// Two natives, two scripts, and a test needs whichever halves it uses. The listening ports are
-    /// libsrt's, so nothing here is accepted without it; the senders are still FFmpeg's SRT caller,
-    /// which <see cref="HasSrt"/> asks about. A test that both listens and sends needs both, and a
-    /// skip has to name the script that fixes the half that is missing.
-    /// </summary>
+    /// <summary>Two natives, two scripts, and a test needs whichever halves it uses.</summary>
     private const string NoLibsrt = "libsrt is not installed. Run scripts/fetch-libsrt.sh.";
 
     private readonly string _root = Path.Combine(
@@ -64,15 +57,13 @@ public sealed class LiveStreamTests : IAsyncLifetime
             builder.UseSetting("Live:IngestPort", _ingestPort.ToString());
 
             // Two, so the whole suite runs against a replica bound to a range rather than a single
-            // port. Every test here still uses the first one; only the reconnect test below uses
-            // the second.
+            // port.
             builder.UseSetting("Live:IngestPortCount", "2");
             builder.UseSetting("Live:ConsumptionPort", (_ingestPort + 5).ToString());
             builder.UseSetting("Live:PreviewIntervalSeconds", "1");
             builder.UseSetting("Live:RecordingDirectory", Path.Combine(_root, "recordings"));
 
-            // Short, so a test produces several segments in a sensible time. In production this
-            // is minutes: it is what bounds a pod's disk for a recording of any length.
+            // Short, so a test produces several segments in a sensible time.
             builder.UseSetting("Live:RecordingPartMinutes", "0.15");
 
             // Short, so a test can watch a feed stop and the stream disappear without waiting out
@@ -118,20 +109,16 @@ public sealed class LiveStreamTests : IAsyncLifetime
 
         Assert.NotNull(status);
 
-        // A build choice, not a code one. Whichever way this instance was built, saying so is the
-        // point: a caller should never have to guess.
         Assert.Equal(FfmpegLibrary.OutputProtocols().Contains("srt"), status.Transports.Contains("srt"));
     }
 
     /// <summary>
     /// Readiness is about whether this replica can serve media, not only whether it can reach a
-    /// database. A pod that is reachable but not accepting is worse than one that is plainly
-    /// absent, because the Service keeps sending encoders to it.
+    /// database.
     /// </summary>
     [Fact]
     public async Task Readiness_means_the_media_ports_are_accepting()
     {
-        // Only libsrt. Nothing is sent here, and both ports are opened without FFmpeg being asked.
         Assert.SkipUnless(Srt.IsAvailable, NoLibsrt);
 
         var listeners = _factory.Services.GetRequiredService<LiveListeners>();
@@ -151,11 +138,6 @@ public sealed class LiveStreamTests : IAsyncLifetime
     /// <summary>
     /// A replica that cannot open a media port takes itself out of the Service, rather than
     /// swallowing encoders it could never serve.
-    ///
-    /// The fault is set here rather than provoked. What sets it in production is libsrt being
-    /// absent, which is decided once at start-up and cannot be arranged mid-process, and a replica
-    /// that is genuinely without libsrt is already carrying the fault before this test runs. Setting
-    /// it directly is the only version of this that says the same thing either way.
     /// </summary>
     [Fact]
     public async Task A_replica_that_cannot_serve_media_is_not_ready()
@@ -187,8 +169,8 @@ public sealed class LiveStreamTests : IAsyncLifetime
 
         Assert.Equal(HttpStatusCode.Unauthorized, (await anonymous.GetAsync("/api/live")).StatusCode);
 
-        // The detection control plane, both the client's surface and the worker's, is guarded
-        // the same way: the peer routes are how a worker writes into a stream.
+        // The detection control plane, both the client's surface and the worker's, is guarded the
+        // same way: the peer routes are how a worker writes into a stream.
         Assert.Equal(HttpStatusCode.Unauthorized, (await anonymous.PutAsJsonAsync("/api/live/detect/x", new DetectRequest(true, 1))).StatusCode);
         Assert.Equal(HttpStatusCode.Unauthorized, (await anonymous.GetAsync("/api/live/detections/x")).StatusCode);
         Assert.Equal(HttpStatusCode.Unauthorized, (await anonymous.PutAsJsonAsync("/api/live/peer/detector/x", new DetectorClaim("w"))).StatusCode);
@@ -307,7 +289,6 @@ public sealed class LiveStreamTests : IAsyncLifetime
 
         const string name = "live/match-of-the-day";
 
-        // Nothing is posted first. The encoder simply pushes.
         Push(name);
 
         var stream = await WaitForStreamAsync(name, TimeSpan.FromSeconds(40));
@@ -340,9 +321,7 @@ public sealed class LiveStreamTests : IAsyncLifetime
         Assert.NotNull(snapshotDocument);
         Assert.True(snapshotDocument.Size > 0, "the snapshot is empty");
 
-        // Nobody asked for it on behalf of a detection, so it says nothing about one. This is the
-        // half of provenance that must not change: a person pressing the button gets what they
-        // always got.
+        // Nobody asked for it on behalf of a detection, so it says nothing about one.
         Assert.DoesNotContain("Detection", snapshotDocument.Metadata.Keys);
 
         // A short recording, which reaches back into the buffer and becomes a document at the end.
@@ -359,7 +338,7 @@ public sealed class LiveStreamTests : IAsyncLifetime
         Assert.DoesNotContain("Detection", recording.Metadata.Keys);
 
         // Named by stream and start time, so several from one stream sit together and read as
-        // related. The name's slash is flattened, because a file name may not carry one.
+        // related.
         Assert.StartsWith("live-match-of-the-day-", recording.FileName, StringComparison.Ordinal);
     }
 
@@ -453,10 +432,6 @@ public sealed class LiveStreamTests : IAsyncLifetime
     /// <summary>
     /// A long recording is written in segments and stored as it goes, so no pod ever holds the
     /// whole thing, and read back as one file so that nobody opening it can tell.
-    ///
-    /// This is the end of the claim the whole segmented path exists to make: several objects in
-    /// storage, one document, and what comes out of the document is a single playable recording of
-    /// about the right length.
     /// </summary>
     [Fact]
     public async Task A_long_recording_is_stored_in_segments_and_read_back_as_one_file()
@@ -482,8 +457,7 @@ public sealed class LiveStreamTests : IAsyncLifetime
         Assert.NotNull(document);
 
         // The document exists while the recording is still running, which is the point of storing
-        // segments as they complete. The stream itself says when the recording is over; size
-        // standing still would only mean the gap between two segments.
+        // segments as they complete.
         Assert.True(
             await WaitAsync(
                 async () => await Get(name) is { Recording: null },
@@ -521,8 +495,7 @@ public sealed class LiveStreamTests : IAsyncLifetime
 
         var duration = Probe(whole);
 
-        // About as long as it was asked to record. The pre-roll makes it a little longer, and the
-        // segment boundaries must not have cost anything in between.
+        // About as long as it was asked to record.
         Assert.True(duration > 20, $"the joined recording is only {duration:0.#}s long");
 
         // Seeking is what makes it usable from the document list, and the content endpoint serves
@@ -537,9 +510,8 @@ public sealed class LiveStreamTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// A feed that stops leaves the stream interrupted rather than removing it, and it is gone
-    /// only after the grace period. A tile that vanishes and returns is worse than one showing a
-    /// state.
+    /// A feed that stops leaves the stream interrupted rather than removing it, and it is gone only
+    /// after the grace period.
     /// </summary>
     [Fact]
     public async Task A_feed_that_stops_is_interrupted_first_and_gone_after_the_grace_period()
@@ -570,14 +542,6 @@ public sealed class LiveStreamTests : IAsyncLifetime
 
     /// <summary>
     /// A live name is locked: while <c>demo</c> is live, nobody else may publish <c>demo</c>.
-    ///
-    /// Both halves matter and the second is the one worth the test. A refusal that silently
-    /// interrupted the incumbent would be worse than the take-over it replaces, so the first
-    /// publisher is checked for still being the same connection and still delivering afterwards.
-    ///
-    /// The wait before the second sender is the handshake cache, not slack: the callback runs on
-    /// libsrt's receiver thread and cannot read the registry, so it answers from a copy taken once
-    /// a beat, and the name is locked within a beat of being claimed rather than instantly.
     /// </summary>
     [Fact]
     public async Task A_second_publisher_of_a_live_name_is_refused_and_the_first_is_undisturbed()
@@ -619,20 +583,13 @@ public sealed class LiveStreamTests : IAsyncLifetime
         Assert.NotNull(after);
         Assert.Equal(LiveStreamState.Live, after.State);
 
-        // The same connection throughout. A new identifier here would mean the refused publisher
-        // had been let in and taken the stream over after all.
+        // The same connection throughout.
         Assert.Equal(before.ConnectionId, after.ConnectionId);
         Assert.Equal(before.StartedAt, after.StartedAt);
     }
 
     /// <summary>
     /// A reconnect under the same name resumes the same stream rather than creating a second one.
-    /// That is what makes the name the identity rather than an incidental label.
-    ///
-    /// It is also where the name lock lets go. The second <c>Push</c> is a different process
-    /// presenting a name this replica already holds, and it is admitted because the feed is
-    /// interrupted: the lock follows the feed, not the entry, which is why an encoder that drops can
-    /// always come back.
     /// </summary>
     [Fact]
     public async Task A_reconnect_under_the_same_name_resumes_the_same_stream()
@@ -657,9 +614,7 @@ public sealed class LiveStreamTests : IAsyncLifetime
 
         Push(name);
 
-        // The reconnect itself, not merely the stream reading live again. A feed that has just
-        // been killed keeps delivering for a moment, so "live" on its own proves nothing; a new
-        // connection identifier is the only thing that says this is a second attempt.
+        // The reconnect itself, not merely the stream reading live again.
         Assert.True(
             await WaitAsync(
                 async () => await Get(name) is { State: LiveStreamState.Live } resumed
@@ -678,14 +633,7 @@ public sealed class LiveStreamTests : IAsyncLifetime
         Assert.Single(listed!.Streams, stream => stream.Name == name);
     }
 
-    /// <summary>
-    /// The same reconnect, landing on a different port of the same replica.
-    ///
-    /// Ingest may bind a range of ports so that libsrt gives the replica more than one receive
-    /// worker thread, and a sender spread across that range has no reason to come back to the port
-    /// it left. The name has to be the identity for that to be safe, so this pins that a port is
-    /// carried nowhere: not into the claim, not into the entry, not into what a viewer sees.
-    /// </summary>
+    /// <summary>The same reconnect, landing on a different port of the same replica.</summary>
     [Fact]
     public async Task A_reconnect_on_another_ingest_port_resumes_the_same_stream()
     {
@@ -726,18 +674,8 @@ public sealed class LiveStreamTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// The two answers Phase 9 exists to give, through the real application: which stream is broken,
-    /// and how much this replica is carrying.
-    ///
-    /// The first is per stream and comes out of the API, where an operator with a thousand streams
-    /// already looks. The second is per pod and comes out of the meter, where an autoscaler looks
-    /// and where a stream name must never appear.
-    ///
-    /// The health figures are asserted as zero because a loopback stream at 600 kbit/s does not lose
-    /// packets. That is the honest half of this test and also its limit: it pins that the figures
-    /// are read, carried and serialised, and it cannot pin that a broken stream reports a non-zero
-    /// one, which needs load this suite has no way to generate. The property name is asserted on the
-    /// raw JSON because that, not the C# record, is what an operator's tooling reads.
+    /// The two answers Phase 9 exists to give, through the real application: which stream is
+    /// broken, and how much this replica is carrying.
     /// </summary>
     [Fact]
     public async Task A_live_stream_reports_its_health_on_the_api_and_the_replica_reports_what_it_holds()
@@ -765,8 +703,8 @@ public sealed class LiveStreamTests : IAsyncLifetime
         Assert.Contains("\"packetsLost\":", listed, StringComparison.Ordinal);
         Assert.Contains("\"packetsDropped\":", listed, StringComparison.Ordinal);
 
-        // Published by the heartbeat rather than by the claim, so it arrives a beat after the stream
-        // does. Waiting for it is also what proves the heartbeat is what publishes it.
+        // Published by the heartbeat rather than by the claim, so it arrives a beat after the
+        // stream does.
         Assert.True(
             await WaitAsync(
                 () => Task.FromResult(meters.Value("live.streams.owned") == 1),
@@ -777,9 +715,7 @@ public sealed class LiveStreamTests : IAsyncLifetime
     /// <summary>
     /// The viewer count, through two real players on the consumption port rather than one: the
     /// interesting failure for a counter touched from more than one connection's thread is getting
-    /// the arithmetic wrong under concurrency, which a single viewer cannot expose. Each player
-    /// connects with <c>m=request</c>, the same envelope <see cref="LiveReplicas.Watch"/> uses for a
-    /// real viewer rather than <see cref="Push"/>'s <c>m=publish</c>.
+    /// the arithmetic wrong under concurrency, which a single viewer cannot expose.
     /// </summary>
     [Fact]
     public async Task Two_viewers_are_counted_and_each_leaving_is_subtracted()
@@ -820,9 +756,9 @@ public sealed class LiveStreamTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// A transport carrying MISB KLV alongside the picture, through the real ingest: the list
-    /// shows the stream carries it and what it is marked, the route serves the minimum set at
-    /// the values that were sent with the raw packet beside them, and a snapshot keeps the marking.
+    /// A transport carrying MISB KLV alongside the picture, through the real ingest: the list shows
+    /// the stream carries it and what it is marked, the route serves the minimum set at the values
+    /// that were sent with the raw packet beside them, and a snapshot keeps the marking.
     /// </summary>
     [Fact]
     public async Task A_stream_carrying_klv_reports_its_marking_and_serves_the_decoded_minimum_set()
@@ -1002,7 +938,6 @@ public sealed class LiveStreamTests : IAsyncLifetime
             }
             catch (HttpRequestException)
             {
-                // The host is still starting; the next pass will tell the truth.
             }
 
             await Task.Delay(TimeSpan.FromMilliseconds(500));
@@ -1015,11 +950,6 @@ public sealed class LiveStreamTests : IAsyncLifetime
     /// An encoder pushing at the ingest port with a name in its stream identifier, which is the
     /// whole setup: nothing is requested first.
     /// </summary>
-    /// <param name="file">
-    /// A transport stream to push as it is, every stream in it, instead of a synthetic picture.
-    /// This is how a stream carrying something the command line cannot synthesise, such as KLV,
-    /// reaches the service.
-    /// </param>
     private Process Push(string name, int? port = null, string? file = null)
     {
         var identifier = Uri.EscapeDataString($"#!::r={name},m=publish");
@@ -1070,11 +1000,7 @@ public sealed class LiveStreamTests : IAsyncLifetime
         }
     }
 
-    /// <summary>
-    /// A free port from a low, fixed range rather than an ephemeral one. Windows reserves
-    /// stretches of the dynamic range, so a port can be handed out and then refuse an explicit
-    /// bind moments later, which looks exactly like a listener that will not start.
-    /// </summary>
+    /// <summary>A free port from a low, fixed range rather than an ephemeral one.</summary>
     private static int _nextPort = 9600;
 
     private static int FreePort()

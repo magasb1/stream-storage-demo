@@ -15,7 +15,6 @@ public sealed class ExceptionHandlingMiddleware(RequestDelegate next, ILogger<Ex
         }
         catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested)
         {
-            // The client hung up. Nothing to report and no response to write.
             logger.LogInformation("Request cancelled by client {Path}", context.Request.Path);
         }
         catch (Exception ex) when (ex is StorageException or PersistenceException)

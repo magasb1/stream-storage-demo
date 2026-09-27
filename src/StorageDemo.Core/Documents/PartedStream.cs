@@ -2,16 +2,7 @@ using StorageDemo.Core.Storage;
 
 namespace StorageDemo.Core.Documents;
 
-/// <summary>
-/// The pieces of a segmented document, read as one file.
-///
-/// This is the whole of what makes a recording written in pieces feel like one recording. It knows
-/// the size of every piece, so a seek anywhere in six hours is arithmetic followed by opening one
-/// object at an offset, rather than reading and discarding everything up to that point.
-///
-/// Seekable on purpose, because the content endpoint serves byte ranges and that is what lets a
-/// player scrub through a long recording without downloading it first.
-/// </summary>
+/// <summary>The pieces of a segmented document, read as one file.</summary>
 public sealed class PartedStream(
     IFileStorage storage,
     IReadOnlyList<DocumentPart> parts,
@@ -66,9 +57,7 @@ public sealed class PartedStream(
             return read;
         }
 
-        // The part ended where its recorded size said it would not. Rather than report the whole
-        // document as finished, move to the next one: a short part is a storage problem, and
-        // silently truncating a recording is the worse way to report it.
+        // The part ended where its recorded size said it would not.
         if (part + 1 >= parts.Count)
         {
             return 0;
@@ -85,8 +74,6 @@ public sealed class PartedStream(
 
     /// <summary>
     /// Records the new position and lets the next read act on it, so nothing has to be opened here.
-    /// Seeking is synchronous and opening an object is not, and a range request seeks before it
-    /// reads anything at all.
     /// </summary>
     public override long Seek(long offset, SeekOrigin origin)
     {

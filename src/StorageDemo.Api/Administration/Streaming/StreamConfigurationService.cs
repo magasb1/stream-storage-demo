@@ -6,10 +6,7 @@ using StorageDemo.Infrastructure.Streaming;
 
 namespace StorageDemo.Api.Administration.Streaming;
 
-/// <summary>
-/// The operator-facing stream configuration boundary. Components describe an operation; this
-/// service coordinates the durable source configuration and the current live reading.
-/// </summary>
+/// <summary>The operator-facing stream configuration boundary.</summary>
 public interface IStreamConfigurationService
 {
     bool Enabled { get; }

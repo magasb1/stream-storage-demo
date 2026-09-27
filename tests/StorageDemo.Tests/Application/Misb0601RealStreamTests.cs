@@ -7,21 +7,12 @@ namespace StorageDemo.Tests.Application;
 /// The decoder against metadata this project did not write: Esri's public "Sample video for Full
 /// Motion Video" tutorial stream, 148 seconds of a Cessna 208B orbiting a truck near Cheyenne,
 /// Wyoming on 19 September 2012.
-///
-/// Every other MISB test here encodes a packet and decodes it again, which proves the two halves
-/// agree and nothing about whether either matches the standard. This one has no encoder to agree
-/// with. The assertions are the ones the file can be trusted to keep: that every packet verifies,
-/// that the geometry closes, and that the carriage is synchronous.
-///
-/// Fetched, not committed: see scripts/fetch-fmv-sample.sh.
 /// </summary>
 public sealed class Misb0601RealStreamTests
 {
     /// <summary>
     /// Where the fetch script puts it, and where a person who unpacked the archive by hand is
-    /// likely to have left it. Searched rather than fixed because the first arrangement of these
-    /// tests skipped in silence the moment the file moved, and a test that reports "not fetched"
-    /// when the file is sitting two directories away is worse than one that simply fails.
+    /// likely to have left it.
     /// </summary>
     private static readonly string[] Candidates =
     [
@@ -65,7 +56,7 @@ public sealed class Misb0601RealStreamTests
     {
         var decoded = Decoded();
 
-        // 5 Hz over the file's 148 seconds. Asserted loosely: the point is that none were dropped.
+        // 5 Hz over the file's 148 seconds.
         Assert.InRange(decoded.Count, 700, 760);
 
         foreach (var (_, set) in decoded)
@@ -100,12 +91,7 @@ public sealed class Misb0601RealStreamTests
         Assert.Equal(1, first.Version);
     }
 
-    /// <summary>
-    /// ST 1402.2 synchronous carriage. The sample is stream type 0x15 in metadata PES packets, so
-    /// every packet has a presentation timestamp and the KLV extractor reports
-    /// <see cref="KlvAlignment.PresentationTimestamp"/>. The two clocks are then checked against
-    /// each other: the PES timeline and ST 0601 tag 2 must span the same interval.
-    /// </summary>
+    /// <summary>ST 1402.2 synchronous carriage.</summary>
     [Fact]
     public void The_carriage_is_synchronous_and_the_two_clocks_agree()
     {
@@ -120,11 +106,7 @@ public sealed class Misb0601RealStreamTests
         Assert.InRange(pts, 140, 150);
     }
 
-    /// <summary>
-    /// The scale check that no hand-built packet can make. Slant range, both positions and both
-    /// elevations are four independently encoded items on three different scales; if any one of
-    /// them is decoded wrong the triangle stops closing.
-    /// </summary>
+    /// <summary>The scale check that no hand-built packet can make.</summary>
     [Fact]
     public void Slant_range_agrees_with_the_distance_between_the_positions_it_was_sent_with()
     {
@@ -135,29 +117,12 @@ public sealed class Misb0601RealStreamTests
                        * Math.Cos(set.SensorLatitude.Value * Math.PI / 180);
             var up = set.SensorTrueAltitude!.Value - set.FrameCenterElevation!.Value;
 
-            // Ten metres on a 1.6-2.3 km range. A wrong scale on any of the five is off by a
-            // factor, not by metres; the residual here is the spherical-earth approximation.
+            // Ten metres on a 1.6-2.3 km range.
             Assert.Equal(Math.Sqrt(north * north + east * east + up * up), set.SlantRange!.Value, 10.0);
         }
     }
 
-    /// <summary>
-    /// The check that keeps a north arrow honest. Where the sensor points comes from ST 0601 tag 5
-    /// plus tag 18; where it points can also be had from the sensor position and the frame centre
-    /// position alone, by spherical trigonometry, with no heading, no azimuth and no standard
-    /// involved. The two are computed from disjoint items, so a flipped sign or a dropped term in
-    /// the first is a hundred-odd degrees away from the second rather than a plausible arrow.
-    ///
-    /// Measured over the sample's 711 packets on 2026-09-13: mean -2.96 degrees, from -5.78 to
-    /// +0.39, worst 5.78. The bias is the platform's attitude, which
-    /// <see cref="SensorGeometry.SensorBearing"/> deliberately leaves out: the Cessna is banked
-    /// left through most of its orbit (platform roll -25.5 to +2.4 degrees, pitch +0.7 to +8.9)
-    /// and the sensor looks 10 to 40 degrees below the horizon, so the platform's own tilt swings
-    /// the look direction a few degrees off the heading-plus-azimuth answer. Composing the full
-    /// body-to-NED rotation from tags 5, 6, 7, 18 and 19 instead was measured at mean +0.13 and
-    /// worst 0.79 degrees against the same geodetic bearing, which is what says the residual is
-    /// the attitude term and not a decode error.
-    /// </summary>
+    /// <summary>The check that keeps a north arrow honest.</summary>
     [Fact]
     public void Where_the_sensor_says_it_points_agrees_with_the_bearing_to_the_frame_centre()
     {
@@ -172,8 +137,7 @@ public sealed class Misb0601RealStreamTests
             worst = Math.Max(worst, Math.Abs(SensorGeometry.BearingDifference(pointed!.Value, geodetic!.Value)));
 
             // The one item in the north arrow this file cannot check: the sensor is never rolled
-            // here, so tag 20's sign is on the reading of the standard alone. Asserted so that a
-            // sample that did roll would say so rather than quietly making the claim untrue.
+            // here, so tag 20's sign is on the reading of the standard alone.
             Assert.Equal(0, set.SensorRelativeRoll!.Value);
         }
 
@@ -191,7 +155,7 @@ public sealed class Misb0601RealStreamTests
         {
             var set = decoded[i].Set;
 
-            // Cheyenne, Wyoming, a degree either way. A flipped sign or a doubled scale leaves it.
+            // Cheyenne, Wyoming, a degree either way.
             Assert.InRange(set.SensorLatitude!.Value, 40, 42);
             Assert.InRange(set.SensorLongitude!.Value, -106, -104);
 

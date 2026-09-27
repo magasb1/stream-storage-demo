@@ -5,17 +5,6 @@ namespace StorageDemo.Tests;
 
 /// <summary>
 /// Collects one meter's measurements, and only that one's, for as long as it is not disposed.
-///
-/// The filter is the meter's scope rather than its name: several hosts run in one test process and
-/// each publishes a meter of the same name, which is exactly why both metric classes give their
-/// <c>Meter</c> a scope of themselves.
-///
-/// It has to be started before whatever it is measuring, because a counter is an event and not a
-/// value: a listener that starts afterwards sees nothing at all, however many times the counter was
-/// added to. Observable instruments are the other way round and report only when asked.
-///
-/// Shared by the streaming meter's tests and the API meter's, because it is the only honest way to
-/// read either - what a dashboard sees is measurements and tags, not the fields behind them.
 /// </summary>
 internal sealed class Meters : IDisposable
 {
@@ -29,7 +18,8 @@ internal sealed class Meters : IDisposable
     private readonly MeterListener _listener;
 
     /// <param name="scope">
-    /// The instance whose meter to listen to, which is the object passed as <c>MeterOptions.Scope</c>.
+    /// The instance whose meter to listen to, which is the object passed as
+    /// <c>MeterOptions.Scope</c>.
     /// </param>
     public Meters(object scope)
     {

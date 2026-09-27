@@ -8,13 +8,6 @@ namespace StorageDemo.Infrastructure.Messaging;
 /// <summary>
 /// Live streams in a Redis hash, one field per name, so any replica can list them, find one, and
 /// see which replica owns it.
-///
-/// A hash rather than one key per stream: listing is the common operation and a single HGETALL
-/// beats scanning a keyspace. Nothing lingers here after a stream ends, because the registry is a
-/// picture of what is live now and the documents a stream produced are its trace.
-///
-/// The owner field is also the name claim. Writing a different owner is how a name is taken over,
-/// and the displaced replica reads it on its next heartbeat and stands down.
 /// </summary>
 public sealed class RedisLiveStreamRegistry(
     IConnectionMultiplexer connection,

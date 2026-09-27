@@ -12,9 +12,7 @@ namespace StorageDemo.Worker;
 
 /// <summary>
 /// One decoded picture waiting for the detector, cloned out of the decoder so it survives the
-/// callback that produced it. A clone is a reference, not a copy: libav's decoder frames are
-/// reference counted, so this costs a few dozen bytes and the frame's buffer stays alive until
-/// the last reference is freed.
+/// callback that produced it.
 /// </summary>
 internal sealed unsafe class PendingFrame : IDisposable
 {
@@ -63,19 +61,9 @@ internal sealed unsafe class PendingFrame : IDisposable
 }
 
 /// <summary>
-/// One claimed stream: its subscription to the owner over the peer view route, demultiplexed into
-/// a private hub, a <see cref="FrameDecoder"/> asked for pictures at the detection rate, and the
+/// One claimed stream: its subscription to the owner over the peer view route, demultiplexed into a
+/// private hub, a <see cref="FrameDecoder"/> asked for pictures at the detection rate, and the
 /// tracker that turns each detection into tracks and posts them back to the owner as a VMTI frame.
-///
-/// Only the decoder ever decodes, and only at the rate: a keyframe when keyframes come at least
-/// that often, everything otherwise (FrameDecoder). Between two detections the tracker is stepped
-/// once per video packet, from the packet timestamps, so a track's identity survives the frames
-/// nobody decoded. The steps are taken when the next detection arrives rather than as the packets
-/// do, which is the same motion model run at the same rate and needs no second thread on the
-/// tracker; nothing reads a track between detections, because a VMTI frame is only posted on one.
-///
-/// Each stream retains its newest waiting frame and newest waiting result. Inference and result
-/// delivery run independently, so a slow owner cannot stop inference for other streams.
 /// </summary>
 internal sealed class StreamJob : IAsyncDisposable
 {
@@ -146,7 +134,7 @@ internal sealed class StreamJob : IAsyncDisposable
             PublishAsync(_lifetime.Token));
     }
 
-    /// <summary>Where the stream's bytes are. Re-read from each listing, because a stream can move.</summary>
+    /// <summary>Where the stream's bytes are.</summary>
     public string Owner { get; set; }
 
     public string Model => _model;
@@ -163,8 +151,6 @@ internal sealed class StreamJob : IAsyncDisposable
         {
             lock (_gate)
             {
-                // A model/filter change is a new observation regime. Carrying old tracks through
-                // it produces ghosts for labels that were just removed.
                 _tracker = null;
                 _pendingPts.Clear();
                 _lastPts = long.MinValue;
@@ -172,7 +158,7 @@ internal sealed class StreamJob : IAsyncDisposable
         }
     }
 
-    /// <summary>Detections per second. Changing it re-subscribes at the new rate.</summary>
+    /// <summary>Detections per second.</summary>
     public double Rate
     {
         get => _rate;
@@ -191,8 +177,7 @@ internal sealed class StreamJob : IAsyncDisposable
 
     /// <summary>
     /// The subscription: the transport stream over HTTP, exactly what a relaying replica reads,
-    /// into the demultiplexer on a thread of its own because libav reads synchronously. Reconnects
-    /// after a beat when the feed ends, to whichever owner the listing named last.
+    /// into the demultiplexer on a thread of its own because libav reads synchronously.
     /// </summary>
     private async Task FeedAsync(CancellationToken cancellationToken)
     {
@@ -216,8 +201,7 @@ internal sealed class StreamJob : IAsyncDisposable
                         using var reader = new AvioReader(await response.Content.ReadAsStreamAsync(cancellationToken));
 
                         // A blocking read inside libav only returns when bytes arrive, so a stream
-                        // that is interrupted would hold the shutdown until it resumed. Closing the
-                        // response underneath it turns the read into an error the demuxer reports.
+                        // that is interrupted would hold the shutdown until it resumed.
                         using var unblock = cancellationToken.Register(response.Dispose);
 
                         var outcome = await Task.Factory.StartNew(
@@ -248,7 +232,6 @@ internal sealed class StreamJob : IAsyncDisposable
 
     /// <summary>
     /// Every video packet's timestamp, so the tracker can be stepped once per frame it never saw.
-    /// Waits for a layout and starts again on a new one, the way the decoder does.
     /// </summary>
     private async Task CountPacketsAsync(CancellationToken cancellationToken)
     {
@@ -283,7 +266,8 @@ internal sealed class StreamJob : IAsyncDisposable
                     lock (_gate)
                     {
                         // Bounded, for a stream whose detections have stalled: ten thousand steps
-                        // is minutes of video, and a tracker that far behind is starting over anyway.
+                        // is minutes of video, and a tracker that far behind is starting over
+                        // anyway.
                         if (_pendingPts.Count < 10_000)
                         {
                             _pendingPts.Add(packet.Pts);
@@ -335,11 +319,6 @@ internal sealed class StreamJob : IAsyncDisposable
     /// detection, correct it with these, and post the tracks as a VMTI frame on the frame's own
     /// timestamp, derived from its presentation time against a wall-clock anchor taken when the
     /// tracker started.
-    ///
-    /// ponytail: the anchor is this worker's clock, not the encoder's. A stream carrying
-    /// synchronous KLV has the encoder's clock in ST 0601 tag 2 beside a reference PTS, and a
-    /// KlvExtractor on this hub would give the VMTI frame that clock exactly; add it when the
-    /// consumer that pairs the two by timestamp exists.
     /// </summary>
     public void Detected(PendingFrame frame, VmtiDetection[] detections)
     {
@@ -374,8 +353,8 @@ internal sealed class StreamJob : IAsyncDisposable
                 }
             }
 
-            // Packets past this frame have already arrived when the decoder is behind; they are
-            // the next detection's steps, not this one's.
+            // Packets past this frame have already arrived when the decoder is behind; they are the
+            // next detection's steps, not this one's.
             _pendingPts.RemoveAll(pts => pts <= frame.Pts);
             _lastPts = frame.Pts;
 

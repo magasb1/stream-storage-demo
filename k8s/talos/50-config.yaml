@@ -1,16 +1,14 @@
 # What this cluster answers differently from the generic manifests in k8s/.
-#
-# Applied after k8s/configmap.yaml and listed after it in envFrom, so these keys win and the rest
-# of that file still applies. Only addresses are here: nothing about how the service behaves
-# changes between one cluster and another.
+# Applied after k8s/configmap.yaml and listed after it in envFrom, so these keys win and the rest of
+# that file still applies.
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: storage-demo-talos
   namespace: storage-demo
 data:
-  # Ceph's object gateway speaks S3. It is not AWS, so the endpoint is explicit, addressing is
-  # path style, and the region is a name the SDK needs rather than a place.
+  # Ceph's object gateway speaks S3. It is not AWS, so the endpoint is explicit, addressing is path
+  # style, and the region is a name the SDK needs rather than a place.
   Storage__S3__ServiceUrl: http://rook-ceph-rgw-lab-s3.rook-ceph.svc:80
   Storage__S3__ForcePathStyle: "true"
   Storage__S3__Region: us-east-1
@@ -22,11 +20,8 @@ data:
   Live__Enabled: "true"
 
   # Where a client can reach this service's REST surface, which it cannot work out from a gRPC
-  # connection on another port. A recording of several hours is streamed and seeked through this
-  # rather than downloaded whole.
+  # connection on another port.
   Documents__PublicBaseUrl: http://10.10.10.122
 
-  # Where a player connects: the one address, on the consumption port. The same string whichever
-  # replica owns the stream, because the player is on someone's desk and cannot be asked to
-  # follow a pod around.
+  # Where a player connects: the one address, on the consumption port.
   Live__PublicConsumptionUrl: srt://10.10.10.122:9010

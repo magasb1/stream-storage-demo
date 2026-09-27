@@ -10,8 +10,7 @@ datasources:
     isDefault: true
     jsonData:
       timeInterval: 5s
-      # Follows a trace from an exemplar or from a service name to Tempo. The service publishes
-      # both signals under one resource, which is what makes the jump work at all.
+      # Follows a trace from an exemplar or from a service name to Tempo.
       exemplarTraceIdDestinations:
         - name: trace_id
           datasourceUid: storage-demo-tempo

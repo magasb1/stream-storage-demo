@@ -1,12 +1,8 @@
 namespace StorageDemo.Infrastructure.Monitoring;
 
 /// <summary>
-/// Tells the monitor that something in the store probably changed, so it can rescan now instead
-/// of at the next tick. Poked by the filesystem watcher and by the S3 notification endpoint.
-///
-/// It carries no detail about what changed, on purpose: reconciliation is a full diff of the store
-/// against the database, so the only useful information an event carries is "look again". That
-/// also means a missed or duplicated event costs nothing.
+/// Tells the monitor that something in the store probably changed, so it can rescan now instead of
+/// at the next tick.
 /// </summary>
 public sealed class StorageChangeSignal
 {
@@ -21,7 +17,6 @@ public sealed class StorageChangeSignal
         }
         catch (SemaphoreFullException)
         {
-            // Already signalled and not yet consumed. Nothing to add.
         }
     }
 

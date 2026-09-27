@@ -8,17 +8,7 @@ public sealed record RetentionResult(int Documents, int Entries)
     public bool AnyChanges => Documents + Entries > 0;
 }
 
-/// <summary>
-/// Expires what a live stream produced, and removes registry entries whose owner is gone.
-///
-/// Two jobs in one pass because they are the same question, "who sweeps", and the answer is
-/// whichever replica holds the lock. Nothing else in the service ever deletes either of them:
-/// storage grows without bound from the day recording is switched on, and a force-killed pod leaks
-/// one registry entry per stream into Redis forever.
-///
-/// Only documents a live stream produced are considered. A file somebody uploaded is theirs, and
-/// nothing here has been given permission to expire it.
-/// </summary>
+/// <summary>Expires what a live stream produced, and removes registry entries whose owner is gone.</summary>
 public sealed class RetentionSweeper(
     IDocumentService documents,
     ILiveStreamRegistry registry,
@@ -26,7 +16,7 @@ public sealed class RetentionSweeper(
 {
     /// <summary>
     /// What every document a live stream produces carries, written by the recorder and by the
-    /// snapshot path. A recording carries both; a snapshot carries only the first.
+    /// snapshot path.
     /// </summary>
     private const string StreamKey = "Live stream";
 
@@ -38,8 +28,6 @@ public sealed class RetentionSweeper(
         TimeSpan abandonedAfter,
         CancellationToken cancellationToken = default)
     {
-        // One listing, used for both halves. Taken before anything is removed from it, so a
-        // recording whose entry this pass is about to sweep is still protected on this pass.
         var streams = await registry.ListAsync(cancellationToken);
         var now = DateTimeOffset.UtcNow;
 
@@ -70,9 +58,7 @@ public sealed class RetentionSweeper(
     {
         // A recording is open whenever its stream carries a RecordingStatus, and the registry is
         // shared, so the replica sweeping learns this from the registry rather than from the pod
-        // holding the socket. The pair is what identifies which document is open: a camera that
-        // records continuously has produced hundreds, and protecting all of them because one is
-        // running would mean it never expires anything.
+        // holding the socket.
         var open = streams
             .Where(stream => stream.Recording is not null)
             .Select(stream => OpenKey(stream.Name, Moment(stream.Recording!.StartedAt)))
@@ -91,8 +77,7 @@ public sealed class RetentionSweeper(
                 && open.Contains(OpenKey(stream, started)))
             {
                 // It appeared with its first part and has been growing ever since, so it is older
-                // than the cutoff long before it is finished. Age alone would take the early parts
-                // of a six-hour recording out from under the recorder still writing it.
+                // than the cutoff long before it is finished.
                 logger.LogDebug(
                     "'{Name}' is still being recorded as {DocumentId}; leaving it",
                     stream,
@@ -101,10 +86,7 @@ public sealed class RetentionSweeper(
                 continue;
             }
 
-            // Bytes then row, which DeleteAsync does: parts, thumbnail, then the document. That is
-            // the opposite order to writing one, and it is what leaves nothing behind if this pass
-            // dies halfway. A recording's parts live under recordings/ rather than the prefix the
-            // reconciler scans, so an orphaned part would never be noticed by anything.
+            // Bytes then row, which DeleteAsync does: parts, thumbnail, then the document.
             await documents.DeleteAsync(document.Id, cancellationToken);
             expired++;
 

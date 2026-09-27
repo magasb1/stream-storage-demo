@@ -13,9 +13,7 @@ internal static class WorkerProgram
     private static void Main(string[] args)
     {
         // The content root is the binary's own directory, not whatever directory the process was
-        // started from. Without this the host looks for appsettings.json beside the caller's shell
-        // and finds nothing, so `dotnet run` from the repository root died on required
-        // configuration that was sitting in bin/ the whole time.
+        // started from.
         var builder = Host.CreateApplicationBuilder(new HostApplicationBuilderSettings
         {
             Args = args,
@@ -33,9 +31,9 @@ internal static class WorkerProgram
             Ffmpeg.UseDirectory(libraryPath);
         }
 
-        // One client for the life of the process: the subscription to a stream is one request
-        // held open for hours, so no request timeout, and a bounded connect because an owner's
-        // address can outlive the owner.
+        // One client for the life of the process: the subscription to a stream is one request held
+        // open for hours, so no request timeout, and a bounded connect because an owner's address
+        // can outlive the owner.
         builder.Services.AddSingleton(new HttpClient(new SocketsHttpHandler { ConnectTimeout = TimeSpan.FromSeconds(1) })
         {
             Timeout = Timeout.InfiniteTimeSpan,

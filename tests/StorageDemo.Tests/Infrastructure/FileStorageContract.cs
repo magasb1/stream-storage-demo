@@ -2,10 +2,7 @@ using StorageDemo.Core.Storage;
 
 namespace StorageDemo.Tests.Infrastructure;
 
-/// <summary>
-/// One behavioural spec, run against every <see cref="IFileStorage"/> implementation.
-/// Derive a class per provider rather than writing separate tests per provider.
-/// </summary>
+/// <summary>One behavioural spec, run against every <see cref="IFileStorage"/> implementation.</summary>
 public abstract class FileStorageContract
 {
     protected abstract IFileStorage CreateStorage();
@@ -28,8 +25,7 @@ public abstract class FileStorageContract
     [Fact]
     public async Task Content_arriving_as_a_forward_only_stream_is_stored()
     {
-        // What an upload actually looks like: no length, no seeking. The S3 provider has to spool
-        // this to disk because the AWS SDK checksums the body before sending it.
+        // What an upload actually looks like: no length, no seeking.
         var storage = CreateStorage();
 
         await storage.SaveAsync("documents/streamed.txt", new ForwardOnlyStream("payload"u8.ToArray()), null);

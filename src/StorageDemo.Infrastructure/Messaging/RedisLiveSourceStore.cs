@@ -9,19 +9,6 @@ namespace StorageDemo.Infrastructure.Messaging;
 /// <summary>
 /// Configured sources in a Redis hash, one field per name, so every replica reads the same list and
 /// a source outlives the pod that was serving it.
-///
-/// Same shape as <see cref="RedisLiveStreamRegistry"/> and for the same reason: listing is the
-/// common operation and one HGETALL beats scanning a keyspace. The difference from the registry is
-/// what lives here - nothing is ever removed by a stream ending, because these rows are what
-/// somebody asked for rather than what is happening.
-///
-/// Reads and writes deliberately do not treat a Redis outage the same way, which is the one thing
-/// to keep in mind when editing this file. A failed read degrades to an empty list and a warning,
-/// exactly as the registry does: the caller is a heartbeat that will ask again in a second, and
-/// telling it "no sources right now" costs a cycle of doing nothing. A failed write must not degrade
-/// at all. The caller there is an operator saving a URL, and swallowing the exception would report
-/// success for a change that never happened - the worst outcome available, because they walk away
-/// believing the system is configured. So the write throws and the UI says so.
 /// </summary>
 public sealed class RedisLiveSourceStore(
     IConnectionMultiplexer connection,
@@ -31,14 +18,6 @@ public sealed class RedisLiveSourceStore(
 
     public async Task SaveAsync(LiveSource source, CancellationToken cancellationToken = default)
     {
-        // Not swallowed. See the note on the class: a save that quietly vanishes is a lie to the
-        // operator, and the exception reaching them as a failed request is the honest answer.
-        //
-        // Translated rather than rethrown, though. A raw RedisException is unmapped and becomes a
-        // 500, which says "this service is broken"; PersistenceException is already mapped to 503
-        // alongside every other backing-store outage, which says "try again" and is the truth.
-        // Naming the operation matters here too: an operator who cannot save wants to know whether
-        // it was their row or the whole store.
         await Write(
             () => connection.GetDatabase().HashSetAsync(Key, source.Name, JsonSerializer.Serialize(source)),
             $"save live source '{source.Name}'");

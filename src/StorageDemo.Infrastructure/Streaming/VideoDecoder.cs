@@ -4,13 +4,7 @@ using Microsoft.Extensions.Logging;
 
 namespace StorageDemo.Infrastructure.Streaming;
 
-/// <summary>
-/// One open video decoder, and the packet and frame it works through.
-///
-/// It exists apart from the frame tier only because everything in here is a pointer and everything
-/// in there is a queue: pointers and awaits cannot share a method. The split is a language rule,
-/// not a design boundary.
-/// </summary>
+/// <summary>One open video decoder, and the packet and frame it works through.</summary>
 public sealed unsafe class VideoDecoder : IDisposable
 {
     private AVCodecContext* _codec;
@@ -80,7 +74,9 @@ public sealed unsafe class VideoDecoder : IDisposable
         return null;
     }
 
-    /// <summary>Decodes one packet and hands every picture it produced to <paramref name="onFrame"/>.</summary>
+    /// <summary>
+    /// Decodes one packet and hands every picture it produced to <paramref name="onFrame"/>.
+    /// </summary>
     public void Decode(MediaPacket media, Action<IntPtr> onFrame)
     {
         if (_codec is null || ffmpeg.av_new_packet(_packet, media.Data.Length) < 0)

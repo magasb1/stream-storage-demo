@@ -5,18 +5,7 @@ using StorageDemo.Tests.Infrastructure;
 
 namespace StorageDemo.Tests.Integration;
 
-/// <summary>
-/// What a full replica does, through the real application with real encoders.
-///
-/// One replica rather than two, because capacity is entirely local: the limit counts what this pod
-/// holds, and the answer is given on libsrt's thread from that count alone. The fixture is
-/// <see cref="LiveReplicas"/> all the same, since starting an application with its own ports and a
-/// registry a test can read is exactly what it does.
-///
-/// A pod with no limit accepts until it falls over, and the baseline measured what that looks like:
-/// 250 streams reported live and contented while a fifth of the media arrived. The limit is how a
-/// pod says no in one round trip instead, cheaply enough that the encoder lands somewhere else.
-/// </summary>
+/// <summary>What a full replica does, through the real application with real encoders.</summary>
 public sealed class LiveCapacityTests : IAsyncLifetime
 {
     private readonly LiveReplicas _replicas = new();
@@ -32,15 +21,7 @@ public sealed class LiveCapacityTests : IAsyncLifetime
 
     public ValueTask DisposeAsync() => _replicas.DisposeAsync();
 
-    /// <summary>
-    /// The refusal, and that it is the overload refusal rather than any other.
-    ///
-    /// FFmpeg never asks libsrt why it was turned away, so the caller cannot tell an overload from a
-    /// conflict or a dead port. The meter can: the reject is tagged with the port and with a word
-    /// from a closed set, and "overload" here is what an encoder's operator would eventually be
-    /// shown. Fails if the count is read from the wrong place, or if the answer comes after the
-    /// connection exists rather than during the handshake, which the empty registry entry catches.
-    /// </summary>
+    /// <summary>The refusal, and that it is the overload refusal rather than any other.</summary>
     [Fact]
     public async Task A_full_pod_refuses_a_new_name_at_the_handshake()
     {
@@ -66,8 +47,7 @@ public sealed class LiveCapacityTests : IAsyncLifetime
             await SrtSenders.WasRefused(second, TimeSpan.FromSeconds(10)),
             $"a full pod admitted a second name: {SrtSenders.Complaints([second])}");
 
-        // Refused at the handshake means nothing was ever claimed. A pod that accepted and then
-        // dropped the connection would have left an entry behind.
+        // Refused at the handshake means nothing was ever claimed.
         Assert.Null(await _replicas.Registry.GetAsync("second-camera"));
 
         var reject = Assert.Single(meters.Read(), measurement => measurement.Instrument == "live.rejects");
@@ -80,19 +60,7 @@ public sealed class LiveCapacityTests : IAsyncLifetime
             reject.Tags);
     }
 
-    /// <summary>
-    /// The exception that matters more than the rule.
-    ///
-    /// A pod at its limit still owns the streams it took, and an encoder whose socket dropped is one
-    /// of them coming back. Without this the pod refuses its own encoders after a blip and they land
-    /// on a pod that has never heard of them, which for a full cluster means they land nowhere and
-    /// the streams this pod was responsible for simply end.
-    ///
-    /// The limit is one and the pod is holding one, so the reconnect is admitted only because the
-    /// name is already here: delete the owned-name clause and this times out. The start time is
-    /// asserted too, because resuming the same stream is what makes it a reconnect rather than a
-    /// second stream that happens to share a name.
-    /// </summary>
+    /// <summary>The exception that matters more than the rule.</summary>
     [Fact]
     public async Task A_full_pod_accepts_a_reconnect_of_a_name_it_already_owns()
     {
@@ -102,8 +70,7 @@ public sealed class LiveCapacityTests : IAsyncLifetime
         const string name = "blinking-camera";
 
         // The production grace period, so the interrupted entry is still here when the encoder
-        // comes back. At the fixture's five seconds the stream would be gone rather than resumed,
-        // and a gone name is free for anybody, which is not what this test is about.
+        // comes back.
         _replicas.Start("pod-a", _ingest, graceSeconds: 30, maxStreams: 1);
 
         var first = _replicas.Send(_ingest, name);
@@ -136,12 +103,6 @@ public sealed class LiveCapacityTests : IAsyncLifetime
 
     /// <summary>
     /// The number an autoscaler would be trusting, against the dictionary it is meant to describe.
-    ///
-    /// <see cref="StorageDemo.Tests.Infrastructure.LiveMetricsTests"/> pins that the instrument reports what it was
-    /// last told; this pins that what it is told is what the coordinator actually holds, through the
-    /// real heartbeat, as a stream arrives and as it is swept away again. The gauge is republished
-    /// once a beat, so it is at worst one beat behind the claim, which is the same freshness as
-    /// everything else a replica publishes about itself.
     /// </summary>
     [Fact]
     public async Task The_owned_gauge_reports_what_the_coordinator_holds()
@@ -162,8 +123,7 @@ public sealed class LiveCapacityTests : IAsyncLifetime
 
         SrtSenders.Kill(sender);
 
-        // Interrupted after the feed timeout, then dropped when the grace period expires. The
-        // coordinator lets go of it in the same pass that republishes the gauge.
+        // Interrupted after the feed timeout, then dropped when the grace period expires.
         await LiveReplicas.Until(
             () => Task.FromResult(meters.Value("live.streams.owned") == 0),
             TimeSpan.FromSeconds(40),

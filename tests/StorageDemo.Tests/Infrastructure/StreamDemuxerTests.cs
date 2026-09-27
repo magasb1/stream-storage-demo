@@ -4,13 +4,9 @@ namespace StorageDemo.Tests.Infrastructure;
 
 /// <summary>
 /// Real-time pacing's one piece of actual logic, pulled out of the read loop for the same reason
-/// <c>ForwardPlan.Decide</c> is a pure function: proving "a packet running two seconds ahead of
-/// the wall clock waits two seconds" needs none of a real stream, a real clock or a real thread
-/// behind it, only the four numbers <see cref="StreamDemuxer.Pace"/> actually looks at.
-///
-/// The scale used throughout is ninety thousand ticks a second, MPEG-TS's own, because that is
-/// what a real reference time base almost always is and using it here catches an accidental unit
-/// mismatch a round number like one tick per second never would.
+/// <c>ForwardPlan.Decide</c> is a pure function: proving "a packet running two seconds ahead of the
+/// wall clock waits two seconds" needs none of a real stream, a real clock or a real thread behind
+/// it, only the four numbers <see cref="StreamDemuxer.Pace"/> actually looks at.
 /// </summary>
 public sealed class StreamDemuxerTests
 {
@@ -77,8 +73,8 @@ public sealed class StreamDemuxerTests
     [Fact]
     public void A_forward_jump_past_the_ceiling_reanchors_instead_of_stalling()
     {
-        // A discontinuity, or a playlist that skipped ahead: waiting out the full nominal gap
-        // would stall the whole pull for however large the jump happened to be.
+        // A discontinuity, or a playlist that skipped ahead: waiting out the full nominal gap would
+        // stall the whole pull for however large the jump happened to be.
         var decision = StreamDemuxer.Pace(
             referencePts: Ticks(120),
             origin: 0,
@@ -93,8 +89,6 @@ public sealed class StreamDemuxerTests
     public void A_backward_jump_past_the_ceiling_reanchors_instead_of_reading_as_forever_late()
     {
         // The origin is far in the stream's future relative to this packet - a timeline reset.
-        // Without reanchoring, every packet after this one would compute as hopelessly behind
-        // schedule and never wait again, silently abandoning pacing rather than resuming it.
         var decision = StreamDemuxer.Pace(
             referencePts: 0,
             origin: Ticks(120),

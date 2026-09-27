@@ -6,14 +6,7 @@ namespace StorageDemo.Tests.Application;
 /// <summary>
 /// The tracker against the behaviours ByteTrack (Zhang et al., ECCV 2022) claims, arranged so that
 /// a tracker which merely runs fails them: the same object under a new id, two ids swapped at a
-/// crossing, a lost object never recovered. Scenes are synthetic and exact, so the assertions can
-/// be about identity rather than about metrics.
-///
-/// Objects are 80 pixels square and move a few pixels a frame. That is not arbitrary: a
-/// constant-velocity filter starts with zero velocity (kalman_filter.py initiate), so the second
-/// detection of an object must still overlap the first by more than the match threshold's IoU of
-/// 0.2, or the track can never bootstrap. Six pixels a frame at a detection every fifth frame is
-/// thirty pixels of travel against an eighty pixel box, which does.
+/// crossing, a lost object never recovered.
 /// </summary>
 public sealed class ByteTrackerTests
 {
@@ -31,7 +24,6 @@ public sealed class ByteTrackerTests
     [Fact]
     public void A_linear_mover_keeps_one_id_with_detections_only_every_fifth_frame()
     {
-        // The plan's premise: detect at a fraction of the frame rate, predict in between.
         var tracker = new ByteTracker(Width, Height);
         var ids = new HashSet<int>();
 
@@ -68,7 +60,6 @@ public sealed class ByteTrackerTests
         Assert.Equal(12, only.History.Count);
         Assert.All(only.History, h => Assert.Equal(only.Id, h.Box.Id));
 
-        // Phase D5's done criterion: the track appears in the emitted metadata.
         var packet = Misb0903.Encode(new VmtiFrame(At(60), Width, Height, "EO", [only.Box]));
         var vtracker = Vmti.Nested(Assert.Single(Vmti.Decode(packet).Targets).Items[104]);
 
@@ -80,10 +71,7 @@ public sealed class ByteTrackerTests
     [Fact]
     public void Two_objects_crossing_keep_their_ids()
     {
-        // Same size, same row, same class, opposite directions, detected every fifth frame. At the
-        // detection after they pass, each object's last seen box overlaps the other's new box more
-        // than its own, so last-position matching would swap them; the Kalman prediction, having
-        // learnt the velocities, puts each prediction on the right object.
+        // Same size, same row, same class, opposite directions, detected every fifth frame.
         var tracker = new ByteTracker(Width, Height);
         int? a = null;
         int? b = null;
@@ -122,9 +110,7 @@ public sealed class ByteTrackerTests
     public void An_occluded_object_is_recovered_within_the_buffer_and_renamed_beyond_it(int gap, bool sameId)
     {
         // Detected every frame, then absent for `gap` frames while still moving, then back at its
-        // true position. Section 4.1: lost tracks are kept for 30 frames. Within that, the coasted
-        // prediction is where the object reappears and the id survives; beyond it, the track has
-        // been removed and the reappearance is a new object.
+        // true position.
         var tracker = new ByteTracker(Width, Height);
         var before = 0;
         var frame = 1;
@@ -152,8 +138,8 @@ public sealed class ByteTrackerTests
 
         if (sameId)
         {
-            // Five observations after the gap, and the one before them is frame 20: the gap left
-            // no observations behind, only predictions.
+            // Five observations after the gap, and the one before them is frame 20: the gap left no
+            // observations behind, only predictions.
             Assert.Equal(At(20), after.History[^6].Timestamp);
         }
     }
@@ -163,8 +149,7 @@ public sealed class ByteTrackerTests
     {
         var tracker = new ByteTracker(Width, Height);
 
-        // Below tau: the second association has nothing to attach it to. Above tau but below
-        // tau + 0.1 (byte_tracker.py 154): high enough to match, not high enough to start.
+        // Below tau: the second association has nothing to attach it to.
         for (var frame = 1; frame <= 10; frame++)
         {
             tracker.Update(At(frame), [Box(100, 100, confidence: 30), Box(600, 600, confidence: 65)]);

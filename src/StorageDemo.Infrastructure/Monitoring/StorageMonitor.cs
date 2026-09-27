@@ -7,14 +7,7 @@ using StorageDemo.Core.Documents;
 
 namespace StorageDemo.Infrastructure.Monitoring;
 
-/// <summary>
-/// Rescans the store so changes made outside this application still reach the database.
-///
-/// It runs on whichever comes first: a notification, or the interval. Events make it prompt, and
-/// the interval is the safety net for everything events miss, which is plenty. FileSystemWatcher
-/// drops events when its buffer overflows, and an S3 notification can be lost in delivery. Since
-/// a pass is a full diff, a missed event costs latency and nothing else.
-/// </summary>
+/// <summary>Rescans the store so changes made outside this application still reach the database.</summary>
 public sealed class StorageMonitor(
     IServiceScopeFactory scopeFactory,
     StorageChangeSignal signal,
@@ -47,15 +40,12 @@ public sealed class StorageMonitor(
 
                 if (notified && _options.DebounceMilliseconds > 0)
                 {
-                    // Copying a folder fires an event per file. Letting the burst settle turns
-                    // hundreds of notifications into one scan.
+                    // Copying a folder fires an event per file.
                     await Task.Delay(_options.DebounceMilliseconds, stoppingToken);
                 }
 
                 try
                 {
-                    // One replica scans at a time. The others skip this pass rather than pay for
-                    // the same listing and announce the same changes to their own clients.
                     await using var held = await scanLock.TryAcquireAsync(
                         "storage-scan",
                         LockTtl(interval),
@@ -91,13 +81,12 @@ public sealed class StorageMonitor(
         }
         catch (OperationCanceledException)
         {
-            // Shutdown.
         }
     }
 
     /// <summary>
-    /// Long enough to outlast a slow scan, since a lock that expires mid-pass lets a second
-    /// replica start one. Short enough that a replica killed while holding it frees it soon.
+    /// Long enough to outlast a slow scan, since a lock that expires mid-pass lets a second replica
+    /// start one.
     /// </summary>
     private static TimeSpan LockTtl(TimeSpan interval)
         => TimeSpan.FromSeconds(Math.Max(120, interval.TotalSeconds * 5));

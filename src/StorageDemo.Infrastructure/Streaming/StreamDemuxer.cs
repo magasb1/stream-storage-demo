@@ -9,7 +9,7 @@ namespace StorageDemo.Infrastructure.Streaming;
 /// <summary>Why a feed stopped, which is what decides whether the stream waits or ends.</summary>
 public enum DemuxOutcome
 {
-    /// <summary>The sender went away or fell silent. The stream becomes interrupted, not gone.</summary>
+    /// <summary>The sender went away or fell silent.</summary>
     FeedEnded,
 
     /// <summary>The transport never produced a readable stream at all.</summary>
@@ -19,15 +19,7 @@ public enum DemuxOutcome
     Stopped,
 }
 
-/// <summary>
-/// Reads one accepted connection and feeds one hub. This is the demultiplexing half of what used
-/// to be a single remux loop; the multiplexing half now belongs to each consumer that writes bytes.
-///
-/// It takes an already-open transport rather than a URL, because the accept happened on the
-/// listener's thread and that thread had to move on. libav is told the container is MPEG-TS
-/// rather than left to probe it: this is a contribution ingest, and probing costs a read before
-/// the first packet reaches anybody.
-/// </summary>
+/// <summary>Reads one accepted connection and feeds one hub.</summary>
 public sealed unsafe class StreamDemuxer(
     IOptions<LiveOptions> options,
     ILogger<StreamDemuxer> logger)
@@ -36,14 +28,6 @@ public sealed unsafe class StreamDemuxer(
 
     /// <summary>
     /// How long libav may spend working out what is arriving, and how much it may read doing it.
-    ///
-    /// This is dead time between a camera connecting and its stream being on air, which for a
-    /// service whose purpose is being live is the number that matters after a reconnect. libav's
-    /// own defaults are five seconds and five megabytes; MPEG-TS repeats its tables every hundred
-    /// milliseconds, so far less is enough for a source that presents everything at once.
-    ///
-    /// http is given its own, larger budget - see <see cref="LiveOptions.HttpProbeSeconds"/> for
-    /// why a TCP handshake and a playlist fetch cost more than this default assumes.
     /// </summary>
     private void LimitProbe(AVDictionary** options, bool http)
     {
@@ -54,14 +38,15 @@ public sealed unsafe class StreamDemuxer(
         ffmpeg.av_dict_set(options, "probesize", bytes.ToString(), 0);
     }
 
-    /// <summary>Whether a URL is pulled over http or https, where nothing paces the read but this service.</summary>
+    /// <summary>
+    /// Whether a URL is pulled over http or https, where nothing paces the read but this service.
+    /// </summary>
     private static bool IsHttpLike(string url)
         => url.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
             || url.StartsWith("https://", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Runs until the feed stops or the token is cancelled, publishing every packet to the hub.
-    /// Takes ownership of <paramref name="transport"/> and closes it on the way out.
     /// </summary>
     public DemuxOutcome Run(AVIOContext* transport, StreamHub hub, CancellationToken cancellationToken)
     {
@@ -85,8 +70,7 @@ public sealed unsafe class StreamDemuxer(
         {
             LimitProbe(&options, http: false);
 
-            // The container is known rather than probed. This is a contribution ingest, and
-            // guessing the format costs a read before the first packet can reach anybody.
+            // The container is known rather than probed.
             if (ffmpeg.avformat_open_input(&format, null, ffmpeg.av_find_input_format("mpegts"), &options) < 0)
             {
                 logger.LogWarning("'{Name}' connected but sent nothing readable", hub.Name);
@@ -115,13 +99,8 @@ public sealed unsafe class StreamDemuxer(
     }
 
     /// <summary>
-    /// The manual path: this replica opens the input itself, for a protocol that cannot name
-    /// itself and so could never have arrived at a listening port. Everything after the open is the
-    /// same, which is the point - once a demultiplexer exists the two are indistinguishable.
-    ///
-    /// <paramref name="inputOptions"/> is used as given for every scheme except http and https,
-    /// which use <see cref="LiveOptions.HttpInputOptions"/> instead regardless of what was passed:
-    /// those options are udp's, and an http source has no use for a fifo it does not have.
+    /// The manual path: this replica opens the input itself, for a protocol that cannot name itself
+    /// and so could never have arrived at a listening port.
     /// </summary>
     public DemuxOutcome Run(
         string url,
@@ -151,8 +130,7 @@ public sealed unsafe class StreamDemuxer(
             // http and https are paced in software because nothing else paces them: a pull is an
             // ordinary read against whatever a server has already published, and nothing stops
             // libav fetching every available segment back to back well ahead of the wall clock the
-            // video was recorded against. udp, rtp and srt need none of this - the encoder's own
-            // send rate already paces av_read_frame for those.
+            // video was recorded against.
             return Read(format, hub, cancellationToken, realtime: http);
         }
         finally
@@ -182,9 +160,7 @@ public sealed unsafe class StreamDemuxer(
 
             if (!hub.Adopt(layout))
             {
-                // The encoder was reconfigured while it was away. Anything writing a file has to
-                // close it: a container whose codec configuration changes halfway is not something
-                // that will reliably play.
+                // The encoder was reconfigured while it was away.
                 logger.LogInformation(
                     "'{Name}' came back with a different layout ({Layout}), so its buffer starts fresh",
                     hub.Name,
@@ -209,13 +185,6 @@ public sealed unsafe class StreamDemuxer(
     /// <summary>
     /// How far a single timestamp jump is trusted before pacing gives up waiting for it and starts
     /// again from wherever the stream now is.
-    ///
-    /// Both directions of a jump this large mean the same thing: whatever the pacing clock thought
-    /// it knew about this stream's timeline no longer holds - an HLS playlist restarting, a
-    /// discontinuity where the source's own clock stepped, or this service itself having fallen
-    /// behind while a segment fetch was slow. Re-anchoring is safe either way; the alternative for
-    /// a forward jump is stalling the whole pull for however large the jump was, and for a backward
-    /// one is every packet after it reading as permanently behind schedule.
     /// </summary>
     private static readonly TimeSpan MaxPaceGap = TimeSpan.FromSeconds(5);
 
@@ -231,15 +200,12 @@ public sealed unsafe class StreamDemuxer(
         var lastReferencePts = 0L;
 
         // Wall-clock pacing for a source nothing else paces - see realtime's caller for which
-        // sources that is. Anchored on the first packet actually carrying a timestamp rather than
-        // assumed to start at zero: HLS in particular routinely starts a live playlist's timeline
-        // partway through an arbitrary running count, not at the beginning of anything.
+        // sources that is.
         Stopwatch? clock = null;
         long? origin = null;
 
-        // ponytail: cancellation is noticed between reads rather than during one, so a shutdown
-        // can wait out the transport's read timeout. An AVIOInterruptCB would cut that short;
-        // worth adding if a slow shutdown ever matters.
+        // ponytail: cancellation is noticed between reads rather than during one, so a shutdown can
+        // wait out the transport's read timeout.
         while (!cancellationToken.IsCancellationRequested)
         {
             var read = ffmpeg.av_read_frame(format, packet);
@@ -247,7 +213,6 @@ public sealed unsafe class StreamDemuxer(
             if (read < 0)
             {
                 // The sender went away, or nothing arrived within the transport's read timeout.
-                // Either way this feed has stopped; whether the stream has is not decided here.
                 return DemuxOutcome.FeedEnded;
             }
 
@@ -309,12 +274,13 @@ public sealed unsafe class StreamDemuxer(
     }
 
     /// <summary>What one packet's timestamp means for real-time pacing.</summary>
-    /// <param name="Wait">How long to hold this packet before forwarding it, when it is running ahead of the wall clock.</param>
+    /// <param name="Wait">
+    /// How long to hold this packet before forwarding it, when it is running ahead of the wall
+    /// clock.
+    /// </param>
     /// <param name="Reanchor">
     /// Set when the gap between this packet's nominal time and the wall clock was too large to be
-    /// ordinary jitter - true of both a forward jump and a backward one, for different reasons. The
-    /// caller starts the clock over from this packet rather than either waiting out the full gap or
-    /// letting every packet after it read as permanently behind schedule.
+    /// ordinary jitter - true of both a forward jump and a backward one, for different reasons.
     /// </param>
     public readonly record struct PaceDecision(TimeSpan? Wait, bool Reanchor);
 
@@ -324,10 +290,6 @@ public sealed unsafe class StreamDemuxer(
     /// reason <see cref="ForwardPlan.Decide"/> is a pure function rather than a method on the class
     /// that owns a real thread and a real socket.
     /// </summary>
-    /// <param name="referencePts">This packet's position on the reference time base.</param>
-    /// <param name="origin">The first packet's position on the same scale - this pull's time zero.</param>
-    /// <param name="secondsPerTick">Converts a tick difference on the reference time base to seconds.</param>
-    /// <param name="elapsed">Wall-clock time since this pull's clock started.</param>
     public static PaceDecision Pace(long referencePts, long origin, double secondsPerTick, TimeSpan elapsed)
     {
         var due = TimeSpan.FromSeconds((referencePts - origin) * secondsPerTick);

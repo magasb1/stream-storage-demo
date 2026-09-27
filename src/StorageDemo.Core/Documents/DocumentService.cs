@@ -6,8 +6,7 @@ namespace StorageDemo.Core.Documents;
 
 /// <summary>
 /// Coordinates the two independent infrastructure concerns: bytes in <see cref="IFileStorage"/>,
-/// metadata in <see cref="IDocumentRepository"/>. They share no transaction, so writes are
-/// compensated rather than rolled back. See README "Consistency".
+/// metadata in <see cref="IDocumentRepository"/>.
 /// </summary>
 public sealed class DocumentService(
     IFileStorage fileStorage,
@@ -66,15 +65,13 @@ public sealed class DocumentService(
             document.StorageKey,
             document.Size);
 
-        // Other connected clients see the new document without polling.
         changeFeed.Publish(new DocumentChange(
             ChangeKind.Added,
             document.Id,
             document.StorageKey,
             document.FileName));
 
-        // Probing and thumbnailing happen after the caller is answered. The upload returns as soon
-        // as the bytes and the row are safe; the preview arrives moments later as an Updated event.
+        // Probing and thumbnailing happen after the caller is answered.
         if (mediaAnalyzer.CanAnalyze(contentType, safeName))
         {
             await analysisQueue.EnqueueAsync(
@@ -85,14 +82,7 @@ public sealed class DocumentService(
         return document;
     }
 
-    /// <summary>
-    /// Reads the object back out of storage to probe it and render a preview. Reading it back
-    /// rather than teeing the upload keeps the write path streaming, and works identically for
-    /// objects the reconciler finds that were never uploaded through here.
-    ///
-    /// Called from the analysis worker rather than from the upload itself, so the caller is never
-    /// waiting on ffmpeg.
-    /// </summary>
+    /// <summary>Reads the object back out of storage to probe it and render a preview.</summary>
     public async Task<StoredAnalysis> AnalyzeStoredObjectAsync(
         Guid id,
         string storageKey,
@@ -109,9 +99,6 @@ public sealed class DocumentService(
         try
         {
             // A segmented document is probed through its first piece rather than its whole self.
-            // Codecs, dimensions and a thumbnail are all in the first few seconds, and reading six
-            // hours back out of storage to learn them would cost more than everything else here
-            // put together. Duration comes from whoever wrote it, which knows better anyway.
             var document = await repository.GetAsync(id, cancellationToken);
             var key = document is { Segmented: true } ? document.Parts[0].Key : storageKey;
 
@@ -164,9 +151,7 @@ public sealed class DocumentService(
         var reference = detection.ToString();
 
         // ponytail: a scan of the listing, because the reference is one string inside a metadata
-        // blob and neither store indexes into it. Honest while a listing is a page of documents,
-        // which is what every other read here already assumes. Index the metadata key when the
-        // listing itself stops fitting in one call - the two problems arrive together.
+        // blob and neither store indexes into it.
         return [.. (await repository.GetAllAsync(cancellationToken))
             .Where(document =>
                 document.Metadata.TryGetValue(DetectionReference.MetadataKey, out var value)
@@ -197,7 +182,6 @@ public sealed class DocumentService(
         if (document.Segmented)
         {
             // Joined on the way out, so nothing downstream has to know it was written in pieces.
-            // Seekable, which is what lets a player scrub a six hour recording without fetching it.
             return new DocumentContent(
                 new PartedStream(fileStorage, document.Parts, cancellationToken),
                 document.FileName,
@@ -243,8 +227,7 @@ public sealed class DocumentService(
             return;
         }
 
-        // A segmented document has no object at its own key; its bytes are the pieces. Deleting
-        // the key anyway is harmless and idempotent, and deleting the pieces is the real work.
+        // A segmented document has no object at its own key; its bytes are the pieces.
         await fileStorage.DeleteAsync(document.StorageKey, cancellationToken);
 
         foreach (var part in document.Parts)
@@ -285,7 +268,7 @@ public sealed class DocumentService(
         }
     }
 
-    /// <summary>Strips any client-supplied path. The name is display metadata, never identity.</summary>
+    /// <summary>Strips any client-supplied path.</summary>
     private static string SanitizeFileName(string fileName)
     {
         var name = Path.GetFileName(fileName.Replace('\\', '/'));

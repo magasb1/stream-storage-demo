@@ -9,9 +9,6 @@ namespace StorageDemo.Infrastructure.Media;
 /// <summary>
 /// Produces thumbnails and metadata after the upload has already been answered, then publishes an
 /// Updated change so connected clients fill the tile in without asking.
-///
-/// ponytail: one item at a time. Serial work keeps ffmpeg from fighting itself for CPU, and the
-/// queue drains fast enough for a demo. Widen it if uploads ever arrive faster than they analyze.
 /// </summary>
 public sealed class AnalysisWorker(
     IAnalysisQueue queue,
@@ -58,8 +55,7 @@ public sealed class AnalysisWorker(
             return;
         }
 
-        // The document can be deleted while its analysis is in flight. Re-reading here is what
-        // stops this from resurrecting a deleted row or leaving an orphaned thumbnail behind.
+        // The document can be deleted while its analysis is in flight.
         var current = await repository.GetAsync(request.Id, cancellationToken);
         if (current is null)
         {
@@ -86,8 +82,6 @@ public sealed class AnalysisWorker(
                 CreatedAt = current.CreatedAt,
                 ThumbnailKey = analysis.ThumbnailKey,
 
-                // The probe's findings, plus anything the uploader knew that a probe cannot work
-                // out. A recording knows which stream it came from; ffmpeg never will.
                 Metadata = Merge(current.Metadata, analysis.Metadata),
             },
             cancellationToken);

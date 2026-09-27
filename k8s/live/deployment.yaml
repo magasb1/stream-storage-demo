@@ -1,32 +1,16 @@
 # Live streaming: the two media Services, and the Deployment again with their ports on it.
-#
 #   kubectl apply -f k8s/           # first, for everything that is not live streaming
 #   kubectl apply -f k8s/live/      # then this, which re-applies the Deployment with media ports
 #
 # Applied in that order, and idempotent in it: this file's Deployment is the one in
 # k8s/deployment.yaml with the media ports, the addresses a replica records when it claims a name,
-# and room on /tmp for a recording. Apply only k8s/ for a document service with no live streaming.
-#
+# and room on /tmp for a recording.
 # What used to be here was a StatefulSet with a headless Service and one ingest Service per pod.
-# All of that existed so a sender could be pointed at a particular pod, and nothing points at a
-# particular pod any more: a replica claims a stream's name when the connection arrives and records
-# its own address, so a replica needing to reach another looks the address up rather than deriving
-# it from a predictable name. The StatefulSet, the headless Service and the per-pod Services all
-# went with that one decision.
-# Two Services, so each can be exposed to a different network with its own type, annotations and
-# source ranges. That separation is the entire reason for the split:
-#
 #   ingest      -> push a stream, and nothing else
 #   consumption -> watch live streams, and nothing else
 #   API         -> everything else
 #
-# Two things are easily conflated here and only one is needed. Per-flow stickiness is required,
-# because an SRT connection is a UDP flow whose packets must all reach the same pod; that is
-# ordinary connection tracking and every load balancer in play does it without being configured to.
-# Stickiness across reconnects is not required either, though the reason changed: a live name is
-# now locked to its owner rather than going to the newest connection, and a returning encoder may
-# still land anywhere because the name it is returning to is interrupted, and an interrupted name
-# is free for any replica to claim. No affinity configuration, no session tables.
+# Two things are easily conflated here and only one is needed.
 apiVersion: v1
 kind: Service
 metadata:
@@ -37,7 +21,7 @@ spec:
   type: LoadBalancer
   # Keeps the sender's address. A diagnostic argument rather than a security one, since the chosen
   # authentication candidate is an SRT passphrase, but an encoder nobody can identify in a log is
-  # painful exactly when it matters. The cost is that only nodes running a pod receive traffic.
+  # painful exactly when it matters.
   externalTrafficPolicy: Local
   selector:
     app: storage-demo
@@ -70,15 +54,11 @@ metadata:
   namespace: storage-demo
 spec:
   # Streams spread across replicas because the load balancer spreads connections, and each replica
-  # owns some streams and holds everything for them. Set by hand from the sizing below until an
-  # autoscaler is configured; the guidance for that is at the end of this file, and so is the
-  # reason a count of owned streams is not what it should read.
+  # owns some streams and holds everything for them.
   replicas: 2
   strategy:
     rollingUpdate:
-      # Never take a replica away before its replacement is serving. An encoder whose pod goes
-      # reconnects within about a second when there is somewhere to land, and waits out its own
-      # peer timeout when there is not. Measured in docs/replica-failover.md.
+      # Never take a replica away before its replacement is serving.
       maxUnavailable: 0
       maxSurge: 1
   selector:
@@ -91,8 +71,7 @@ spec:
     spec:
       serviceAccountName: storage-demo
       # A pod being replaced has to let its encoders find somewhere else, and the fastest way to do
-      # that is to stop holding their connections. Long enough for a recording in progress to
-      # finish uploading, short enough that a rolling update is not a long outage.
+      # that is to stop holding their connections.
       terminationGracePeriodSeconds: 60
       securityContext:
         runAsNonRoot: true
@@ -106,8 +85,8 @@ spec:
               containerPort: 8080
             - name: grpc
               containerPort: 5080
-            # Both media ports are SRT and therefore UDP. Ingest is where encoders push;
-            # consumption is where players pull.
+            # Both media ports are SRT and therefore UDP. Ingest is where encoders push; consumption
+            # is where players pull.
             - name: ingest
               containerPort: 9000
               protocol: UDP
@@ -137,36 +116,27 @@ spec:
                 fieldRef:
                   fieldPath: status.podIP
 
-            # Control calls and a relayed viewer's media both take this hop. Media still never
-            # reaches a player over the API port; between two pods it does, which is the whole
-            # point of the hop being HTTP.
+            # Control calls and a relayed viewer's media both take this hop.
             - name: Live__PeerBaseUrl
               value: http://$(POD_IP):8080
 
             # What a player is told to connect to: the consumption Service, as reachable from
-            # wherever viewers are. Replace the host with its external address.
+            # wherever viewers are.
             - name: Live__PublicConsumptionUrl
               value: srt://storage-demo-consumption.storage-demo.svc.cluster.local:9010
 
             # Refuse an encoder at the handshake once this replica holds this many streams, so a
             # full pod turns one away in a round trip instead of accepting it and serving every
-            # stream it has badly. Unset, or zero, is unlimited and is what this was before.
-            #
+            # stream it has badly.
             # It must match the resources below, and both follow from the bitrate the encoders
             # actually send rather than from a stream count alone: the ceiling is a joint budget of
             # open sockets and packet rate, roughly streams/175 + pps/45000 < 1, so twenty streams
             # at 300 Mbit/s sit at a third of libsrt's receive thread and seventy-five streams at
-            # the same 300 collapse it. Measured knees on one ingest port, from
-            # .scratch/scale-to-1000/baseline.md: about 150 streams at half a megabit, about 60 at
-            # a camera-like four, fewer than 20 at fifteen. Sixty is the camera-rate figure the
-            # requests below are sized for.
-            #
+            # the same 300 collapse it.
             # A refused encoder retries from a fresh source port and is re-balanced to another pod
             # under every load balancer default in play - iptables and nftables random, IPVS
             # round-robin, Cilium random and maglev - which is why sessionAffinity stays None on
-            # both media Services above. ClientIP affinity would pin the retry to the pod that is
-            # already full.
-            #
+            # both media Services above.
             # A name this pod already holds is admitted whatever the count, so an encoder
             # reconnecting after a blip always gets back in.
             - name: Live__MaxStreams
@@ -174,25 +144,18 @@ spec:
           lifecycle:
             preStop:
               # Kubernetes removes a pod from its Services and sends SIGTERM at the same moment, so
-              # without this the process can close its sockets before kube-proxy has stopped
-              # routing to it. An encoder reconnecting inside that window lands back on the pod
-              # that is going away, and pays a second round trip to find that out.
+              # without this the process can close its sockets before kube-proxy has stopped routing
+              # to it.
               sleep:
                 seconds: 5
           startupProbe:
-            # A pod is a few seconds old before it can serve anything: the native libraries load
-            # and the media ports bind first. Kept apart from readiness so a slow start is not
-            # mistaken for a failure, and so liveness does not begin counting until the process is
-            # actually up.
-            #
-            # This used to describe a boot-time self-test that opened a loopback listener to prove
-            # a stream identifier could be read out of a log line. Owning the listener deleted both
-            # the log scrape and the self-test; the identifier is a socket option now.
-            #
+            # A pod is a few seconds old before it can serve anything: the native libraries load and
+            # the media ports bind first.
+            # This used to describe a boot-time self-test that opened a loopback listener to prove a
+            # stream identifier could be read out of a log line.
             # Liveness, not readiness: readiness asks storage and the database whether they are
             # reachable, and a pod that never finishes starting because S3 is slow is killed and
-            # restarted, which makes a slow dependency look like a broken build. Readiness still
-            # keeps such a pod out of the Service; it just no longer ends its life.
+            # restarted, which makes a slow dependency look like a broken build.
             httpGet:
               path: /health/live
               port: http
@@ -205,9 +168,7 @@ spec:
             periodSeconds: 20
           readinessProbe:
             # Includes whether the two media ports are accepting, not only whether storage and the
-            # database are reachable. For a service whose purpose is being live, a replica that is
-            # reachable but not accepting is worse than one that is plainly absent: the Service
-            # keeps sending encoders to it and they keep failing.
+            # database are reachable.
             httpGet:
               path: /health/ready
               port: http
@@ -216,13 +177,10 @@ spec:
             # in about ten seconds and encoders are pushed somewhere that works.
             failureThreshold: 2
           # Sized for 60 streams at 4 Mbit/s, which is the measured knee of libsrt's single receive
-          # thread at camera rates. Change the stream count or the bitrate and both numbers move;
-          # the arithmetic is below rather than in someone's head.
-          #
+          # thread at camera rates.
           # These were 200m and 512Mi with a 1Gi limit, which was a guess and was wrong by about an
           # order of magnitude: that limit OOM-kills at roughly 20 camera-rate streams, against a
-          # design that assumes 250. Measured in .scratch/scale-to-1000/baseline.md.
-          #
+          # design that assumes 250.
           #   memory  ~= 2.25 x Live__BufferWindowSeconds x bitrate x streams
           #            = 2.25 x 30 s x 0.5 MB/s x 60      ~= 2.0 GB, measured 2.86 GiB with overhead
           #   cpu     ~= 0.017 x streams                  (two threads each: our demultiplexer and
@@ -231,21 +189,14 @@ spec:
           #                                               (the preview, until Phase 8 moves it out)
           #            ~= 2.3 cores
           #
-          # Both numbers assume one ingest port, which is the default. Live__IngestPortCount binds
-          # more, giving libsrt a receive thread each and roughly doubling what a pod holds at two
-          # to four ports. It is not free: measured at about a third more processor and memory per
-          # stream, so four ports at 125 streams wanted 6 cores and 6.5Gi rather than three of
-          # each. Raise both here before raising that there, and re-measure on the real node -
-          # .scratch/scale-to-1000/multi-port.md ran out of load generator before it ran out of
-          # service.
+          # Both numbers assume one ingest port, which is the default.
           resources:
             requests:
               cpu: "2"
               memory: 3Gi
             limits:
               # Memory only, deliberately. A CPU limit means CFS throttling, and a throttled media
-              # pipeline does not run slower, it drops packets and stutters. The request is what
-              # reserves the cores; nothing should cap them.
+              # pipeline does not run slower, it drops packets and stutters.
               memory: 4Gi
           securityContext:
             allowPrivilegeEscalation: false
@@ -258,22 +209,16 @@ spec:
       volumes:
         # A recording is written here one part at a time and the file deleted once the part is
         # stored, so disk is bounded by the part in progress rather than by how long a recording
-        # runs. What it is not bounded by is how many recordings run at once, and that is the
-        # ceiling nobody had written down:
-        #
+        # runs.
         #   per recording  = Live__RecordingPartMinutes x bitrate
         #                  = 5 min x 4 Mbit/s  ~= 150 MB
         #   concurrent     = 8Gi / 150 MB      ~= 54 recordings per pod
         #
         # Sixty streams at camera rate fit under that, but only just, and Live__IngestPortCount
-        # raising a pod toward a hundred and twenty-five streams does not raise this. A detector
-        # triggering broadly would exceed it.
-        #
+        # raising a pod toward a hundred and twenty-five streams does not raise this.
         # **Nothing enforces it.** There is no bound on concurrent recordings, and what happens when
         # the volume fills is untested: a part fails to write, the recording it belonged to ends,
-        # and every other recording on the pod is writing to the same full volume. Bounding it is a
-        # separate decision - refuse the trigger, evict the oldest recording, or size the volume for
-        # the worst case - and stating the number is what makes that decision possible.
+        # and every other recording on the pod is writing to the same full volume.
         - name: tmp
           emptyDir:
             sizeLimit: 8Gi
@@ -294,27 +239,13 @@ spec:
 
 # ---------------------------------------------------------------------------------------------
 # Autoscaling: what to scale on, and what to watch to know the answer is still true.
-#
-# There is no HorizontalPodAutoscaler here on purpose. One needs a metrics pipeline this repository
-# does not install. The figures themselves are exported now: the service publishes them through
-# System.Diagnostics.Metrics under the meter StorageDemo.Live, which
-# `dotnet-counters monitor -n StorageDemo.Api --counters StorageDemo.Live` still reads with no
-# package at all, and OTLP carries them to a collector when Telemetry__Enabled and
-# OTEL_EXPORTER_OTLP_ENDPOINT are set in k8s/configmap.yaml. There is no /metrics endpoint on the
-# pod and deliberately so - the .NET Prometheus exporter is still beta, and a media service with
-# public ports is the wrong place to open another one on a preview package. A collector alongside it
-# exposes the Prometheus shape instead. See docs/observability.md.
+# There is no HorizontalPodAutoscaler here on purpose.
 #
 # WHICH LABELS THE SERIES ACTUALLY CARRIES. A collector receiving OTLP labels what it re-exposes
 # from the resource the service declared - service_name, service_instance_id, the pod name this
-# container injects as POD_NAME - and not from Kubernetes. The rule below therefore reads the pod
-# from the scrape, which works where the collector runs as a sidecar or a DaemonSet the
-# ServiceMonitor scrapes per pod. Where one central collector receives from every replica, every
-# series arrives with that collector's pod label and the rule has to key on service_instance_id
-# instead. Check which shape the cluster has before trusting either.
+# container injects as POD_NAME - and not from Kubernetes.
 #
 # SCALE OUT ON live_streams_owned, AT A TARGET A LITTLE UNDER Live__MaxStreams.
-#
 #   apiVersion: autoscaling/v2
 #   kind: HorizontalPodAutoscaler
 #   metadata: { name: storage-demo, namespace: storage-demo }
@@ -329,65 +260,41 @@ spec:
 #           target: { type: AverageValue, averageValue: "50" }
 #
 # served by prometheus-adapter with one rule mapping the pod label:
-#
 #   rules:
 #     - seriesQuery: 'live_streams_owned{namespace!="",pod!=""}'
 #       resources: { overrides: { namespace: { resource: namespace }, pod: { resource: pod } } }
 #       name: { matches: "^live_streams_owned$", as: "live_streams_owned" }
 #       metricsQuery: 'max(<<.Series>>{<<.LabelMatchers>>}) by (<<.GroupBy>>)'
 #
-# KEDA does the same with a prometheus trigger on sum(live_streams_owned) and is only worth its
-# CRDs if scale-to-zero or a non-Prometheus trigger is also wanted.
+# KEDA does the same with a prometheus trigger on sum(live_streams_owned) and is only worth its CRDs
+# if scale-to-zero or a non-Prometheus trigger is also wanted.
 #
 # WHY A COUNT OF OWNED STREAMS IS THE TRIGGER AND NOT THE HEALTH SIGNAL.
-#
 # It is a trigger only because Live__MaxStreams was set from a measured bitrate above: it says how
-# much of a budget somebody chose has been spent, and scaling out before that budget is spent is
-# the point. It says nothing about whether the pod is coping. At 250 streams this service reported
-# 250 of them live, every one with packets and bytes rising, while it was demultiplexing a fifth of
-# the media being sent to it - 236 Mbit/s arriving to deliver 26, with 319,000 kernel UDP input
-# errors in fifteen seconds. An autoscaler reading only that count would have seen full health at
-# the moment every stream on the pod was broken.
+# much of a budget somebody chose has been spent, and scaling out before that budget is spent is the
+# point.
 #
 # WHAT TO ALERT ON, AND TO CHECK Live__MaxStreams AGAINST.
-#
 # live_udp_receive_errors, which is the kernel's `Udp: InErrors` for the pod's network namespace
 # read through the meter, and which .scratch/scale-to-1000/health-signal.md showed equal to it to
-# the packet. It is the collapse mechanism itself rather than a proxy for it: every one of those
-# errors is the shared UDP receive buffer overflowing, which is what a receive thread past its knee
-# physically is. Measured at three loads on one pod: zero over a whole run at 50 streams, 227,135
-# over a marginal run at 100, and 13,000 a second at 250. Sustained non-zero means
-# Live__MaxStreams is set too high for the bitrate arriving, and the answer is a lower limit and
-# more pods rather than a bigger one.
-#
-# Which streams are hurt is answered by GET /api/live, not by a metric: every stream carries its
-# own packetsLost and packetsDropped per beat, and because the drops happen on the one shared UDP
-# socket every SRT socket behind it reports them, so one call names all of them.
+# the packet.
+# Which streams are hurt is answered by GET /api/live, not by a metric: every stream carries its own
+# packetsLost and packetsDropped per beat, and because the drops happen on the one shared UDP socket
+# every SRT socket behind it reports them, so one call names all of them.
 #
 # DECIDE OVER A WINDOW OF BEATS, NOT ON ONE.
-#
-# The per-stream figures are an interval cleared each beat, and near the knee they are noisy: at
-# 100 streams six consecutive beats read 0, 0, 27, 10, 0, 7, while at 250 every beat on every
-# socketed stream was non-zero. A rule that fires on a single beat would flap on a pod that is
-# merely marginal. Alert on a rate over at least fifteen beats - increase(live_udp_receive_errors)
-# over 30s - and leave behavior.scaleDown.stabilizationWindowSeconds at its default of 300 s for
-# the same reason: encoders that land on a pod about to go reconnect in seconds, so a scale-down is
-# cheap and there is no reason to hurry one.
+# The per-stream figures are an interval cleared each beat, and near the knee they are noisy: at 100
+# streams six consecutive beats read 0, 0, 27, 10, 0, 7, while at 250 every beat on every socketed
+# stream was non-zero.
 #
 # SCALE DOWN THE EMPTIEST POD FIRST.
-#
 # The HPA only sets a replica count; which pod goes is the ReplicaSet controller's choice, and the
 # only handle on it is the annotation controller.kubernetes.io/pod-deletion-cost - an int32 that
-# defaults to 0, where the lower cost is deleted first. It is beta and enabled by default since
-# v1.21, and best-effort. A pod writing its own stream count there would be drained in order of how
-# little it holds, which is the difference between a scale-down that moves five encoders and one
-# that moves sixty.
+# defaults to 0, where the lower cost is deleted first.
 #
-# NOTHING DOES THIS TODAY, AND IT CANNOT YET. The storage-demo ServiceAccount in
-# k8s/deployment.yaml (and its twin in k8s/talos/60-app.yaml) has no Role and no RoleBinding
-# anywhere in k8s/, so the pods hold an API token that can do nothing but discovery. Writing the
-# annotation needs both the code and this, applied in the same namespace:
-#
+# NOTHING DOES THIS TODAY, AND IT CANNOT YET. The storage-demo ServiceAccount in k8s/deployment.yaml
+# (and its twin in k8s/talos/60-app.yaml) has no Role and no RoleBinding anywhere in k8s/, so the
+# pods hold an API token that can do nothing but discovery.
 #   apiVersion: rbac.authorization.k8s.io/v1
 #   kind: Role
 #   metadata: { name: storage-demo-pod-deletion-cost, namespace: storage-demo }
@@ -403,6 +310,5 @@ spec:
 #   subjects:
 #     - { kind: ServiceAccount, name: storage-demo, namespace: storage-demo }
 #
-# Left commented because it is patch on every pod in the namespace: Kubernetes RBAC cannot say
-# "only itself", and granting that to a pod that does not use it is a standing permission for
-# nothing. Apply it with the code that writes the annotation and not before.
+# Left commented because it is patch on every pod in the namespace: Kubernetes RBAC cannot say "only
+# itself", and granting that to a pod that does not use it is a standing permission for nothing.

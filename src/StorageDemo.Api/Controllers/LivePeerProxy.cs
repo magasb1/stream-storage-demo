@@ -7,21 +7,7 @@ using StorageDemo.Infrastructure.Streaming;
 
 namespace StorageDemo.Api.Controllers;
 
-/// <summary>
-/// Reaches the replica that owns a stream.
-///
-/// Only the owner has the bytes and only the owner can act on a stream, so a call landing anywhere
-/// else is routed rather than refused. This is what lets a caller keep talking to one address
-/// while the stream itself exists on exactly one pod.
-///
-/// The address is the one the owner recorded when it claimed the name, not one derived from a
-/// predictable pod name. That is what allows a Deployment instead of a StatefulSet, and it deletes
-/// the headless Service and the per-pod ingest Services with it.
-///
-/// Media never travels over the API port to a viewer. It travels over it between two pods, which is
-/// what this was built for: a viewer that lands on the wrong replica is served from the owner
-/// through here, and only the last hop to the player is SRT.
-/// </summary>
+/// <summary>Reaches the replica that owns a stream.</summary>
 public sealed class LivePeerProxy(
     IHttpClientFactory clients,
     ILiveStreamService live,
@@ -30,7 +16,7 @@ public sealed class LivePeerProxy(
 {
     public string Owner => live.Owner;
 
-    /// <summary>Reads a stream of bytes from the owner. Null when it cannot be reached.</summary>
+    /// <summary>Reads a stream of bytes from the owner.</summary>
     public async Task<Stream?> OpenAsync(LiveStream stream, string path, CancellationToken cancellationToken)
     {
         if (Address(stream, path) is not { } address)
@@ -57,9 +43,6 @@ public sealed class LivePeerProxy(
         {
             logger.LogWarning(ex, "Could not read from {Address}", address);
 
-            // The registry can name a pod that is already gone - a force-killed replica leaves its
-            // entry behind until its heartbeat goes stale - so this is the count that says a
-            // cluster is carrying a dead owner rather than a failing network.
             metrics.Peered("media", "unreachable");
 
             return null;
@@ -68,9 +51,7 @@ public sealed class LivePeerProxy(
 
     /// <summary>
     /// Asks the owner a question and reads its JSON answer as a value, for a caller that is not
-    /// itself an HTTP response. Null when the owner cannot be reached or answered anything but OK.
-    /// A GET with no body unless told otherwise; the detection toggle is the one control call the
-    /// gRPC surface forwards with a body.
+    /// itself an HTTP response.
     /// </summary>
     public async Task<T?> FetchAsync<T>(
         LiveStream stream,
@@ -121,11 +102,7 @@ public sealed class LivePeerProxy(
         }
     }
 
-    /// <summary>
-    /// Repeats a control call against the owner and hands back its answer. Null when the owner
-    /// cannot be reached, which the caller reports as the stream not being found: an owner nobody
-    /// can talk to is indistinguishable from a stream that is gone.
-    /// </summary>
+    /// <summary>Repeats a control call against the owner and hands back its answer.</summary>
     public async Task<IActionResult?> RelayAsync(
         LiveStream stream,
         HttpMethod method,
@@ -160,9 +137,6 @@ public sealed class LivePeerProxy(
 
             var content = await response.Content.ReadAsStringAsync(cancellationToken);
 
-            // A forwarded call is counted for having been forwarded and answered. Whether the
-            // owner's answer was a 404 is the caller's business and travels back untouched, which is
-            // why "refused" here means the hop failed rather than the request did.
             metrics.Peered("control", response.IsSuccessStatusCode ? "ok" : "refused");
 
             return new ContentResult

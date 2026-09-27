@@ -1,8 +1,6 @@
 # A demo database only.
-#
 # Production PostgreSQL belongs on a managed service (RDS, Cloud SQL, Azure Database) or under a
-# real operator with backups, failover and patching. A single pod with one volume has none of that:
-# delete it and the data is gone. It exists here so the manifests apply on a laptop cluster.
+# real operator with backups, failover and patching.
 apiVersion: v1
 kind: Secret
 metadata:

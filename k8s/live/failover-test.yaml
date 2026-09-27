@@ -1,17 +1,13 @@
-# The failover rig: one producer pushing a named stream, one viewer pulling it back, both
-# reporting a timestamped frame counter. It exists so that "what does losing a replica cost" is a
-# number rather than an argument.
-#
+# The failover rig: one producer pushing a named stream, one viewer pulling it back, both reporting
+# a timestamped frame counter.
 #   kubectl apply -f k8s/live/failover-test.yaml
 #   kubectl -n storage-demo logs -f deploy/srt-viewer
 #
 # Which pod owns the stream is in the registry, and any replica will tell you:
-#
 #   kubectl -n storage-demo exec deploy/srt-producer -- \
 #     wget -qO- --header='X-Storage-Token: local-demo-token' http://storage-demo:80/api/live
 #
 # Then delete that pod and read the gap between two consecutive frame lines in each log.
-# The measured result is written up in docs/replica-failover.md.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -79,19 +75,8 @@ spec:
               apk add --no-cache ffmpeg >/dev/null
               # A bare name rather than the convention's envelope: that starts with '#', which has
               # to be written %23 in a URL, and FFmpeg versions disagree about when they decode it.
-              # A bare name has no '#' and works on all of them.
-              #
-              # The probe limits matter as much as anything the server does. libav reads five
-              # seconds of a transport stream before deciding what is in it, and on a reconnect
-              # that wait is most of what somebody watching experiences as downtime. Raise them
-              # for a camera whose audio starts late; the symptom is a stream with no sound.
-              #
-              # Decodes and discards, reporting a timestamped frame counter once a second. The gap
-              # between two consecutive lines is what a replica disappearing costs somebody
-              # watching; a counter that carries on rather than restarting means the connection
-              # itself survived. The service holds a viewer's connection open across a stream
-              # moving between replicas, so "connecting" appearing again means the pod holding
-              # THIS viewer went away, not the pod holding the stream.
+              # The probe limits matter as much as anything the server does.
+              # Decodes and discards, reporting a timestamped frame counter once a second.
               while true; do
                 echo "$(date -u +%T) connecting"
                 ffmpeg -hide_banner -loglevel warning \

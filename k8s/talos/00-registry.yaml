@@ -1,14 +1,9 @@
 # A registry for getting this image onto Talos nodes, which have no Docker and pull only from a
 # registry.
-#
-# Temporary and deliberately disposable: no persistence, no authentication, plain HTTP. It exists
-# so a locally built image can be pushed somewhere the nodes can reach, and it is paired with a
-# machine config patch that allows exactly this address as an insecure mirror:
-#
+# Temporary and deliberately disposable: no persistence, no authentication, plain HTTP.
 #   talosctl patch mc -n <node> --patch @k8s/talos/talos-registry-patch.yaml
 #
-# Delete the namespace and revert that patch when you are finished. Nothing else depends on it:
-# the application's own image reference is the only thing that names it.
+# Delete the namespace and revert that patch when you are finished.
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -49,7 +44,6 @@ spec:
         app: registry
     spec:
       # This cluster enforces the restricted Pod Security standard, which wants all four of these.
-      # fsGroup is what makes the image directory writable to a non-root user.
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000

@@ -9,36 +9,15 @@ using StorageDemo.Infrastructure.Media;
 
 namespace StorageDemo.Tests.Infrastructure;
 
-/// <summary>
-/// Real <c>ffmpeg</c> processes as SRT callers, shared by every test that needs one.
-///
-/// A listener can only be tested against something that actually speaks the handshake, and the
-/// fetched FFmpeg has SRT as a caller, so it is the sender. Nothing here knows what is being tested;
-/// it knows how to start a caller, how to tell whether one was turned away, and how to say what the
-/// callers complained about when a test fails.
-/// </summary>
+/// <summary>Real <c>ffmpeg</c> processes as SRT callers, shared by every test that needs one.</summary>
 internal static class SrtSenders
 {
-    /// <summary>
-    /// FFmpeg's own line when a connection could not be opened, from <c>libsrt.c</c>. It is all a
-    /// test can lean on: FFmpeg's caller path never asks libsrt for the rejection reason, so a
-    /// refusal and a dead port read the same on stderr. Kept here so an FFmpeg that rewords it
-    /// breaks one place rather than three tests.
-    /// </summary>
+    /// <summary>FFmpeg's own line when a connection could not be opened, from <c>libsrt.c</c>.</summary>
     private const string RefusalPrefix = "Connection to srt://";
 
     private static readonly ConcurrentDictionary<int, StringBuilder> Stderr = new();
 
-    /// <summary>An encoder pushing into a listening port. Null presents no identifier at all.</summary>
-    /// <param name="callerOptions">
-    /// Further SRT options for the caller, written as they would be in the URL, for a test about
-    /// what the two ends negotiate. FFmpeg's time options are microseconds.
-    /// </param>
-    /// <param name="file">
-    /// A transport stream to push as it is, every stream in it, instead of a synthetic picture.
-    /// This is how a stream carrying something the command line cannot synthesise, such as KLV,
-    /// reaches the service.
-    /// </param>
+    /// <summary>An encoder pushing into a listening port.</summary>
     public static Process StartSender(int port, string? streamId, string? callerOptions = null, string? file = null)
         => Start(
         [
@@ -52,12 +31,10 @@ internal static class SrtSenders
             "-f", "mpegts", Target(port, streamId, callerOptions),
         ]);
 
-    /// <summary>A video-only transport stream of the synthetic picture, at the settings <see cref="StartSender"/> sends.</summary>
-    /// <param name="image">
-    /// A still to show for the whole duration instead of the synthetic picture, at its own size
-    /// and near-lossless, so a detector sees the picture the file holds rather than the codec's
-    /// idea of it. This is how a known image becomes a stream.
-    /// </param>
+    /// <summary>
+    /// A video-only transport stream of the synthetic picture, at the settings <see
+    /// cref="StartSender"/> sends.
+    /// </summary>
     public static void Render(string path, int seconds, string? image = null)
     {
         var startInfo = new ProcessStartInfo(Ffmpeg.ExecutablePath)
@@ -93,12 +70,7 @@ internal static class SrtSenders
         Assert.True(process.ExitCode == 0, $"ffmpeg could not render the video: {complaints}");
     }
 
-    /// <summary>
-    /// A caller that connects and then waits to be sent something. It is also the only way to get a
-    /// connected SRT peer that sends no application bytes at all: an encoder always writes a header
-    /// the moment the socket opens, and libsrt's caller side is not exposed to this test assembly.
-    /// </summary>
-    /// <inheritdoc cref="StartSender" path="/param[@name='callerOptions']"/>
+    /// <summary>A caller that connects and then waits to be sent something.</summary>
     public static Process StartPlayer(int port, string streamId, string? callerOptions = null)
         => Start([
             "-hide_banner", "-loglevel", "error",
@@ -106,13 +78,7 @@ internal static class SrtSenders
             "-f", "null", "-",
         ]);
 
-    /// <summary>
-    /// A player that decodes what it is given and reports how far it has got.
-    ///
-    /// The progress goes through <c>-progress</c> rather than ffmpeg's own statistics line, which is
-    /// tied to the log level and would have to be turned back on. This is the difference between
-    /// proving a connection was made and proving media came down it.
-    /// </summary>
+    /// <summary>A player that decodes what it is given and reports how far it has got.</summary>
     public static Process StartViewer(int port, string streamId)
         => Start([
             "-hide_banner", "-loglevel", "error", "-progress", "pipe:2",
@@ -123,9 +89,7 @@ internal static class SrtSenders
     /// <summary>
     /// The far end for a listening SRT forward this test suite dials out to: mode=listener rather
     /// than <see cref="Target"/>'s caller, which is the shape a forward opened with
-    /// <c>?mode=listener</c> in its own URL expects on the other side of the wire. Decodes and
-    /// reports progress the same way <see cref="StartViewer"/> does, proving media arrived rather
-    /// than only that a connection was accepted.
+    /// <c>?mode=listener</c> in its own URL expects on the other side of the wire.
     /// </summary>
     public static Process StartListener(int port, string? streamId = null)
         => Start([
@@ -144,9 +108,6 @@ internal static class SrtSenders
 
     /// <summary>
     /// Whether this caller was turned away rather than served: it gave up quickly and said so.
-    ///
-    /// Corroboration only. A caller that was accepted and then dropped complains in exactly the same
-    /// words, so whoever calls this must also assert that the accept handler never fired.
     /// </summary>
     public static async Task<bool> WasRefused(Process caller, TimeSpan? within = null)
     {
@@ -158,7 +119,7 @@ internal static class SrtSenders
         }
         catch (OperationCanceledException)
         {
-            // Still running, so it got in. A rejection is immediate; there is nothing to wait for.
+            // Still running, so it got in.
             return false;
         }
 
@@ -199,10 +160,7 @@ internal static class SrtSenders
         caller.Dispose();
     }
 
-    /// <param name="describe">
-    /// What to say when it never came true. Worth passing: "the condition was false" sends the
-    /// next reader back to the source to work out which half of it failed.
-    /// </param>
+    /// <param name="describe">What to say when it never came true.</param>
     public static async Task WaitUntilAsync(
         Func<bool> condition,
         TimeSpan timeout,
@@ -223,11 +181,7 @@ internal static class SrtSenders
         Assert.Fail($"{describe?.Invoke() ?? "the condition was still false"} after {timeout}");
     }
 
-    /// <summary>
-    /// A free port from a low, fixed range rather than an ephemeral one. Windows reserves stretches
-    /// of the dynamic range, so a port can be handed out and then refuse an explicit bind moments
-    /// later, which looks exactly like a listener that will not start.
-    /// </summary>
+    /// <summary>A free port from a low, fixed range rather than an ephemeral one.</summary>
     private static int _nextPort = 9400;
 
     public static int FreePort()
@@ -259,9 +213,7 @@ internal static class SrtSenders
 
     /// <summary>
     /// Only the hash, which is the one character of the Access Control envelope a URL would read as
-    /// the start of a fragment. FFmpeg 7 and later percent-decode the identifier before the
-    /// handshake; an older one passes <c>%23</c> straight through, and <c>StreamName</c> understands
-    /// that form too, so escaping this way works either side of that change.
+    /// the start of a fragment.
     /// </summary>
     private static string Escape(string streamId)
         => streamId.Replace("#", "%23", StringComparison.Ordinal);
@@ -287,8 +239,7 @@ internal static class SrtSenders
 
         var caller = Process.Start(startInfo)!;
 
-        // Drained, not merely redirected. A pipe nobody reads fills and stops the caller, and the
-        // test then fails as "nothing was accepted" with the reason sitting unread in the pipe.
+        // Drained, not merely redirected.
         var complaints = new StringBuilder();
         Stderr[caller.Id] = complaints;
 

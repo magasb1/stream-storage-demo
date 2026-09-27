@@ -3,22 +3,14 @@ using FFmpeg.AutoGen.Abstractions;
 
 namespace StorageDemo.Infrastructure.Media;
 
-/// <summary>
-/// Turns one decoded picture into a JPEG.
-///
-/// It sits on its own because three callers want it and they want different sizes: a document
-/// thumbnail and a live preview are tiles in a grid, and a snapshot is a document someone opens.
-/// Only the box and the quality differ, so only those are parameters.
-/// </summary>
+/// <summary>Turns one decoded picture into a JPEG.</summary>
 public static unsafe class JpegEncoder
 {
-    /// <summary>swscale's flag for bilinear scaling. The bindings expose the colourspace
-    /// constants but not the algorithm ones, so it is spelled out here.</summary>
+    /// <summary>swscale's flag for bilinear scaling.</summary>
     private const int Bilinear = 2;
 
-    /// <param name="maxEdge">Longest edge of the result. Zero or less keeps the source size.</param>
+    /// <param name="maxEdge">Longest edge of the result.</param>
     /// <param name="quality">libav's scale, where 1 is best and 31 is worst.</param>
-    /// <returns>Encoded JPEG, or null when the frame or the loaded libav cannot produce one.</returns>
     public static byte[]? Encode(AVFrame* source, int maxEdge, int quality)
     {
         if (source->width <= 0 || source->height <= 0)
@@ -32,8 +24,6 @@ public static unsafe class JpegEncoder
             return null;
         }
 
-        // Ask the encoder what it accepts rather than assuming. JPEG's full-range 4:2:0 is what
-        // every mjpeg encoder offers first, but reading it beats hardcoding a deprecated constant.
         var target = PreferredPixelFormat(encoder);
 
         var (width, height) = Fit(source->width, source->height, maxEdge);

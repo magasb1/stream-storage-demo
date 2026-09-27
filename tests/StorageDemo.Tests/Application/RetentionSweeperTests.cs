@@ -99,8 +99,7 @@ public sealed class RetentionSweeperTests
     [Fact]
     public async Task An_earlier_recording_of_a_stream_that_is_recording_now_still_expires()
     {
-        // The open check is per recording, not per stream. A camera recording continuously would
-        // otherwise never expire anything it had ever produced.
+        // The open check is per recording, not per stream.
         var earlier = Recording("cam-1", Ago(30));
         var running = Recording("cam-1", Ago(29));
         await _registry.UpsertAsync(Live("cam-1", Recorded(running.CreatedAt)));
@@ -113,8 +112,7 @@ public sealed class RetentionSweeperTests
 
     /// <summary>
     /// The sweeper tells a capture from an upload by one metadata key, so a capture carrying a new
-    /// one must still be swept and an upload must still be safe. A detection reference is one more
-    /// entry beside the keys it reads, never a replacement for them.
+    /// one must still be swept and an upload must still be safe.
     /// </summary>
     [Fact]
     public async Task A_capture_with_a_detection_reference_is_still_told_from_an_upload()
@@ -274,7 +272,9 @@ public sealed class RetentionSweeperTests
         });
     }
 
-    /// <summary>A snapshot names its stream but has no start time, because nothing is still writing it.</summary>
+    /// <summary>
+    /// A snapshot names its stream but has no start time, because nothing is still writing it.
+    /// </summary>
     private Document Snapshot(string stream, DateTimeOffset takenAt, DetectionReference? detection = null)
     {
         var id = Guid.NewGuid();
