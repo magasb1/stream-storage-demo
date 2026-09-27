@@ -1,11 +1,8 @@
-using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Globalization;
 using System.Net;
 using System.Net.Sockets;
-using System.Text;
 using System.Text.RegularExpressions;
-using StorageDemo.Infrastructure.Media;
 
 namespace StorageDemo.Tests.Infrastructure;
 
@@ -26,8 +23,6 @@ internal static class SrtSenders
     /// breaks one place rather than three tests.
     /// </summary>
     private const string RefusalPrefix = "Connection to srt://";
-
-    private static readonly ConcurrentDictionary<int, StringBuilder> Stderr = new();
 
     /// <summary>An encoder pushing into a listening port. Null presents no identifier at all.</summary>
     /// <param name="callerOptions">
@@ -60,22 +55,26 @@ internal static class SrtSenders
     /// </param>
     public static void Render(string path, int seconds, string? image = null)
     {
-        using var process = BundledFfmpeg.Start(
-            Ffmpeg.ExecutablePath,
-            [
-                "-hide_banner", "-loglevel", "error", "-y",
-                .. image is null
-                    ? (string[])["-f", "lavfi", "-i", "testsrc=size=320x240:rate=15", "-c:v", "mpeg2video", "-b:v", "800k"]
-                    : ["-loop", "1", "-framerate", "15", "-i", image, "-c:v", "mpeg2video", "-q:v", "2", "-pix_fmt", "yuv420p"],
-                "-g", "15",
-                "-t", seconds.ToString(CultureInfo.InvariantCulture),
-                "-f", "mpegts", path,
-            ]);
+        string[] arguments =
+        [
+            "-hide_banner", "-loglevel", "error", "-y",
+            .. image is null
+                ? (string[])["-f", "lavfi", "-i", "testsrc=size=320x240:rate=15", "-c:v", "mpeg2video", "-b:v", "800k"]
+                : ["-loop", "1", "-framerate", "15", "-i", image, "-c:v", "mpeg2video", "-q:v", "2", "-pix_fmt", "yuv420p"],
+            "-g", "15",
+            "-t", seconds.ToString(CultureInfo.InvariantCulture),
+            "-f", "mpegts", path,
+        ];
 
-        var complaints = process.StandardError.ReadToEnd();
+        using var process = BundledFfmpeg.Start(BundledFfmpeg.Tool.Ffmpeg, arguments);
+
+        // The parameterless overload, which also waits for the drain, so a failure message has
+        // whatever ffmpeg said in it rather than the first half of it.
         process.WaitForExit();
 
-        Assert.True(process.ExitCode == 0, $"ffmpeg could not render the video: {complaints}");
+        Assert.True(
+            process.ExitCode == 0,
+            $"ffmpeg could not render the video: {BundledFfmpeg.Complaints(process)}");
     }
 
     /// <summary>
@@ -252,40 +251,12 @@ internal static class SrtSenders
         => streamId.Replace("#", "%23", StringComparison.Ordinal);
 
     private static Process Start(string[] arguments)
-    {
-        var caller = BundledFfmpeg.Start(Ffmpeg.ExecutablePath, arguments);
+        => BundledFfmpeg.Start(BundledFfmpeg.Tool.Ffmpeg, arguments);
 
-        // Drained, not merely redirected. A pipe nobody reads fills and stops the caller, and the
-        // test then fails as "nothing was accepted" with the reason sitting unread in the pipe.
-        var complaints = new StringBuilder();
-        Stderr[caller.Id] = complaints;
-
-        caller.ErrorDataReceived += (_, line) =>
-        {
-            if (line.Data is not null)
-            {
-                lock (complaints)
-                {
-                    complaints.AppendLine(line.Data);
-                }
-            }
-        };
-
-        caller.BeginErrorReadLine();
-
-        return caller;
-    }
-
-    private static string Said(Process caller)
-    {
-        if (!Stderr.TryGetValue(caller.Id, out var text))
-        {
-            return string.Empty;
-        }
-
-        lock (text)
-        {
-            return text.ToString().Trim();
-        }
-    }
+    /// <summary>
+    /// What this caller complained about. Drained from the moment it started, which is not a detail:
+    /// a pipe nobody reads fills and stops the caller, and the test then fails as "nothing was
+    /// accepted" with the reason sitting unread in the pipe.
+    /// </summary>
+    private static string Said(Process caller) => BundledFfmpeg.Complaints(caller);
 }

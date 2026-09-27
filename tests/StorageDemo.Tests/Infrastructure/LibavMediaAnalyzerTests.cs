@@ -162,7 +162,10 @@ public sealed class LibavMediaAnalyzerTests : IDisposable
     private async Task<string> GenerateAsync(string fileName, string[] arguments)
     {
         var path = Path.Combine(_directory, fileName);
-        await RunAsync(Ffmpeg.ExecutablePath, ["-hide_banner", "-loglevel", "error", .. arguments, "-y", path]);
+
+        await RunAsync(
+            BundledFfmpeg.Tool.Ffmpeg,
+            ["-hide_banner", "-loglevel", "error", .. arguments, "-y", path]);
 
         Assert.True(File.Exists(path), $"ffmpeg did not generate {fileName}");
 
@@ -175,7 +178,7 @@ public sealed class LibavMediaAnalyzerTests : IDisposable
         await File.WriteAllBytesAsync(path, image);
 
         var output = await RunAsync(
-            Ffmpeg.ProbePath,
+            BundledFfmpeg.Tool.Ffprobe,
             [
                 "-v", "error",
                 "-select_streams", "v:0",
@@ -189,14 +192,17 @@ public sealed class LibavMediaAnalyzerTests : IDisposable
         return (int.Parse(parts[0]), int.Parse(parts[1]));
     }
 
-    private static async Task<string> RunAsync(string executable, string[] arguments)
+    private static async Task<string> RunAsync(BundledFfmpeg.Tool tool, string[] arguments)
     {
-        using var process = BundledFfmpeg.Start(executable, arguments, readOutput: true);
+        using var process = BundledFfmpeg.Start(tool, arguments, readOutput: true);
         var output = await process.StandardOutput.ReadToEndAsync();
-        var error = await process.StandardError.ReadToEndAsync();
         await process.WaitForExitAsync();
 
-        Assert.True(process.ExitCode == 0, $"{Path.GetFileName(executable)} failed: {error}");
+        // Again, parameterless: the asynchronous wait does not promise that the drained standard
+        // error has reached the buffer, and it is the whole failure message.
+        process.WaitForExit();
+
+        Assert.True(process.ExitCode == 0, $"{tool} failed: {BundledFfmpeg.Complaints(process)}");
 
         return output;
     }

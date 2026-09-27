@@ -35,7 +35,7 @@ public sealed class MediaAnalyzerFrameTests : IDisposable
         var path = Path.Combine(_directory, name);
 
         Run(
-            Ffmpeg.ExecutablePath,
+            BundledFfmpeg.Tool.Ffmpeg,
             [
                 "-hide_banner", "-loglevel", "error",
                 "-f", "lavfi", "-i", $"testsrc=size=320x240:duration={duration}:rate=10",
@@ -145,7 +145,7 @@ public sealed class MediaAnalyzerFrameTests : IDisposable
         File.WriteAllBytes(path, image);
 
         var parts = Run(
-            Ffmpeg.ProbePath,
+            BundledFfmpeg.Tool.Ffprobe,
             [
                 "-v", "error",
                 "-select_streams", "v:0",
@@ -157,14 +157,13 @@ public sealed class MediaAnalyzerFrameTests : IDisposable
         return (int.Parse(parts[0]), int.Parse(parts[1]));
     }
 
-    private static string Run(string executable, string[] arguments)
+    private static string Run(BundledFfmpeg.Tool tool, string[] arguments)
     {
-        using var process = BundledFfmpeg.Start(executable, arguments, readOutput: true);
+        using var process = BundledFfmpeg.Start(tool, arguments, readOutput: true);
         var output = process.StandardOutput.ReadToEnd();
-        var error = process.StandardError.ReadToEnd();
         process.WaitForExit();
 
-        Assert.True(process.ExitCode == 0, $"{Path.GetFileName(executable)} failed: {error}");
+        Assert.True(process.ExitCode == 0, $"{tool} failed: {BundledFfmpeg.Complaints(process)}");
 
         return output;
     }

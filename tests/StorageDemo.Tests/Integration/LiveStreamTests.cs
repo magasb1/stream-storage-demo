@@ -912,15 +912,15 @@ public sealed class LiveStreamTests : IAsyncLifetime
     /// <summary>How many seconds of media the file holds, as the bundled ffprobe reads it.</summary>
     private static double Probe(string path)
     {
-        using var process = BundledFfmpeg.Start(
-            Ffmpeg.ProbePath,
-            [
-                "-v", "error",
-                "-show_entries", "format=duration",
-                "-of", "csv=p=0",
-                path,
-            ],
-            readOutput: true);
+        string[] arguments =
+        [
+            "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "csv=p=0",
+            path,
+        ];
+
+        using var process = BundledFfmpeg.Start(BundledFfmpeg.Tool.Ffprobe, arguments, readOutput: true);
 
         var output = process.StandardOutput.ReadToEnd().Trim();
         process.WaitForExit();
@@ -1033,9 +1033,9 @@ public sealed class LiveStreamTests : IAsyncLifetime
             : ["-i", file, "-map", "0", "-c", "copy"];
 
         // Paced at wall-clock speed either way: SRT is a connection, not a file copy.
-        var sender = BundledFfmpeg.Start(
-            Ffmpeg.ExecutablePath,
-            ["-hide_banner", "-loglevel", "error", "-re", .. source, "-f", "mpegts", target]);
+        string[] arguments = ["-hide_banner", "-loglevel", "error", "-re", .. source, "-f", "mpegts", target];
+
+        var sender = BundledFfmpeg.Start(BundledFfmpeg.Tool.Ffmpeg, arguments);
         _senders.Add(sender);
 
         return sender;

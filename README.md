@@ -150,9 +150,10 @@ The SRT tests skip rather than fail when SRT is missing, and name the script to 
 built with it, which is what dials out for a pulled stream or a relayed viewer. Both are Windows
 only — the FFmpeg one fetches a win64 build into `ffmpeg/win-x64` — while `Directory.Build.targets`
 overlays every runtime folder it finds under `ffmpeg/`. That overlay is how a Linux developer gets
-SRT: libsrt from the distro package (`libsrt1.5-openssl`, as `docker/Dockerfile` does), and a shared
-FFmpeg of the pinned version placed in `ffmpeg/linux-x64` by hand. Without it the live suite still
-runs green, having covered less.
+the FFmpeg half: a shared build of the pinned version, placed in `ffmpeg/linux-x64` by hand. The
+listener's own libsrt is a separate matter and comes from the system loader path, the distro package
+(`libsrt1.5-openssl`, as `docker/Dockerfile` does). Without both the live suite still runs green,
+having covered less.
 
 ## Migrations
 
