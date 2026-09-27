@@ -10,6 +10,11 @@ namespace StorageDemo.Tests.Integration;
 /// has been running the rest of the suite is already grown, so blocking two dozen workers needs no
 /// new ones and the bound holds while the fault it exists to catch is present.
 ///
+/// It cuts both ways, which is why one collection serves both kinds of test in here. A thread-count
+/// bound false-passes beside a busy neighbour; a load test that takes every core the machine has
+/// makes its neighbours time out, because the rest of the live suite measures grace periods against
+/// a wall clock. Run either in parallel with anything and both halves lie.
+///
 /// The ONNX tests have a collection of their own for the same reason.
 /// </summary>
 [CollectionDefinition(Name, DisableParallelization = true)]

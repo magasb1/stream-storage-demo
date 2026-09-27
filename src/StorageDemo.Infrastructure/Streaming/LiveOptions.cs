@@ -231,6 +231,14 @@ public sealed class LiveOptions
     /// scheduling or network hiccup costs nothing, and short enough that the skip when one does not
     /// recover is a correction rather than a jump out of the recent past. Overflowing costs the
     /// wait for the next keyframe on top of this, which is why it is not shorter.
+    ///
+    /// Four is what measured clean rather than what was argued for: at this depth five hundred and
+    /// fifty healthy readers against two hundred streams skipped nothing at all, while two hundred
+    /// deliberately slow ones skipped about once every six seconds each, which is this protection
+    /// working. The case for a larger figure - that four seconds is two keyframe intervals, and thin
+    /// against a collection pause, a retransmit burst or a handover - is untested, because the rig
+    /// behind those numbers has no way to make a reader stall in bursts rather than steadily. See
+    /// .scratch/scale-to-1000/ingest-and-readers.md.
     /// </summary>
     [Range(0.25, 60)]
     public double ViewerQueueSeconds { get; init; } = 4;

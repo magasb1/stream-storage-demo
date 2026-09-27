@@ -372,3 +372,71 @@ slow player, and this rig can hold three hundred of them.
   third of it.
 - The socket path for relayed readers, still: they are in-memory, which is the same caveat as part one
   and the reason the 76-second row is presented as an artifact rather than a result.
+
+# Part three: after the fix
+
+Measured on the branch that became #19, same machine, same rig, same invocations as the runs above.
+
+## The slow-viewer signature is gone
+
+```
+LIVE_SCALE=1 LIVE_SCALE_STREAMS=100 LIVE_SCALE_READERS=100,200 \
+  LIVE_SCALE_SLOW_READERS=200 LIVE_SCALE_SLOW_DELAY_MS=3000 LIVE_SCALE_DIRECT_READERS=0
+```
+
+| slow relayed readers | pool workers before | pool workers after | process threads after | skips per window after |
+| --- | --- | --- | --- | --- |
+| 0 | 12 | 11 | 233 | 0 |
+| 100 | 118 | **7** | 230 | 200 |
+| 200 | **219** | **7** | 229 | ~500 |
+
+One worker per slow viewer, gone. Ingest never noticed either run: 0.75 Mbit/s per stream, the receive
+worker at 8–9 %, nothing lost, no kernel drops.
+
+**And the skips arrived, which is the other half of the claim.** They were zero before only because the
+queue was eighty seconds deep; at four seconds a reader taking a fifth of the stream exhausts it and
+skips forward. The rate is about 2.5 skips per reader per fifteen-second window — one refill cycle
+every six seconds or so, which is what a 4 s queue draining at a 0.7 Mbit/s deficit arithmetically
+gives. The review predicted "once per GOP", roughly ten times more; the mechanism it described was
+right and its repeat rate was not. Every reader stayed attached and kept receiving throughout, so
+these are viewers skipping repeatedly rather than viewers being dropped.
+
+## The healthy majority is untouched
+
+The default sweep, 200 streams then readers to 550, all of them draining promptly:
+
+| streams | readers | Mbit/s in | of rig | Mbit/s out | RcvQ:w | pod | RSS | pool | skips |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 200 | 0 | 0.74 | 100 % | – | 14 % | 1.0 | 1.53 GiB | 6 | 0 |
+| 200 | 200 | 0.75 | 101 % | 0.87 | 14 % | 1.2 | 2.07 GiB | 6 | 0 |
+| 200 | 550 | 0.74 | 101 % | 0.87 | 14 % | 1.3 | 1.95 GiB | 6 | **0** |
+
+Every reader at the full wire rate, **not one skip**, ingest and processor unchanged against part one
+(1.3–1.4 cores either way). Resident memory is up by roughly 100–200 MB at 550 readers, which is the
+per-viewer buffer at its 64 KB starting size plus whatever a burst grew it to — the one cost the write
+path added.
+
+Capture work at that load, with #17's decode valve now in place: **200 snapshots in 0.5 s** (0.27 s
+median, against 0.38 s median and 0.77 s slowest before the valve existed), 200 recordings all
+stored, 1047 MiB, **no truncations** — which is the recorder revert verified at scale rather than
+argued. The thread pool queued up to 1,025 items during the snapshot storm and stayed at twelve
+workers, so the queue drains rather than starving.
+
+## What this run does and does not settle about `ViewerQueueSeconds`
+
+It stays at **4**. At that depth 550 healthy readers skipped nothing, so there is no measured reason
+to raise it.
+
+The review's argument for 6–8 s — that four seconds is two GOPs at a common keyframe interval, and
+thin against a GC pause, a retransmit burst or a mobile handover — is **not refuted by this run,
+because this rig cannot produce jitter**. Its readers are in-process and drain promptly or not at all.
+A real network's badly-timed four-second stall is exactly the case the rig has no way to generate, and
+the honest position is that the default is the value measured clean here, the argument for a larger
+one is untested, and the option is the dial. Testing it properly needs a reader that stalls in bursts
+rather than steadily, which is a rig change, not a code change.
+
+## Corrected earlier, and worth restating here
+
+The document tail now reads **0.0–0.1 s after the final recorder stopped** in both runs, measured from
+the corrected anchor. That is the independent confirmation that the withdrawn finding in part two was
+an artefact of where the stopwatch started: there was never a queue of document writes.

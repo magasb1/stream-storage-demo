@@ -15,20 +15,6 @@ using StorageDemo.Tests.Infrastructure;
 namespace StorageDemo.Tests.Integration;
 
 /// <summary>
-/// Runs alone, and nothing else runs while it does.
-///
-/// Fifty encoders, fifty recordings and a wall of previews take every core the machine has, and the
-/// rest of the live suite measures grace periods against a wall clock - which is why the ONNX tests
-/// already have a collection of their own, for the same reason. Run in parallel with anything and
-/// both halves lie: this test reads a machine it is sharing, and its neighbours time out.
-/// </summary>
-[CollectionDefinition(Name, DisableParallelization = true)]
-public sealed class LoadCollection
-{
-    public const string Name = "live-load";
-}
-
-/// <summary>
 /// One replica under the load it is sized for, doing everything it does at once, with the meter as
 /// the subject rather than an aside.
 ///
