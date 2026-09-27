@@ -1,0 +1,17 @@
+# Scrapes the collector, not the service. The API has no metrics endpoint and deliberately does not
+# open one; see src/StorageDemo.Api/Observability/Telemetry.cs.
+global:
+  # Five seconds, against the usual fifteen. The heartbeat this service coordinates on is two
+  # seconds and an interruption is noticed inside thirty, so a scrape interval of fifteen would
+  # average away the events the dashboards exist to show.
+  scrape_interval: 5s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: storage-demo
+    static_configs:
+      - targets: ["otel-collector:8889"]
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

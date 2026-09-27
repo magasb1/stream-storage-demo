@@ -24,6 +24,24 @@ data:
   # Every replica polling the bucket is wasteful; one pass every two minutes is plenty.
   StorageMonitor__IntervalSeconds: "120"
 
+  # Telemetry. The meters exist whether or not this is on - `dotnet-counters monitor -n
+  # StorageDemo.Api --counters StorageDemo.Live` reads every one of them with no package and no
+  # collector - so this decides export and nothing else.
+  #
+  # Off here because the endpoint below is a guess about somebody else's cluster: it names the
+  # OpenTelemetry Operator's default collector Service, and a cluster running Grafana Alloy, the
+  # Datadog agent or a collector in another namespace wants a different address. Set both and the
+  # dashboards in docker/grafana/dashboards apply unchanged; docs/observability.md says what they
+  # read and what to alert on.
+  Telemetry__Enabled: "false"
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://opentelemetry-collector.observability:4317
+
+  # A tenth of the requests, against every one of them in Compose. The live wall is a request per
+  # client per second and a relayed viewer is a request per pod it passes through, so full sampling
+  # in a cluster buys volume rather than insight. Metrics are unsampled and answer "how often";
+  # traces answer "what happened to this one", and a tenth of them still answers it.
+  Telemetry__TraceSampleRatio: "0.1"
+
   # Live streaming. Off here: k8s/live/deployment.yaml switches it on and exposes the two media
   # ports. The token belongs in the Secret next to the others.
   Live__Enabled: "false"

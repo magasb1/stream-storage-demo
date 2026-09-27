@@ -1,0 +1,85 @@
+# The Grafana stack, layered over Scenario C rather than folded into it. Run both files:
+#
+#   docker compose -f docker/docker-compose.yml -f docker/docker-compose.observability.yml up --build
+#
+# Grafana on http://127.0.0.1:3000, signed in, with both dashboards already there.
+#
+# Two files rather than a profile, because this overlay does two things and a profile can only do
+# one of them: it adds four containers, and it switches telemetry on in the API. Export is off by
+# default in appsettings.json - a service that dials out uninvited is a surprise in somebody's
+# egress rules - and a profile cannot change another service's environment, so the plain `up` would
+# have brought up a collector nothing sent anything to.
+#
+# Nothing here changes the application. The API exports OTLP and knows nothing else: replace the
+# collector with Grafana Alloy, or point OTEL_EXPORTER_OTLP_ENDPOINT at a collector you already run,
+# and every dashboard still works.
+services:
+  api:
+    environment:
+      Telemetry__Enabled: "true"
+      # The standard variable rather than Telemetry__Endpoint, because it is the one an operator
+      # already knows and the one every other OpenTelemetry SDK reads.
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      # Every request, which is right for a demo on one machine and wrong for a thousand streams:
+      # the live wall alone is a request per client per second. Lower it in anything real.
+      Telemetry__TraceSampleRatio: "1"
+
+  # The detection worker publishes no meters of its own yet, so it is deliberately left alone.
+  # Adding it later is this same pair of variables and the same AddTelemetry call.
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.142.0
+    command: ["--config=/etc/otel-collector.yaml"]
+    volumes:
+      - ./otel-collector.yaml:/etc/otel-collector.yaml:ro
+    ports:
+      # Published so a local `dotnet run` can export to the collector in Compose, which is how
+      # Scenarios A and B get dashboards without containerising anything.
+      - "4317:4317"
+      - "4318:4318"
+    depends_on:
+      tempo:
+        condition: service_started
+
+  prometheus:
+    image: prom/prometheus:v3.7.3
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=6h
+      # Lets Grafana's exemplar link work, which is the jump from a slow request to its trace.
+      - --enable-feature=exemplar-storage
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+
+  tempo:
+    image: grafana/tempo:2.9.1
+    command: ["-config.file=/etc/tempo.yaml"]
+    user: root
+    volumes:
+      - ./tempo.yaml:/etc/tempo.yaml:ro
+      - tempo-data:/var/tempo
+
+  grafana:
+    image: grafana/grafana:12.4.1
+    environment:
+      # Demo-only, and the reason this stack is not in the default `up`: anonymous admin on a
+      # published port is fine on a laptop and nowhere else.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_FEATURE_TOGGLES_ENABLE: traceqlEditor
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      prometheus:
+        condition: service_started
+
+volumes:
+  prometheus-data:
+  tempo-data:

@@ -97,6 +97,32 @@ the four pictures in [`docs/video-server.drawio`](docs/video-server.drawio) show
 It is off by default (`Live__Enabled`) — switching it on opens a port anyone who can reach it may
 push a stream into, so a deployment opts in rather than inheriting it.
 
+## Observability
+
+OpenTelemetry out, Grafana in front, and neither of them load-bearing.
+
+```bash
+docker compose -f docker/docker-compose.yml -f docker/docker-compose.observability.yml up --build
+# Grafana on :3000, already signed in, with a dashboard each for live streaming and the API
+```
+
+Everything this service measures is a plain `System.Diagnostics.Metrics` instrument, so
+`dotnet-counters monitor -n StorageDemo.Api --counters StorageDemo.Live,StorageDemo.Api`
+reads all of it with no package and nothing configured. `Telemetry:Enabled` adds an OTLP exporter
+to a collector, which is what the Compose overlay above starts, along with Prometheus, Tempo and a
+provisioned Grafana. Export is off by default: the meters are how the service measures itself, and
+dialling out to a collector should be a decision rather than an inheritance.
+
+Two rules keep it honest at a thousand streams. Nothing is tagged with a stream name — that
+question is `GET /api/live`, which lists every stream with its own loss, drop and buffer figures,
+where a metric per stream would be thousands of time series retained long after the stream ended.
+And nothing is measured on the demultiplexer's thread: the hub counts packets and bytes as part of
+publishing them, and the heartbeat reports the interval since it last looked.
+
+What is measured, what each figure actually means, and what to alert on - starting with the kernel
+UDP error counter, which is the only signal that saw the 250-stream collapse while every stream
+still reported itself healthy - is in [`docs/observability.md`](docs/observability.md).
+
 ## Security
 
 - Storage keys are generated, never taken from the client; the filesystem provider refuses any key
