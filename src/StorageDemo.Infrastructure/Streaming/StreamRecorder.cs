@@ -177,8 +177,14 @@ public sealed class StreamRecorder
         // Larger than a viewer's, because overflowing here is not a skip. Exhausting it ends the
         // recording and marks the document truncated: dropping packets to keep going would write
         // a hole into a file that claims to be a recording, and silence is worse than stopping.
+        //
+        // The pre-roll is part of the depth for the same reason it is for a viewer: Subscribe fills
+        // the queue from the buffer before the first live packet, and a queue that cannot hold what
+        // it is seeded with would fail this recording at the moment it started.
         using var subscription = _hub.Subscribe(
-            _options.RecorderQueuePackets,
+            layout.QueueDepth(
+                _options.RecorderQueueSeconds + _options.PrerollSeconds,
+                _options.RecorderQueuePackets),
             OverflowPolicy.Fail,
             streamIndexes: [],
             preroll: _options.PrerollSeconds);

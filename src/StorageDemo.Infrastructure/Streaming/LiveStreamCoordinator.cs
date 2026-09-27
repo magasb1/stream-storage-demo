@@ -710,6 +710,22 @@ public sealed class LiveStreamCoordinator(
     /// During an interruption this simply has nothing to write, and the connection stays open. The
     /// client already knows the stream is interrupted from its state, and closing would push every
     /// viewer into reconnecting at the exact moment a reconnect storm is under way on ingest.
+    ///
+    /// Nothing here holds a thread while a viewer is not reading, and that is the one thing about
+    /// this method worth knowing. It used to: the muxer wrote to the viewer's destination from
+    /// inside libav's own synchronous write callback, so a consumer that stopped draining held the
+    /// thread-pool worker that was writing to it, one worker per slow viewer with nothing bounding
+    /// how many - measured at two hundred slow viewers costing two hundred and nineteen pool
+    /// workers, a ceiling on viewers per replica counted in threads rather than in bandwidth. The
+    /// bytes now land in memory and are handed to the destination between packets, where waiting on
+    /// a viewer costs a continuation. A shallower queue would not have fixed it on its own: an
+    /// overflowing subscription does not unblock a write already in progress.
+    ///
+    /// It bounds what it can bound. A destination with no asynchronous write of its own - an SRT
+    /// socket, which libsrt gives no non-blocking send for short of its own epoll - still occupies
+    /// the thread writing to it, which is what the consumption port has always spent per player,
+    /// slow or not. What has gone is the unbounded half: the relay route, which is every viewer that
+    /// reached the wrong replica, and which now costs nothing per viewer that will not read.
     /// </summary>
     private async Task<double> Serve(
         LiveStreamEntry entry,
@@ -725,13 +741,22 @@ public sealed class LiveStreamCoordinator(
             return continueFromSeconds;
         }
 
+        // The rollback is part of the depth, because Subscribe fills the queue from the buffer
+        // before a live packet ever reaches it: sized for the live slack alone, a viewer asking to
+        // start twenty seconds back would overflow on the way in and lose exactly the rollback it
+        // asked for.
+        var queued = _options.ViewerQueueSeconds + entry.Hub.ResolvePreroll(request.Preroll);
+
         using var subscription = entry.Hub.Subscribe(
-            _options.ViewerQueuePackets,
+            layout.QueueDepth(queued, _options.ViewerQueuePackets),
             OverflowPolicy.SkipToLive,
             streamIndexes: [],
             request.Preroll);
 
-        using var muxer = new PacketMuxer(destination, layout, "mpegts", continueFromSeconds);
+        // The muxer writes into memory and this loop writes memory to the viewer, rather than the
+        // muxer writing to the viewer itself. See the note above on what the difference is worth.
+        using var buffer = new MuxerBuffer();
+        using var muxer = new PacketMuxer(buffer, layout, "mpegts", continueFromSeconds);
 
         // Counted for exactly the life of this subscription, which is exactly the life of one
         // viewer's connection - joined once it has actually subscribed rather than the moment the
@@ -756,6 +781,8 @@ public sealed class LiveStreamCoordinator(
                 {
                     break;
                 }
+
+                await buffer.DrainToAsync(destination, cancellationToken);
             }
 
         }
@@ -765,6 +792,9 @@ public sealed class LiveStreamCoordinator(
         }
         catch (Exception ex)
         {
+            // Where a viewer leaving now arrives. The muxer used to swallow it, because the write
+            // that failed was its own; a refused write reaches this loop instead, and a player that
+            // was closed is still not worth more than a debug line.
             logger.LogDebug(ex, "A viewer of '{Name}' went away", entry.Name);
         }
         finally

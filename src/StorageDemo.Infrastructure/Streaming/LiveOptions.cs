@@ -202,15 +202,61 @@ public sealed class LiveOptions
     public int MaxRecordingMinutes { get; init; } = 12 * 60;
 
     /// <summary>
-    /// Queue depth for a viewer, in packets. Overflowing costs a viewer a skip forward to live,
-    /// which is the right answer for something that must never accumulate delay.
+    /// Queue depth for a viewer, in seconds of media. Overflowing costs a viewer a skip forward to
+    /// live, which is the right answer for something that must never accumulate delay - and this is
+    /// how much delay it may accumulate first, which is the only unit that statement can be made
+    /// in. A viewer's queue is therefore sized per stream, from what the sender is actually
+    /// sending, plus whatever rollback that viewer asked to start from.
+    ///
+    /// This used to be stated in packets, and 2000 of them read as a generous queue right up until
+    /// somebody worked out what it was worth: a packet here is one demultiplexed frame, so at
+    /// twenty-five a second that queue was eighty seconds deep. Skip-to-live never engaged, because
+    /// a viewer would have had to fall more than a minute behind to reach it, and a viewer that far
+    /// behind live is not a viewer any more.
+    ///
+    /// Four seconds: two keyframe intervals at a common two-second setting, so an ordinary
+    /// scheduling or network hiccup costs nothing, and short enough that the skip when one does not
+    /// recover is a correction rather than a jump out of the recent past. Overflowing costs the
+    /// wait for the next keyframe on top of this, which is why it is not shorter.
+    /// </summary>
+    [Range(0.25, 60)]
+    public double ViewerQueueSeconds { get; init; } = 4;
+
+    /// <summary>
+    /// The ceiling on a viewer's queue, in packets, whatever <see cref="ViewerQueueSeconds"/> works
+    /// out to. It is what stops a sender claiming an absurd frame rate from sizing a queue per
+    /// viewer that this replica cannot afford, and it is why the depth above can be expressed in
+    /// seconds at all.
+    ///
+    /// Kept under its old name and its old value, so a deployment that tuned it keeps a bound it
+    /// recognises. What changed is that it is now the greater of the two figures rather than the
+    /// only one: a deployment that lowered it still gets no more than it asked for, and one that
+    /// raised it no longer gets a queue measured in minutes.
     /// </summary>
     [Range(64, 100_000)]
     public int ViewerQueuePackets { get; init; } = 2_000;
 
     /// <summary>
-    /// Queue depth for a recorder. Larger, because overflowing here is not a skip: it ends the
-    /// recording and marks the document truncated, and that must be genuinely rare.
+    /// Queue depth for a recorder, in seconds of media, and the pre-roll is added to it as a
+    /// viewer's rollback is. Larger than a viewer's, because overflowing here is not a skip: it
+    /// ends the recording and marks the document truncated, and that must be genuinely rare.
+    ///
+    /// It has a different job from a viewer's queue, and the figure follows the job. A recorder
+    /// writes to a local file, so it is never the slow consumer a viewer can be; what it has to
+    /// ride out is the gap between parts, where the part just finished is uploaded to storage
+    /// before anything is read from the queue again. Sixty seconds is a very slow upload of a
+    /// five-minute part, and a recording that cannot keep up with a minute of that has a storage
+    /// problem the queue cannot solve.
+    /// </summary>
+    [Range(1, 600)]
+    public double RecorderQueueSeconds { get; init; } = 60;
+
+    /// <summary>
+    /// The ceiling on a recorder's queue, in packets. The same guard
+    /// <see cref="ViewerQueuePackets"/> is, and kept under its old name for the same reason, but it
+    /// is a real bound here rather than a formality: sixty seconds of a contribution-quality feed
+    /// is tens of megabytes of queued packets, and a recording holding all of it while it uploads a
+    /// part is memory this replica has to have.
     /// </summary>
     [Range(64, 1_000_000)]
     public int RecorderQueuePackets { get; init; } = 20_000;

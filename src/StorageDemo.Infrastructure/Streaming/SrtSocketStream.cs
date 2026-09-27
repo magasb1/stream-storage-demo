@@ -267,10 +267,42 @@ public sealed unsafe class SrtSocketStream : Stream, IWireWriter
         }
     }
 
+    /// <summary>
+    /// The synchronous send, inline, and returning a task that is already finished.
+    ///
+    /// libsrt has no asynchronous send: a send blocks until the socket has room, and making that
+    /// non-blocking would mean libsrt's own epoll rather than anything a .NET task can express. A
+    /// write to an SRT peer therefore occupies a thread whatever this method does, and the only
+    /// thing an override changes is how many. The base class hands the blocking send to a
+    /// thread-pool worker and waits for it, which costs one thread more than doing it here on the
+    /// thread already serving this one connection - and a viewer or a forward is written to once per
+    /// packet.
+    /// </summary>
+    public override ValueTask WriteAsync(
+        ReadOnlyMemory<byte> buffer,
+        CancellationToken cancellationToken = default)
+    {
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return ValueTask.FromCanceled(cancellationToken);
+        }
+
+        Write(buffer.Span);
+
+        return ValueTask.CompletedTask;
+    }
+
+    /// <inheritdoc cref="WriteAsync(ReadOnlyMemory{byte}, CancellationToken)"/>
+    public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+        => WriteAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
+
     /// <summary>Nothing to do: libsrt puts every message on the wire as it is sent.</summary>
     public override void Flush()
     {
     }
+
+    /// <inheritdoc cref="Flush"/>
+    public override Task FlushAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 
     public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
 
