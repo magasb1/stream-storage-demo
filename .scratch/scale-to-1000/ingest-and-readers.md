@@ -109,7 +109,17 @@ At the clean 200-stream, 550-reader row:
   does hold a thread - and at the collapse it is 1.8 cores against the receive worker's 0.24. The open
   TODO about pooling `StreamDemuxer.Pump`'s per-packet `byte[]` is aimed at exactly this thread, and
   this is the measurement that says it is worth doing: ingest scale on a Linux node is bounded by
-  demultiplexing cost per packet, not by the accept path or the socket reader.
+  demultiplexing cost per packet rather than by the accept path. Note what that does *not* say - the
+  socket reader is not exonerated, it is starved; the bullet below is the careful version.
+- **The demultiplexer threads ate the cores the receive worker needed** - which is a weaker claim
+  than "the receive path is fine", and the weaker one is what the rig supports. At the collapsed row
+  the pod wanted 2.8 cores and the rig 2.0 on a four-core box, so every thread there is
+  scheduler-bound and a thread's *share* is a floor under its appetite, not a measure of it: a
+  starved thread reads as an idle one. And 3.6 million kernel UDP receive errors means the packets
+  died in the socket buffer **before** libsrt read them, so the receive path was failing to drain
+  whatever its processor share says. The honest reading is that demultiplexing spent the cores and
+  the receive path starved as a consequence. The 150-stream row is the cleaner evidence for it: pod
+  2.1, rig 0.9, three of four cores, loss already starting.
 - **`SRT:RcvQ:w` never exceeded 24 % of its core, at any load, including the collapse.** That
   contradicts `baseline.md`'s central finding - a knee at about 60 % of that thread, and the budget
   `streams/175 + pps/45000 < 1` - and the difference is the rig underneath, not the code: those
@@ -122,7 +132,10 @@ At the clean 200-stream, 550-reader row:
   The 150-stream row is cleaner evidence: pod 2.1, rig 0.9, three of four cores, and loss already
   starting. The honest reading is "400 to 600 Mbit/s of ingest per four cores, and the demux threads
   are what spends it".
-- **Memory is arithmetic on the buffer, as `baseline.md` said.** 7 MB per stream at 0.8 Mbit/s
+- **Memory is arithmetic on the buffer, as `baseline.md` said.** These figures are the whole test
+  host's resident set, the rig's senders excepted but its in-process readers and xunit included, so
+  read them as an upper bound on the service's own - it matters least for the ingest-only rows, which
+  is where the OOM conclusion below is drawn from. 7 MB per stream at 0.8 Mbit/s
   (1.52 GiB at 200), 26 MB at 4 Mbit/s (5.26 GiB at 200). `k8s/live/deployment.yaml`'s 4 GiB limit
   therefore OOM-kills at about 150 camera-rate streams - comfortably after the 60 that manifest's own
   arithmetic sizes it for, which is the right way round, but worth knowing that memory binds before
@@ -238,13 +251,19 @@ At 200 streams with 50 real players attached:
 | documents | 200 of 200 stored, 1042 MiB, the last arriving 18.4 s after they were measured running |
 | ingest throughout | 0.74 Mbit/s per stream, no loss, no kernel drops |
 
-**Previews are not the dominant cost here, and they are keeping up.** `baseline.md`'s third defect
-called the always-on preview the dominant cost in the whole design; on this machine at 200 streams it
-is part of a 1.4-core total and every one of the 40 sampled previews was moving. That is a real
-difference from the earlier measurement and the freshness check is the reason it can be claimed at
-all: the decoder's own subscription is skip-to-live and `JpegEncoder.Encode` returning null leaves the
-old picture in place, counting nothing, so a stale preview is invisible in every figure the service
-publishes.
+**Previews are working, and they are inside a 1.4-core total.** Every one of the 40 sampled previews
+changed within five seconds, which is worth having because they fail quietly by design: the decoder's
+own subscription is skip-to-live and `JpegEncoder.Encode` returning null leaves the old picture in
+place, counting nothing, so a stale preview is invisible in every figure the service publishes. The
+check catches a frozen preview; a harvester running at half its configured cadence passes it, so
+"working" here means "not frozen" rather than "on time".
+
+What this does **not** establish is the comparison it is tempting to draw. `baseline.md`'s third defect
+called the always-on preview the dominant cost in the whole design; this rig never turns previews off,
+and their decode and JPEG work lands in the `.NET TP Worker` bucket with everything else, so nothing
+here attributes any particular share to them. "Part of a 1.4-core total" is all that was measured. A
+preview-off run against a preview-on run at the same load is the missing measurement, and it is cheap:
+`Live__PreviewIntervalSeconds` is already an option.
 
 **Capture work does not disturb ingest.** Two hundred simultaneous decodes and two hundred
 simultaneous recordings left the delivered rate and the loss counters untouched, because each feed has
@@ -291,7 +310,10 @@ between reads, which is what that looks like from the pod.
 | 200 | 0.17 of 0.87 Mbit/s | 219 | 441 | 0 | 0.75 |
 
 **One thread-pool worker per slow viewer, and nothing bounds it.** The pool went from twelve workers
-to two hundred and nineteen, tracking the slow readers one for one, because
+to two hundred and nineteen, tracking the slow readers one for one - **an in-process figure**, since
+these readers are test-server reads rather than sockets, and with a real socket the kernel buffer and
+Kestrel's pipe decide where the write blocks and therefore how many threads are held at a given client
+speed. The mechanism is route-independent and the count is this apparatus's. It is one for one because
 `LiveStreamCoordinator.Serve` writes to a viewer through `PacketMuxer` synchronously - libav's muxer
 has no asynchronous write callback, which is exactly why the relay route sets
 `AllowSynchronousIO = true` - so a consumer that will not take the bytes does not make the viewer fall
@@ -330,10 +352,15 @@ slow player, and this rig can hold three hundred of them.
    15 ms - so it passes at this scale and would not at a thousand streams with a detector triggering
    captures. A semaphore the width of the processor count would make the same work take the same time
    without the queue.
-4. **The document tail is about eleven a second.** 200 recordings finishing together took 18 s for the
-   last document, consistently, in every healthy run. It is the storage write plus the document write,
-   and on this configuration that is LiteDB, which serializes writers. Fine at 200; it is a queue, and
-   it scales with the stream count.
+4. ~~**The document tail is about eleven a second.**~~ **Withdrawn: the figure was measured from the
+   wrong anchor.** The 18 s came from a stopwatch started after two full measurement windows - thirty
+   seconds into a forty-five-second recording - so at least fifteen of those eighteen seconds were the
+   recordings still running, and the actual tail after the last recorder stopped was about **three and
+   a half seconds for two hundred documents**, or sixty a second rather than eleven. There is no queue
+   here worth reporting at this scale, and the attribution to LiteDB serializing writers was inference
+   stacked on a number that was mostly `Task.Delay`. The rig now anchors on the active-recordings gauge
+   reaching zero; the 127.9 s figure in the artifact table above carries the same offset and the same
+   correction.
 5. **Ingest at camera rate**, from part one: the per-stream demultiplexer threads, 100 to 150 streams
    per four cores.
 

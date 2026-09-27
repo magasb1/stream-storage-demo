@@ -38,6 +38,14 @@ internal sealed record Vitals(
 
     public static bool Available => OperatingSystem.IsLinux();
 
+    /// <summary>
+    /// What each rig process had spent when it was last seen alive, so a sender that exits inside a
+    /// window keeps its time in the baseline instead of vanishing from the later reading and turning
+    /// the rig's share negative. Static because it describes the rig across the whole run, and the
+    /// rig outlives any one reading of it.
+    /// </summary>
+    private static readonly Dictionary<int, TimeSpan> LastSeen = [];
+
     /// <param name="elsewhere">
     /// Other processes to add up separately - the load generator's own senders and players. Without
     /// this figure a run cannot tell a service at its knee from a rig that ran out of machine before
@@ -84,11 +92,11 @@ internal sealed record Vitals(
         {
             if (line.StartsWith("VmRSS:", StringComparison.Ordinal))
             {
-                resident = Kilobytes(line) * 1024;
+                resident = Value(line) * 1024;
             }
             else if (line.StartsWith("Threads:", StringComparison.Ordinal))
             {
-                count = (int)Kilobytes(line);
+                count = (int)Value(line);
             }
         }
 
@@ -96,17 +104,33 @@ internal sealed record Vitals(
 
         foreach (var process in elsewhere ?? [])
         {
+            int id;
+
             try
             {
-                if (!process.HasExited && Spent($"/proc/{process.Id}/stat") is { } cpu)
+                id = process.Id;
+            }
+            catch (Exception)
+            {
+                // Disposed, so there is nothing to identify it by and nothing to carry forward.
+                continue;
+            }
+
+            try
+            {
+                if (Spent($"/proc/{id}/stat") is { } cpu)
                 {
-                    others += cpu;
+                    LastSeen[id] = cpu;
                 }
             }
             catch (Exception)
             {
-                // A sender that exited between the check and the read has nothing to contribute.
+                // Gone since the caller last looked. Its last known total is still owed to the sum
+                // below, or a sender that exited mid-window would make the rig look like it had
+                // given back processor time it had already spent.
             }
+
+            others += LastSeen.GetValueOrDefault(id);
         }
 
         return new Vitals(
@@ -121,6 +145,11 @@ internal sealed record Vitals(
             // looks like from the outside: the pool grows a thread or two a second while items queue,
             // so latency climbs into the tens of seconds with the processor half idle. Neither is
             // visible in CPU, memory or any of the service's own meters.
+            //
+            // Both are the whole process's, and in a rig that hosts the service, its readers and its
+            // own request storms in one process there is no telling whose items are queued. A row
+            // showing a deep queue says this process is short of workers; it does not say the service
+            // is. Attributing it needs a load generator outside the process.
             ThreadPool.ThreadCount,
             ThreadPool.PendingWorkItemCount);
     }
@@ -133,10 +162,22 @@ internal sealed record Vitals(
     {
         var seconds = Math.Max(elapsed.TotalSeconds, 0.001);
 
+        // Keyed on both readings rather than only the later one, and clamped at zero. A name whose
+        // threads came and went inside the window - ".NET TP Worker" always, and ".NET Long Runni"
+        // wherever a viewer attaches, since the consumption port spends one such thread per accepted
+        // player - has time in the earlier sum that no longer has a thread to be found under in the
+        // later one. Subtracting the two as they stand then reports negative work for the busiest
+        // names in the table, which is the same mistake the process total above avoids by not being
+        // a sum over live threads at all.
         var byThread = ByThread
+            .Keys
+            .Union(earlier.ByThread.Keys, StringComparer.Ordinal)
             .Select(thread => (
-                Thread: thread.Key,
-                Share: (thread.Value - earlier.ByThread.GetValueOrDefault(thread.Key)).TotalSeconds / seconds))
+                Thread: thread,
+                Share: Math.Max(
+                    (ByThread.GetValueOrDefault(thread) - earlier.ByThread.GetValueOrDefault(thread))
+                        .TotalSeconds,
+                    0) / seconds))
             .Where(thread => thread.Share > 0.005)
             .OrderByDescending(thread => thread.Share)
             .ToArray();
@@ -216,6 +257,10 @@ internal sealed record Vitals(
         {
             var name = File.ReadAllText(comm).Trim();
 
+            // The kernel truncates a thread's name to fifteen bytes, which is why a table of these
+            // reads ".NET Long Runni" rather than anything a person would have chosen. Left as the
+            // kernel gives it, because that is what top -H and every other tool shows.
+            //
             // The pool's workers are one row rather than forty: they are numbered, and forty rows of
             // two percent hides the one row of eighty that matters.
             return name.StartsWith(".NET TP Worker", StringComparison.Ordinal) ? ".NET TP Worker" : name;
@@ -226,7 +271,7 @@ internal sealed record Vitals(
         }
     }
 
-    private static long Kilobytes(string line)
+    private static long Value(string line)
         => long.TryParse(
             line.Split(':', 2)[1].Replace("kB", string.Empty, StringComparison.Ordinal).Trim(),
             CultureInfo.InvariantCulture,
@@ -234,11 +279,17 @@ internal sealed record Vitals(
                 ? value
                 : 0;
 
-    private static IEnumerable<string> Lines(string path)
+    /// <summary>
+    /// Every line of a /proc file, or none. Read eagerly on purpose: <c>File.ReadLines</c> is lazy, so
+    /// a failure part-way through the file would be thrown at whoever is iterating rather than caught
+    /// here, and this helper exists precisely so that a figure the rig cannot read is absent instead
+    /// of fatal.
+    /// </summary>
+    private static IReadOnlyList<string> Lines(string path)
     {
         try
         {
-            return File.ReadLines(path);
+            return File.ReadAllLines(path);
         }
         catch (Exception)
         {

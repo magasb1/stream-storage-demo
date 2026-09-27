@@ -195,10 +195,13 @@ replica with viewers opening and closing, a snapshot and a recording on every st
 feeds killed — five of them with an audience — and then checks the figures above against what the pod
 was actually doing. Two things it does that a single-stream test cannot:
 
-- **The meter is checked against the truth it describes.** `live_bytes` against the per-stream byte
-  deltas in `GET /api/live` over the same window, `live_streams_owned` against the streams actually
-  held, `live_recorded_bytes` against the size of the documents in storage. A dashboard's number is
-  worth exactly that agreement, and nothing here is ever asserted against itself.
+- **The meter is checked against something outside it**, wherever that is possible: `live_streams_owned`
+  against the number of encoders the test started, `live_recorded_bytes` against the size of the
+  documents in storage, `live_bytes` against the payload ffprobe measured in the pattern the senders
+  push. Not against `GET /api/live`, tempting as that looks: one heartbeat pass hands `StreamHub.Bytes`
+  to the counter as a delta and puts the same field in the registry entry three lines later, so the two
+  agree however wrong the hub is. That check was in the first version of this page and it could not
+  fail.
 - **No tag carries a stream name.** Fifty streams named alike make the leak visible; one stream
   cannot. The test also holds every tag key to the six on this page.
 

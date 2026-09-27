@@ -209,6 +209,10 @@ internal static class SrtSenders
     /// <summary>
     /// The rate of the packets inside a transport stream, as the bundled ffprobe adds them up.
     ///
+    /// The duration is the caller's to supply rather than ffprobe's to report, because the caller is
+    /// the one that rendered the file and knows what it asked for; passing a figure that does not
+    /// match silently scales every comparison made against the result.
+    ///
     /// It is the payload rather than the file's size because that is what a demultiplexer publishes
     /// and therefore what the service counts: transport headers, the program tables and any padding
     /// are not in the figure. Compared against the file instead, a replica delivering everything it
@@ -236,11 +240,17 @@ internal static class SrtSenders
         }
 
         using var probe = Process.Start(startInfo)!;
+
+        // Standard error is drained on another thread while standard output is read here. One pipe
+        // read to completion before the other is started deadlocks the moment the unread one fills,
+        // and a packet listing for a long file is easily large enough to make that a real risk rather
+        // than a theoretical one - it is the same trap Start's BeginErrorReadLine avoids.
+        var complaints = probe.StandardError.ReadToEndAsync();
         var sizes = probe.StandardOutput.ReadToEnd();
-        var complaints = probe.StandardError.ReadToEnd();
+
         probe.WaitForExit();
 
-        Assert.True(probe.ExitCode == 0, $"ffprobe could not read '{path}': {complaints}");
+        Assert.True(probe.ExitCode == 0, $"ffprobe could not read '{path}': {complaints.Result}");
 
         // One line per packet, and the size is its first field: ffprobe's CSV writer still emits the
         // separator for the side-data column it was not asked about, so "8058," is a whole line.

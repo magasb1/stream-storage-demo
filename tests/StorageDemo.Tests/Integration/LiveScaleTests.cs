@@ -264,6 +264,10 @@ public sealed class LiveScaleTests(ITestOutputHelper output) : IAsyncLifetime
 
         Report($"pattern          {source:0.00} Mbit/s of payload per stream"
             + $" ({wire:0.00} Mbit/s on the wire), {Picture}");
+        Report("columns          pod/rig are shares of one core; RcvQ:w is the busiest libsrt receive"
+            + " worker, whose ceiling is one core");
+        Report("                 pool/queued are the whole process's, this rig included, so a deep"
+            + " queue says this process wants workers, not that the service does");
         Report($"machine          {Environment.ProcessorCount} cores"
             + (Vitals.Available ? string.Empty : ", /proc not readable here so no thread breakdown"));
         Report($"rig              {PerSender} streams per sender process,"
@@ -414,13 +418,21 @@ public sealed class LiveScaleTests(ITestOutputHelper output) : IAsyncLifetime
 
         var second = await Task.WhenAll(sample.Select(index => Tile(Name(index))));
 
-        var moved = sample.Count(index =>
-            first[index] is { Length: > 0 } before
-            && second[index] is { Length: > 0 } after
-            && !before.SequenceEqual(after));
+        // Zipped rather than indexed by stream number: the two arrays are in the sample's order, which
+        // is only the same thing while the sample happens to start at zero.
+        var moved = first
+            .Zip(second)
+            .Count(pair => pair.First is { Length: > 0 }
+                && pair.Second is { Length: > 0 }
+                && !pair.First.SequenceEqual(pair.Second));
 
+        // What this catches is a frozen preview, not a slow one: two intervals is long enough that a
+        // harvester keeping its cadence has certainly encoded again, and also long enough that one
+        // running at half cadence passes. Proving the cadence itself would mean sampling every
+        // interval and is a different measurement.
         Report($"previews         {pictured} of {streams} streams hold a picture;"
-            + $" {moved} of {sample.Length} sampled moved in {PreviewInterval * 2 + 1}s");
+            + $" {moved} of {sample.Length} sampled changed at least once in {PreviewInterval * 2 + 1}s"
+            + " (a frozen preview fails this; one at half cadence does not)");
         Report($"wall of tiles    {streams} previews fetched at once: {wall}");
 
         // ---- A snapshot of every stream, at once -------------------------------------------
@@ -486,6 +498,20 @@ public sealed class LiveScaleTests(ITestOutputHelper output) : IAsyncLifetime
             await Viewers(),
             note: $"{active:0} recordings running"));
 
+        // Anchored on the recordings actually stopping, not on the rig getting round to asking. The
+        // first version of this measured from the end of the second window above, which at the default
+        // settings is thirty seconds into a forty-five-second recording: the figure it produced was
+        // three quarters recording time and was read - by me, in a write-up that had to be corrected -
+        // as a queue of document writes. What is wanted is the tail after the last recorder finished.
+        var stopped = Stopwatch.StartNew();
+
+        await Settle(
+            async () => (meters.Value("live.recordings.active") ?? 0) == 0,
+            TimeSpan.FromSeconds(RecordSeconds + 60),
+            () => Task.FromResult((int)(meters.Value("live.recordings.active") ?? 0)));
+
+        stopped.Stop();
+
         var documents = 0;
         var waited = Stopwatch.StartNew();
 
@@ -496,9 +522,13 @@ public sealed class LiveScaleTests(ITestOutputHelper output) : IAsyncLifetime
 
         waited.Stop();
 
+        // A beat of slack either side: the gauge that says the recordings have stopped is republished
+        // once a beat, so the tail is accurate to about two seconds and should be read that way rather
+        // than as a rate to three figures.
         Report($"documents        {documents} of {streams} recordings became documents,"
-            + $" the last {waited.Elapsed.TotalSeconds:0.0}s after the recordings were measured running"
-            + $" (each ran {RecordSeconds}s)");
+            + $" the last {waited.Elapsed.TotalSeconds:0.0}s after the final recorder stopped"
+            + $" (each ran {RecordSeconds}s; the gauge reached zero {stopped.Elapsed.TotalSeconds:0.0}s"
+            + " into the wait for it, and is a beat coarse)");
         Report($"                 outcomes {Describe(meters.Tally("live.recordings", "outcome"))}"
             + $", {meters.Total("live.recorded.bytes") / 1024.0 / 1024:0} MiB stored");
     }
@@ -787,6 +817,16 @@ public sealed class LiveScaleTests(ITestOutputHelper output) : IAsyncLifetime
                     : $"; {firstBadReaders.Readers} fell behind at {firstBadReaders.Served:0.00}"
                         + $" of {firstBadReaders.Wire:0.00} Mbit/s each");
 
+        if (_relays.FirstOrDefault(relay => relay.Fault is not null)?.Fault is { } fault)
+        {
+            // Printed rather than only counted: a relayed reader that took a 500 from the service and
+            // one whose socket was torn down at teardown are the same integer in the table, and this
+            // is the route the viewer findings are measured on.
+            yield return $"reader fault     {_relays.Count(relay => relay.Fault is not null)} of"
+                + $" {_relays.Count} relayed readers faulted, first: {fault.GetType().Name}:"
+                + $" {fault.Message}";
+        }
+
         var busiest = _rows[^1].Load;
 
         yield return $"busiest          {busiest.Busiest(6)} (summed per thread name)";
@@ -837,7 +877,7 @@ public sealed class LiveScaleTests(ITestOutputHelper output) : IAsyncLifetime
     {
         public const string Header =
             "streams  air  readers  seen  Mbit/s in  of src  of rig  Mbit/s out  RcvQ:w  pod   rig"
-            + "   RSS       thr  pool  queued      udp       lost  skip  verdict     what";
+            + "   RSS       thr  pool  queued      udp   lost+drop  skip  verdict     what";
 
         /// <summary>
         /// The same reading <c>baseline.md</c> takes: clean is a service demultiplexing what was sent
@@ -849,6 +889,12 @@ public sealed class LiveScaleTests(ITestOutputHelper output) : IAsyncLifetime
         /// the file's nominal rate instead, the rig's own pacing would set the verdict; against the
         /// first step, scale does.
         ///
+        /// The first row is therefore its own reference and can only come out clean or lossy. That is
+        /// what calibration means, and it is also the assumption to check first if a whole table reads
+        /// clean: a first step that was already sender-limited grades every row after it against a
+        /// figure the rig, not the service, was holding down. The "of src" column is the guard - a
+        /// first row far below the file's own rate is the warning.
+        ///
         /// Loss belongs in this and not only in a column of its own, because a stream can deliver its
         /// whole bitrate and still be broken: retransmits fill the gap, and a step that arrives at a
         /// hundred and eight percent of the rate before it is a receiver catching up rather than one
@@ -859,7 +905,15 @@ public sealed class LiveScaleTests(ITestOutputHelper output) : IAsyncLifetime
             && LossShare < 0.001
             && (Load.KernelUdpErrors ?? 0) == 0;
 
-        /// <summary>What the transport lost, against what actually arrived in the same window.</summary>
+        /// <summary>
+        /// What the transport lost or dropped, against what arrived in the same window.
+        ///
+        /// The two are added together here and <see cref="LiveMetrics"/> is at pains to say they are
+        /// different failures - never arrived against arrived too late - and that adding them loses
+        /// what decides the fix. That holds for diagnosis; this figure is for the verdict, where both
+        /// mean the same thing: media the pod was sent and could not deliver. Which of the two it was
+        /// is in <c>GET /api/live</c> per stream, and in the run's own lost-and-dropped line.
+        /// </summary>
         public double LossShare => Packets + Lost <= 0 ? 0 : Lost / (Packets + Lost);
 
         public bool ReadersClean => Readers == 0
@@ -930,11 +984,16 @@ public sealed class LiveScaleTests(ITestOutputHelper output) : IAsyncLifetime
 
             try
             {
-                await Pump;
+                // Bounded, because a read on the test server's response body that does not observe the
+                // token would otherwise hang teardown with nothing around it to time out - and this
+                // runs five hundred times. A reader that will not stop is abandoned to the collector,
+                // which costs a hung task in a process that is about to end.
+                await Pump.WaitAsync(TimeSpan.FromSeconds(10));
             }
             catch (Exception)
             {
-                // A reader torn down mid-read is how every one of these ends.
+                // A reader torn down mid-read is how every one of these ends, and a timeout here is
+                // the abandonment described above rather than a failure worth reporting.
             }
 
             _stopping.Dispose();

@@ -156,7 +156,7 @@ run is a row in that table rather than a pass:
 load             50 streams x 0.80 Mbit/s, one ingest port
 on air           1.9 s for 50 streams (26.4 accepts/s)
 delivered        0.79 of 0.80 Mbit/s per stream (98 % of source, median), 39.3 Mbit/s over 50 streams
-meter agreement  39.3 Mbit/s counted by the hub, 39.3 reported per stream
+meter            39.3 Mbit/s counted by the hub against 40.0 Mbit/s offered by 50 senders
 heartbeat        1 ms median, 15 ms slowest, over 38 passes
 transport        0 lost and 0 dropped of 84042 packets
 kernel udp       0 receive errors over the run
@@ -172,8 +172,10 @@ step what each side delivered, what the transport and the kernel lost, and — o
 in [`.scratch/scale-to-1000/ingest-and-readers.md`](.scratch/scale-to-1000/ingest-and-readers.md):
 two hundred streams and five hundred readers is not where this breaks (1.4 cores, 148 Mbit/s in and
 437 Mbit/s out), camera-rate ingest starts losing packets between 100 and 150 streams, two thousand
-readers cost six tenths of a core, and the thread that runs out first is the per-stream
-demultiplexer rather than the SRT receive worker every earlier measurement pointed at.
+readers cost six tenths of a core, and what runs out first on a four-core box is the per-stream
+demultiplexer thread rather than the SRT receive worker every earlier measurement pointed at — with
+the caveat, stated in the write-up beside the number, that at the collapsed step the rig and the
+service together wanted more cores than the machine had, so a starved thread reads as an idle one.
 
 It also audits the work that is easy to leave out of a load test, because leaving it out is what made
 the first version of those figures look too good: the previews are checked for freshness rather than

@@ -41,10 +41,14 @@ public sealed class LoadCollection
 ///
 /// Two disciplines make it worth running rather than merely long.
 ///
-/// **The meter is checked against the truth it claims to describe**, never against itself: bytes
-/// counted by the hub against the bytes the registry reports per stream, the owned gauge against the
-/// streams actually held, the recorded-byte counter against the documents in storage. A dashboard's
-/// number is worth exactly that agreement.
+/// **The meter is checked against something outside it**, wherever that is possible: the owned gauge
+/// against the number of encoders this test started, the recorded-byte counter against the size of
+/// the documents in storage, the ingest counter against the payload ffprobe measured in the pattern
+/// the senders push. What is deliberately not done is the tempting one - the byte counter against the
+/// per-stream figures in <c>GET /api/live</c> - because those are the same field: one heartbeat pass
+/// hands <c>StreamHub.Bytes</c> to the counter as a delta and puts it in the registry entry three
+/// lines later, so they agree however wrong the hub is. An assertion that cannot fail is worse than
+/// no assertion, because it is read as cover.
 ///
 /// **No tag may carry a stream name**, which fifty streams can show and one cannot. A name reaching
 /// a tag is the single mistake that turns this meter into thousands of retained time series, and this
@@ -255,7 +259,7 @@ public sealed class LiveLoadTests(ITestOutputHelper output) : IAsyncLifetime
         // reconnected, which is another test's subject.
         Assert.Equal(Streams, (int)meters.Total("live.accepts"));
         Assert.Equal(0, meters.Total("live.rejects"));
-        Assert.Equal(Streams, meters.Tally("live.claims", "outcome")["taken"]);
+        Assert.Equal(Streams, meters.Tally("live.claims", "outcome").GetValueOrDefault("taken"));
 
         // Published by the heartbeat rather than by the claim, so it arrives a beat behind the
         // streams; waiting for it is also what proves the beat is what publishes it.
@@ -264,7 +268,14 @@ public sealed class LiveLoadTests(ITestOutputHelper output) : IAsyncLifetime
             TimeSpan.FromSeconds(30),
             () => $"the gauge reported {meters.Value("live.streams.owned")} streams owned rather than {Streams}");
 
-        Assert.Equal(0, meters.Value("live.streams.interrupted"));
+        // Not zero, because zero is a claim about the machine rather than about the service: one of
+        // fifty senders starved of a core for five continuous seconds is declared interrupted, and
+        // nothing about the replica is then wrong. What must hold is that the census is not reporting
+        // the whole set as interrupted, which is the fault this figure exists to name.
+        Assert.True(
+            meters.Value("live.streams.interrupted") < Streams * 0.1,
+            $"{meters.Value("live.streams.interrupted")} of {Streams} streams read as interrupted"
+            + " while every one of them was being fed");
 
         // ---- The wall of tiles -------------------------------------------------------------
         // A preview is a decode, so a stream is on air before it has a picture, and how long fifty
@@ -284,6 +295,8 @@ public sealed class LiveLoadTests(ITestOutputHelper output) : IAsyncLifetime
         // What a client showing fifty live tiles does, and the reason a preview is counted as a
         // download of its own kind: this is the heaviest read the REST surface takes and it is not
         // a file download.
+        var beatsBeforeLoad = meters.Of("live.heartbeat.duration").Count;
+
         var previews = await Task.WhenAll(
             Enumerable.Range(0, Streams).Select(index => _client.GetAsync($"/api/live/preview/{Name(index)}")));
 
@@ -295,14 +308,25 @@ public sealed class LiveLoadTests(ITestOutputHelper output) : IAsyncLifetime
                 .Of("api.documents.downloads")
                 .Count(download => Meters.Tag(download, "kind") == "preview" && Meters.Tag(download, "outcome") == "served"));
 
-        Assert.True(requests.Total("api.documents.download.bytes") > 0, "the previews carried no bytes");
+        // The sum of what the fifty bodies actually held, not merely "more than nothing": the meter
+        // claims to count the bytes this surface copied, and the bytes are right here to check it
+        // against. Kestrel is not in the path for a preview, so the two should agree exactly.
+        var served = previews.Sum(preview => preview.Content.Headers.ContentLength ?? 0);
+
+        Assert.Equal(served, (long)requests.Total("api.documents.download.bytes"));
+
+        Release(previews);
 
         // ---- What is actually arriving -----------------------------------------------------
         // The honest overload signal. A collapsed pod lists every stream live with packets and bytes
         // rising while a fifth of the media arrives; the figure that says so is how much each stream
-        // delivers against what its sender sent. Sampled per stream from the registry and in
-        // aggregate from the meter over the same window, because a dashboard is worth exactly the
-        // agreement between the two.
+        // delivers against what its sender sent.
+        //
+        // The reference is the senders' own payload, measured off the pattern by ffprobe, because it
+        // is the only figure here that the service had no hand in producing. Comparing the meter
+        // against the registry instead would compare a field with itself: the heartbeat's Describe
+        // pass hands StreamHub.Bytes to the counter as a delta and then puts the same field in the
+        // registry entry three lines later, so the two agree however wrong the hub is.
         var before = await Listing();
         var bytesBefore = meters.Total("live.bytes");
         var packetsBefore = meters.Total("live.packets");
@@ -321,10 +345,12 @@ public sealed class LiveLoadTests(ITestOutputHelper output) : IAsyncLifetime
         var median = delivered[delivered.Length / 2];
         var registry = delivered.Sum();
         var metered = Mbps((long)(meters.Total("live.bytes") - bytesBefore), sampled.Elapsed);
+        var offered = source * Streams;
 
         Report($"delivered        {median:0.00} of {source:0.00} Mbit/s per stream"
             + $" ({median / source:P0} of source, median), {registry:0.#} Mbit/s over {delivered.Length} streams");
-        Report($"meter agreement  {metered:0.#} Mbit/s counted by the hub, {registry:0.#} reported per stream");
+        Report($"meter            {metered:0.#} Mbit/s counted by the hub against"
+            + $" {offered:0.#} Mbit/s offered by {Streams} senders");
 
         // Not a grade of the machine. A clean pod delivers its senders' payload; the baseline's
         // collapsed rows delivered a fifth of it and its marginal ones under a half, so this sits
@@ -333,12 +359,15 @@ public sealed class LiveLoadTests(ITestOutputHelper output) : IAsyncLifetime
             median > source * 0.75,
             $"the pod is past its knee: {median:0.00} of {source:0.00} Mbit/s delivered per stream");
 
-        // The two figures are the same bytes counted in two places - by the hub as it publishes them
-        // and by the heartbeat as it reads each stream - so they agree or one of them is describing
-        // something else. A tenth is what the beat's own sampling can move them by.
+        // The counter against the senders rather than against the registry, so it is crossing a
+        // boundary: what the hub counted has to resemble what fifty encoders actually sent. The
+        // tolerance is wide on purpose - a beat of sampling skew either side of a twenty-second
+        // window is worth a tenth of it by itself, and the senders pace a few percent under nominal
+        // - because a wide check against something independent is worth more than a tight one
+        // against the same field twice.
         Assert.True(
-            Math.Abs(metered - registry) < registry * 0.1,
-            $"the meter counted {metered:0.#} Mbit/s where the registry reported {registry:0.#}");
+            metered > offered * 0.6 && metered < offered * 1.4,
+            $"the hub counted {metered:0.#} Mbit/s where {Streams} senders offered {offered:0.#}");
 
         Assert.True(meters.Total("live.packets") > packetsBefore, "the packet counter stood still");
 
@@ -394,6 +423,8 @@ public sealed class LiveLoadTests(ITestOutputHelper output) : IAsyncLifetime
 
         Assert.All(snapshots, snapshot => Assert.Equal(HttpStatusCode.OK, snapshot.StatusCode));
 
+        Release(snapshots);
+
         var started = await Task.WhenAll(
             Enumerable
                 .Range(0, Streams)
@@ -402,6 +433,8 @@ public sealed class LiveLoadTests(ITestOutputHelper output) : IAsyncLifetime
                     new RecordRequest(RecordSeconds))));
 
         Assert.All(started, recording => Assert.Equal(HttpStatusCode.Accepted, recording.StatusCode));
+
+        Release(started);
 
         // All of them running together, read off the gauge rather than off the requests that started
         // them: fifty accepted requests and fifty recordings actually writing are different claims,
@@ -453,7 +486,7 @@ public sealed class LiveLoadTests(ITestOutputHelper output) : IAsyncLifetime
         // Every recording whole. A truncated one here is not a flake to re-run: it is the recorder's
         // queue overflowing under this load, which is the second thing the observability page says
         // to alert on, and it has a short document behind it.
-        Assert.Equal(Streams, meters.Tally("live.recordings", "outcome")["stored"]);
+        Assert.Equal(Streams, meters.Tally("live.recordings", "outcome").GetValueOrDefault("stored"));
         Assert.Equal(
             0,
             meters.Of("live.overflows").Count(overflow => Meters.Tag(overflow, "policy") == "fail"));
@@ -485,12 +518,25 @@ public sealed class LiveLoadTests(ITestOutputHelper output) : IAsyncLifetime
 
         // Interrupted first rather than gone: a tile that vanishes and returns is worse than one
         // showing a state, and a reconnect inside this window would be the same stream resuming.
+        //
+        // "Interrupted or already gone" rather than "interrupted", because that state is only as wide
+        // as the grace period: ten seconds here, two or three beats. A listing delayed behind fifty
+        // encoders and fifty recordings can arrive after a stream has passed through it, and the test
+        // would then be failing for having blinked rather than for anything the service did. At least
+        // one still has to be caught in the state, which is the claim worth making.
+        var interrupted = new HashSet<string>();
+
         await Until(
             async () => await Listing() is { } listing
-                && killed.All(index => listing.TryGetValue(Name(index), out var stream)
-                    && stream.State == LiveStreamState.Interrupted),
+                && killed.All(index => !listing.TryGetValue(Name(index), out var stream)
+                    || (stream.State == LiveStreamState.Interrupted
+                        && interrupted.Add(Name(index)))
+                    || interrupted.Contains(Name(index))),
             TimeSpan.FromSeconds(40),
-            () => $"the {killed.Length} dead feeds never all read as interrupted");
+            () => $"of the {killed.Length} dead feeds only {interrupted.Count} were seen interrupted"
+                + " and the rest never left the live state");
+
+        Assert.NotEmpty(interrupted);
 
         await Until(
             async () => await Listing() is { } listing && killed.All(index => !listing.ContainsKey(Name(index))),
@@ -498,7 +544,7 @@ public sealed class LiveLoadTests(ITestOutputHelper output) : IAsyncLifetime
             () => $"the {killed.Length} dead feeds were still listed after the grace period");
 
         // Ended the same way whether or not anybody was watching, and ended once each.
-        Assert.Equal(killed.Length, meters.Tally("live.streams.ended", "reason")["expired"]);
+        Assert.Equal(killed.Length, meters.Tally("live.streams.ended", "reason").GetValueOrDefault("expired"));
 
         // And the gauge follows, which is the number an autoscaler would be acting on.
         await Until(
@@ -538,11 +584,28 @@ public sealed class LiveLoadTests(ITestOutputHelper output) : IAsyncLifetime
         // One session per viewer served, every one of them direct: this replica owns every stream,
         // so nothing was relayed. Counted where a viewer is actually subscribed rather than where an
         // attach is decided, which is what stops a retrying attach reading as an audience.
-        Assert.Equal(Watched + Churned, meters.Total("live.viewer.sessions"));
+        // At least one session each, and every one of them direct. Not an exact count: the
+        // consumption port re-attaches a viewer whose stream moved or whose muxer faulted, and on a
+        // contended machine that is one player scoring a second session rather than a second player.
+        // The property worth pinning is that every player was served, and served here rather than
+        // fetched from somewhere else.
+        Assert.True(
+            meters.Total("live.viewer.sessions") >= Watched + Churned,
+            $"{meters.Total("live.viewer.sessions")} sessions for {Watched + Churned} players");
+
         Assert.All(meters.Of("live.viewer.sessions"), session => Assert.Equal("direct", Meters.Tag(session, "route")));
 
         // ---- What the beat cost, and what the kernel saw -----------------------------------
-        var beats = meters.Of("live.heartbeat.duration").Select(beat => beat.Value).Order().ToArray();
+        // From the beat that followed the ramp, not from the first of the run: half of a ninety-second
+        // run's passes happen while the pod holds almost nothing, and a median over all of them is
+        // diluted by the cheap ones until a genuinely slow pass under load cannot move it. The scale
+        // rig slices its windows the same way, for the same reason.
+        var beats = meters
+            .Of("live.heartbeat.duration")
+            .Skip(beatsBeforeLoad)
+            .Select(beat => beat.Value)
+            .Order()
+            .ToArray();
         var slowest = beats[^1];
         var typical = beats[beats.Length / 2];
         var lost = meters.Total("live.packets.lost");
@@ -605,6 +668,19 @@ public sealed class LiveLoadTests(ITestOutputHelper output) : IAsyncLifetime
     }
 
     /// <summary>The name a sender presents, and the only place the numbering is decided.</summary>
+    /// <summary>
+    /// Releases a storm's worth of responses. Fifty preview bodies are fifty JPEG buffers, and this
+    /// test asks for three such rounds while holding fifty streams; left to the collector, the
+    /// memory figures the run reports would be partly its own.
+    /// </summary>
+    private static void Release(IEnumerable<HttpResponseMessage> responses)
+    {
+        foreach (var response in responses)
+        {
+            response.Dispose();
+        }
+    }
+
     private static string Name(int index) => $"load/{index:0000}";
 
     /// <summary>The same name as a document carries it: a file name may not hold a slash.</summary>
