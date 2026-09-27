@@ -912,31 +912,16 @@ public sealed class LiveStreamTests : IAsyncLifetime
     /// <summary>How many seconds of media the file holds, as the bundled ffprobe reads it.</summary>
     private static double Probe(string path)
     {
-        var startInfo = new ProcessStartInfo(Ffmpeg.ProbePath)
-        {
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-        };
+        string[] arguments =
+        [
+            "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "csv=p=0",
+            path,
+        ];
 
-        foreach (var argument in new[]
-                 {
-                     "-v", "error",
-                     "-show_entries", "format=duration",
-                     "-of", "csv=p=0",
-                     path,
-                 })
-        {
-            startInfo.ArgumentList.Add(argument);
-        }
+        using var process = BundledFfmpeg.Start(BundledFfmpeg.Tool.Ffprobe, arguments, readOutput: true);
 
-        if (!OperatingSystem.IsWindows())
-        {
-            startInfo.Environment["LD_LIBRARY_PATH"] = Ffmpeg.Directory;
-        }
-
-        using var process = Process.Start(startInfo)!;
         var output = process.StandardOutput.ReadToEnd().Trim();
         process.WaitForExit();
 
@@ -1041,13 +1026,6 @@ public sealed class LiveStreamTests : IAsyncLifetime
         var identifier = Uri.EscapeDataString($"#!::r={name},m=publish");
         var target = $"srt://127.0.0.1:{port ?? _ingestPort}?mode=caller&streamid={identifier}";
 
-        var startInfo = new ProcessStartInfo(Ffmpeg.ExecutablePath)
-        {
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-        };
-
         string[] source = file is null
             // A one second keyframe interval, so the buffer holds fine segments rather than two
             // coarse ones.
@@ -1055,17 +1033,9 @@ public sealed class LiveStreamTests : IAsyncLifetime
             : ["-i", file, "-map", "0", "-c", "copy"];
 
         // Paced at wall-clock speed either way: SRT is a connection, not a file copy.
-        foreach (var argument in (string[])["-hide_banner", "-loglevel", "error", "-re", .. source, "-f", "mpegts", target])
-        {
-            startInfo.ArgumentList.Add(argument);
-        }
+        string[] arguments = ["-hide_banner", "-loglevel", "error", "-re", .. source, "-f", "mpegts", target];
 
-        if (!OperatingSystem.IsWindows())
-        {
-            startInfo.Environment["LD_LIBRARY_PATH"] = Ffmpeg.Directory;
-        }
-
-        var sender = Process.Start(startInfo)!;
+        var sender = BundledFfmpeg.Start(BundledFfmpeg.Tool.Ffmpeg, arguments);
         _senders.Add(sender);
 
         return sender;

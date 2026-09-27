@@ -72,6 +72,24 @@ internal sealed class Meters : IDisposable
     public IReadOnlyList<KeyValuePair<string, object?>> Tags(string instrument)
         => Of(instrument).Single().Tags;
 
+    /// <summary>One tag's value on one measurement, as text, or null where it carries no such tag.</summary>
+    public static string? Tag(Recording measurement, string key)
+        => measurement.Tags.FirstOrDefault(tag => tag.Key == key).Value?.ToString();
+
+    /// <summary>
+    /// Every value of one tag on one instrument, counted: what a dashboard's group-by shows, and the
+    /// only honest way to read an instrument whose whole meaning is in a tag - four outcomes on
+    /// <c>live.recordings</c> are four different things, not one number.
+    /// </summary>
+    public IReadOnlyDictionary<string, int> Tally(string instrument, string key)
+        => Of(instrument)
+            .GroupBy(measurement => Tag(measurement, key) ?? string.Empty)
+            .ToDictionary(group => group.Key, group => group.Count());
+
+    /// <summary>How many measurements of one instrument carry one value of one tag.</summary>
+    public int Count(string instrument, string key, string value)
+        => Of(instrument).Count(measurement => Tag(measurement, key) == value);
+
     public void Dispose() => _listener.Dispose();
 
     private void Add(Instrument instrument, double value, ReadOnlySpan<KeyValuePair<string, object?>> tags)

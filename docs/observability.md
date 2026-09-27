@@ -188,6 +188,36 @@ In rough order of how much it means:
 Which streams are hurt is not on this page and should not be: that is `GET /api/live`, which names
 every stream with its own loss and drop figures over the last beat.
 
+## This page is tested
+
+`tests/StorageDemo.Tests/Integration/LiveLoadTests.cs` is one test that runs fifty encoders into one
+replica with viewers opening and closing, a snapshot and a recording on every stream at once, and ten
+feeds killed — five of them with an audience — and then checks the figures above against what the pod
+was actually doing. Two things it does that a single-stream test cannot:
+
+- **The meter is checked against something outside it**, wherever that is possible: `live_streams_owned`
+  against the number of encoders the test started, `live_recorded_bytes` against the size of the
+  documents in storage, `live_bytes` against the payload ffprobe measured in the pattern the senders
+  push. Not against `GET /api/live`, tempting as that looks: one heartbeat pass hands `StreamHub.Bytes`
+  to the counter as a delta and puts the same field in the registry entry three lines later, so the two
+  agree however wrong the hub is. That check was in the first version of this page and it could not
+  fail.
+- **No tag carries a stream name.** Fifty streams named alike make the leak visible; one stream
+  cannot. The test also holds every tag key to the six on this page.
+
+It pins the first alert's fifty-stream row as a pass condition — clean delivery, no kernel receive
+errors, no recording overflowed, the median beat well inside two seconds — so the numbers in that
+list stay measurements rather than recollections. `LIVE_LOAD_STREAMS` raises the count to use it as
+the rig on real hardware.
+
+**And the alert order above is the order it was found in.** `LiveScaleTests`, the scale rig beside it,
+ramped one replica to 150 camera-rate streams and caught the state this page exists for: every stream
+listed live, the delivered rate *higher* than the step before it — a receiver catching up on
+retransmissions delivers more than the source rate, not less — and the only two figures telling the
+truth were 41,264 packets lost in fifteen seconds and 12,876 kernel UDP receive errors. A dashboard
+watching bitrate would have called that pod healthy. The measurements, including what ran out and in
+which thread, are in `.scratch/scale-to-1000/ingest-and-readers.md`.
+
 ## What is not measured yet
 
 - **The detection worker's meter is not exported.** It publishes one instrument already -

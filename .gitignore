@@ -9,7 +9,12 @@ data/
 *.db-log
 
 # Fetched by scripts/fetch-ffmpeg.sh, not committed: it is ~200 MB of binaries.
-ffmpeg/
+#
+# No trailing slash, because a pattern with one matches directories only. A Linux developer, or a
+# rig running in a worktree, points at one shared copy with a symlink rather than a second 200 MB
+# of it - and a symlink named ffmpeg then showed up as untracked, one absolute path away from being
+# committed into everybody else's checkout.
+ffmpeg
 
 # Other
 scratch/

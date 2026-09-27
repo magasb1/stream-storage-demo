@@ -1,11 +1,8 @@
-using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Globalization;
 using System.Net;
 using System.Net.Sockets;
-using System.Text;
 using System.Text.RegularExpressions;
-using StorageDemo.Infrastructure.Media;
 
 namespace StorageDemo.Tests.Infrastructure;
 
@@ -26,8 +23,6 @@ internal static class SrtSenders
     /// breaks one place rather than three tests.
     /// </summary>
     private const string RefusalPrefix = "Connection to srt://";
-
-    private static readonly ConcurrentDictionary<int, StringBuilder> Stderr = new();
 
     /// <summary>An encoder pushing into a listening port. Null presents no identifier at all.</summary>
     /// <param name="callerOptions">
@@ -52,45 +47,105 @@ internal static class SrtSenders
             "-f", "mpegts", Target(port, streamId, callerOptions),
         ]);
 
+    /// <summary>
+    /// One caller per name, all out of one process: the same file read once and muxed to each.
+    ///
+    /// It exists for the load rig, where a process per stream is what runs out first. Two hundred
+    /// senders is ten gigabytes of resident ffmpeg and several cores of process overhead before the
+    /// service has done anything; twenty processes pushing ten streams each is the same bytes on the
+    /// wire for a twentieth of that. A multi-channel encoder is also a real thing, which is what
+    /// makes it a fair rig rather than a trick.
+    ///
+    /// The cost is shared fate: one output blocking holds up its siblings, since ffmpeg writes them
+    /// from one thread. That is why the rig reports its own processor share beside the service's -
+    /// senders that fell behind and a service at its knee both show as less media arriving, and only
+    /// the kernel's drop counter and the transport's loss figures tell them apart.
+    /// </summary>
+    public static Process StartMultiSender(int port, IReadOnlyList<string> names, string file)
+        => Start(
+        [
+            "-hide_banner", "-loglevel", "error",
+            "-re", "-i", file,
+            .. names.SelectMany(name => (string[])
+            [
+                "-map", "0", "-c", "copy",
+                "-f", "mpegts", Target(port, $"#!::r={name},m=publish", null),
+            ]),
+        ]);
+
+    /// <summary>
+    /// Viewers that never decode: one connection per name, all in one process, each discarded.
+    ///
+    /// A player that decodes costs more than the service does per stream, so a rig built out of them
+    /// measures the rig. This is what a viewer costs the service - a socket, a subscription and a
+    /// muxer - with nothing on this side but a read.
+    /// </summary>
+    public static Process StartCopyPlayers(int port, IReadOnlyList<string> names)
+        => Start(
+        [
+            "-hide_banner", "-loglevel", "error",
+            .. names.SelectMany(name => (string[])
+                ["-i", Target(port, $"#!::r={name},m=request", null)]),
+
+            // One output per input rather than every input mapped into one: ffmpeg interleaves the
+            // streams of a single output by timestamp, so one slow viewer would hold up the rest of
+            // them inside this process and the rig would be measuring itself.
+            .. names.Select((_, index) => index).SelectMany(index => (string[])
+            [
+                "-map", index.ToString(CultureInfo.InvariantCulture), "-c", "copy",
+                "-f", "mpegts", OperatingSystem.IsWindows() ? "NUL" : "/dev/null",
+            ]),
+        ]);
+
     /// <summary>A video-only transport stream of the synthetic picture, at the settings <see cref="StartSender"/> sends.</summary>
     /// <param name="image">
     /// A still to show for the whole duration instead of the synthetic picture, at its own size
     /// and near-lossless, so a detector sees the picture the file holds rather than the codec's
     /// idea of it. This is how a known image becomes a stream.
     /// </param>
-    public static void Render(string path, int seconds, string? image = null)
+    /// <param name="picture">
+    /// The lavfi source to encode, for a test that needs a particular bitrate rather than the
+    /// smallest thing that is a video. The default is what every sender here sends; the load test
+    /// asks for the busier, larger pattern <c>scripts/load-senders.sh</c> uses, so its figures can
+    /// be read beside the ones measured with that script.
+    /// </param>
+    /// <param name="bitrate">
+    /// What to aim the encoder at. It is a ceiling rather than a promise - a synthetic pattern that
+    /// compresses well will undershoot it, which is why the rigs measure what the file actually holds
+    /// instead of trusting this. Raising it with a larger picture is how a camera-rate stream is made:
+    /// the scale rig's second question is packet rate, not stream count.
+    /// </param>
+    public static void Render(
+        string path,
+        int seconds,
+        string? image = null,
+        string? picture = null,
+        string? bitrate = null)
     {
-        var startInfo = new ProcessStartInfo(Ffmpeg.ExecutablePath)
-        {
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-        };
+        string[] arguments =
+        [
+            "-hide_banner", "-loglevel", "error", "-y",
+            .. image is null
+                ? (string[])
+                [
+                    "-f", "lavfi", "-i", picture ?? "testsrc=size=320x240:rate=15",
+                    "-c:v", "mpeg2video", "-b:v", bitrate ?? "800k",
+                ]
+                : ["-loop", "1", "-framerate", "15", "-i", image, "-c:v", "mpeg2video", "-q:v", "2", "-pix_fmt", "yuv420p"],
+            "-g", "15",
+            "-t", seconds.ToString(CultureInfo.InvariantCulture),
+            "-f", "mpegts", path,
+        ];
 
-        foreach (var argument in (string[])
-                 [
-                     "-hide_banner", "-loglevel", "error", "-y",
-                     .. image is null
-                         ? (string[])["-f", "lavfi", "-i", "testsrc=size=320x240:rate=15", "-c:v", "mpeg2video", "-b:v", "800k"]
-                         : ["-loop", "1", "-framerate", "15", "-i", image, "-c:v", "mpeg2video", "-q:v", "2", "-pix_fmt", "yuv420p"],
-                     "-g", "15",
-                     "-t", seconds.ToString(CultureInfo.InvariantCulture),
-                     "-f", "mpegts", path,
-                 ])
-        {
-            startInfo.ArgumentList.Add(argument);
-        }
+        using var process = BundledFfmpeg.Start(BundledFfmpeg.Tool.Ffmpeg, arguments);
 
-        if (!OperatingSystem.IsWindows())
-        {
-            startInfo.Environment["LD_LIBRARY_PATH"] = Ffmpeg.Directory;
-        }
-
-        using var process = Process.Start(startInfo)!;
-        var complaints = process.StandardError.ReadToEnd();
+        // The parameterless overload, which also waits for the drain, so a failure message has
+        // whatever ffmpeg said in it rather than the first half of it.
         process.WaitForExit();
 
-        Assert.True(process.ExitCode == 0, $"ffmpeg could not render the video: {complaints}");
+        Assert.True(
+            process.ExitCode == 0,
+            $"ffmpeg could not render the video: {BundledFfmpeg.Complaints(process)}");
     }
 
     /// <summary>
@@ -134,6 +189,52 @@ internal static class SrtSenders
                 + (streamId is null ? string.Empty : $"&streamid={Escape(streamId)}"),
             "-f", "null", "-",
         ]);
+
+    /// <summary>
+    /// The rate of the packets inside a transport stream, as the bundled ffprobe adds them up.
+    ///
+    /// The duration is the caller's to supply rather than ffprobe's to report, because the caller is
+    /// the one that rendered the file and knows what it asked for; passing a figure that does not
+    /// match silently scales every comparison made against the result.
+    ///
+    /// It is the payload rather than the file's size because that is what a demultiplexer publishes
+    /// and therefore what the service counts: transport headers, the program tables and any padding
+    /// are not in the figure. Compared against the file instead, a replica delivering everything it
+    /// was sent reads as one delivering four fifths of it. Nothing is decoded to get it.
+    /// </summary>
+    public static double PayloadMbps(string path, int seconds)
+    {
+        string[] arguments = ["-v", "error", "-show_entries", "packet=size", "-of", "csv=p=0", path];
+
+        // Through the same helper as every other launch here, so the library path is set in one
+        // place: this is the seventh site, and it arrived with the load rigs after the other six had
+        // already been consolidated. A launcher of its own would have quietly made BundledFfmpeg's
+        // "only place that starts the bundled binary" untrue while merging without a conflict.
+        using var probe = BundledFfmpeg.Start(BundledFfmpeg.Tool.Ffprobe, arguments, readOutput: true);
+
+        // Standard output is read here while the helper drains standard error on another thread. One
+        // pipe read to completion before the other is started deadlocks the moment the unread one
+        // fills, and a packet listing for a long file is easily large enough to make that real.
+        var sizes = probe.StandardOutput.ReadToEnd();
+
+        probe.WaitForExit();
+
+        Assert.True(
+            probe.ExitCode == 0,
+            $"ffprobe could not read '{path}': {BundledFfmpeg.Complaints(probe)}");
+
+        // One line per packet, and the size is its first field: ffprobe's CSV writer still emits the
+        // separator for the side-data column it was not asked about, so "8058," is a whole line.
+        var bytes = sizes
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Sum(line => long.TryParse(line.Split(',')[0], CultureInfo.InvariantCulture, out var packet)
+                ? packet
+                : 0);
+
+        Assert.True(bytes > 0, $"'{path}' holds no packets");
+
+        return bytes * 8 / (double)seconds / 1_000_000;
+    }
 
     /// <summary>Frames a <see cref="StartViewer"/> player has decoded so far.</summary>
     public static int Decoded(Process player)
@@ -267,57 +368,12 @@ internal static class SrtSenders
         => streamId.Replace("#", "%23", StringComparison.Ordinal);
 
     private static Process Start(string[] arguments)
-    {
-        var startInfo = new ProcessStartInfo(Ffmpeg.ExecutablePath)
-        {
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-        };
+        => BundledFfmpeg.Start(BundledFfmpeg.Tool.Ffmpeg, arguments);
 
-        foreach (var argument in arguments)
-        {
-            startInfo.ArgumentList.Add(argument);
-        }
-
-        if (!OperatingSystem.IsWindows())
-        {
-            startInfo.Environment["LD_LIBRARY_PATH"] = Ffmpeg.Directory;
-        }
-
-        var caller = Process.Start(startInfo)!;
-
-        // Drained, not merely redirected. A pipe nobody reads fills and stops the caller, and the
-        // test then fails as "nothing was accepted" with the reason sitting unread in the pipe.
-        var complaints = new StringBuilder();
-        Stderr[caller.Id] = complaints;
-
-        caller.ErrorDataReceived += (_, line) =>
-        {
-            if (line.Data is not null)
-            {
-                lock (complaints)
-                {
-                    complaints.AppendLine(line.Data);
-                }
-            }
-        };
-
-        caller.BeginErrorReadLine();
-
-        return caller;
-    }
-
-    private static string Said(Process caller)
-    {
-        if (!Stderr.TryGetValue(caller.Id, out var text))
-        {
-            return string.Empty;
-        }
-
-        lock (text)
-        {
-            return text.ToString().Trim();
-        }
-    }
+    /// <summary>
+    /// What this caller complained about. Drained from the moment it started, which is not a detail:
+    /// a pipe nobody reads fills and stops the caller, and the test then fails as "nothing was
+    /// accepted" with the reason sitting unread in the pipe.
+    /// </summary>
+    private static string Said(Process caller) => BundledFfmpeg.Complaints(caller);
 }
