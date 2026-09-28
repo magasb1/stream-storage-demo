@@ -107,11 +107,11 @@ public sealed class LiveScaleTests(ITestOutputHelper output) : IAsyncLifetime
     ///
     /// The same failure on the other route, and it costs something else entirely: a direct player's
     /// writes block inline in libsrt rather than being handed to a queue, so the question here was
-    /// threads and the answer measured in <see cref="LiveSlowPlayerTests"/> is memory - libsrt drops
-    /// what it cannot deliver instead of making the send wait, and fills that socket's send buffer
-    /// doing it. This exists so the figure that bound at ten of them can be pushed: a hundred slow
-    /// players is a gigabyte of send buffer if each one really costs twelve megabytes, and that is a
-    /// ceiling this rig can find and a focused test cannot.
+    /// threads and the answer measured in <see cref="LiveSlowPlayerTests"/> is that an ordinary
+    /// player costs none of them - libsrt discards from the send buffer rather than making the send
+    /// wait. What ten of them cost in memory could not be separated from ten muxers and ten queues at
+    /// that scale, which is what this exists for: a hundred of them against a send buffer that holds
+    /// about a second and a half of stream each, and a resident figure with a slope worth reading.
     ///
     /// Rounded up to whole processes, because the players come ten to a process and one process reads
     /// at one rate.
@@ -119,8 +119,9 @@ public sealed class LiveScaleTests(ITestOutputHelper output) : IAsyncLifetime
     private static readonly int SlowDirect = Optional("LIVE_SCALE_SLOW_DIRECT", 0);
 
     /// <summary>
-    /// What those players read, as a multiple of real time. Three tenths is #11's figure and the one
-    /// the focused test measured at, so a rig row can be read beside it.
+    /// What those players read, as a percentage of real time: 30 is three tenths, which is #11's
+    /// figure and the one the focused test measured at, so a rig row can be read beside it. A
+    /// percentage rather than a fraction because the environment is read as an integer.
     /// </summary>
     private static readonly double SlowDirectRate = Configured("LIVE_SCALE_SLOW_DIRECT_RATE", 30) / 100d;
 

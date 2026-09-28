@@ -460,6 +460,14 @@ public enum SRT_SOCKOPT
     /// <summary>Sets SRTO_RCVLATENCY and SRTO_PEERLATENCY together, which is why it is the one to set.</summary>
     SRTO_LATENCY = 23,
     SRTO_PASSPHRASE = 26,
+
+    /// <summary>
+    /// Whether this end may throw away what it can no longer deliver in time. Read rather than set:
+    /// nothing here configures it, and on a viewer's socket the figure that matters is the peer's,
+    /// because libsrt drops from its send buffer only for a peer that advertised the flag in the
+    /// handshake. <c>SrtSendPressureTests</c> clears it on a peer to measure what happens then.
+    /// </summary>
+    SRTO_TLPKTDROP = 31,
     SRTO_RCVLATENCY = 43,
     SRTO_PEERLATENCY = 44,
 

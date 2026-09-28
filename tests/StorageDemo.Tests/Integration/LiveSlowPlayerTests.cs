@@ -29,24 +29,33 @@ namespace StorageDemo.Tests.Integration;
 /// that has stopped listening. Which of the two actually happens decided whether a send timeout was
 /// worth adding, and nobody had measured it.
 ///
-/// Measured here, and libsrt saves us: the send does not wait. Ten players reading three tenths of a
-/// 12 Mbit/s stream moved this process's pool from five workers to five, its threads from 29 to 28,
-/// and skipped nothing to live in two minutes - against the 219 workers two hundred slow relayed
-/// viewers cost before #19. What each of them costs instead is memory, and it is bounded: the send
-/// buffer libsrt fills for that socket, about twelve megabytes with its defaults, plus that viewer's
-/// own queue, which is four seconds of the stream. Resident memory went from 197 MB to 404 MB for
-/// ten of them and flattened as each socket's buffer filled, which is what a bound looks like.
+/// Measured here, and the send does not wait - on one condition, which is the viewer's and not this
+/// service's. libsrt discards from a socket's send buffer only for a peer that advertised too-late-
+/// packet drop in its handshake; that is libsrt's default, so it is what an ordinary player does, and
+/// <c>SrtSendPressureTests</c> measures both what it buys and what its absence costs. Everything
+/// below therefore describes ordinary players, which is the case #11 asked about.
 ///
-/// Past that the transport throws the surplus away, and the second test here is libsrt's own account
-/// of it from the receiving end: a reader taking three tenths of this stream gets 1.9 Mbit/s of it
-/// and loses about 970 packets a second, because its receive buffer is full and it has nowhere to put
-/// what arrives. That is the answer to #11 - a slow direct player loses picture where a slow relayed
-/// one used to hold a thread.
+/// The figure this turns on is the skip count, not the thread count. A direct viewer is written to
+/// inline, so a send that waits stalls that viewer's drain, and four seconds of stalling fills its
+/// subscription and scores a skip-to-live. Ten players taking three tenths of the stream skipped
+/// nothing across two minutes, which bounds every single write below about four seconds without
+/// depending on scheduling noise at all. The thread counts agree and say less: fewer than half a
+/// thread each, which excludes the one-per-viewer shape #4 measured on the relayed route and does not
+/// establish zero - attaching ten players costs about three workers and three threads by itself.
 ///
-/// A player that paces itself strictly is eventually disconnected by its own library rather than by
-/// this service: libsrt breaks a connection whose receiver can no longer place what is arriving, and
-/// says so plainly. Three player shapes and three outcomes, all of them survivable here, none of
-/// them a held thread.
+/// What the player gets instead of a stall is a stream with holes, and the second test is libsrt's
+/// own account of that from the receiving end: a reader taking three tenths is handed 1.9 Mbit/s of a
+/// 12.29 Mbit/s stream and loses about 980 packets a second once its own buffer is full, because it
+/// has nowhere to put what arrives. A reader pacing strictly by bytes is then disconnected by
+/// its own library, which says so plainly - "SEQUENCE DISCREPANCY ... Reception no longer possible" -
+/// while the ffmpeg players, which pace by timestamps, stay connected and simply lose picture.
+///
+/// What it costs this replica in memory is deliberately not claimed here. Resident memory climbs
+/// while slow players are served and the table prints it, but ten slow players are also ten muxers,
+/// ten subscriptions and ten four-second queues, and nothing in this test separates those from the
+/// send buffer. The send buffer's own steady state is measured in <c>SrtSendPressureTests</c>, on the
+/// socket rather than off the process, and the rig's LIVE_SCALE_SLOW_DIRECT exists to find the slope
+/// at a hundred of them.
 ///
 /// The bitrate is part of the measurement rather than a detail of it. This pushes 12 Mbit/s so that
 /// the buffers at both ends fill inside a window a test can wait out; at the 600 kbit/s the rest of
@@ -82,38 +91,39 @@ public sealed class LiveSlowPlayerTests(ITestOutputHelper output) : IAsyncLifeti
     private const double ReadRate = 0.3;
 
     /// <summary>
-    /// What the sender pushes, and it is sized rather than inherited. The transport absorbs a slow
-    /// player until the buffers at both ends are full, which is a number of bytes and not a number of
-    /// seconds: about a dozen megabytes each with libsrt's defaults, which one player's surplus
-    /// reaches in ten to twenty seconds at this bitrate and would take several minutes to reach at
-    /// the 600 kbit/s the rest of the suite sends. A test at the lower rate would pass without the
-    /// transport ever having been asked the question.
+    /// What the sender pushes, and it is sized rather than inherited. Nothing happens to a slow player
+    /// until its own receive buffer is full, and that is a number of bytes rather than of seconds:
+    /// twelve megabytes with libsrt's defaults, which this bitrate reaches in about ten seconds and
+    /// the 600 kbit/s the rest of the suite sends would take a quarter of an hour to reach. A test at
+    /// the lower rate would pass without the transport ever having been asked the question, which is
+    /// the trap this figure exists to avoid.
     /// </summary>
     private const string Picture = "testsrc2=size=1280x720:rate=25";
 
     private const string Bitrate = "12M";
 
     /// <summary>
-    /// What that bitrate is worth in kilobytes a second, because a reader's pace has to be set in
-    /// bytes and a transport-stream's is not quite its video bitrate. Measured rather than derived:
-    /// the pattern above arrives at 12.4 Mbit/s, which is about 1500 KB/s. A figure a little out
-    /// makes the reader slightly slower or faster than three tenths and changes nothing that is
-    /// being asked.
+    /// What the stream is worth on the wire, and the one place a rate is written down: the reader
+    /// below is paced against it and every figure printed is derived from it, because quoting a
+    /// transport stream's rate twice is how a run ends up with two of them. Twelve megabits of video
+    /// arrives as about this much transport stream, and each run prints what the replica actually
+    /// received beside it so a drift is visible rather than assumed away.
     /// </summary>
-    private const double Kilobytes = 1500;
+    private const int BitsPerSecond = 12_288_000;
 
     /// <summary>
     /// How long the pattern runs. It has to outlast the whole run: <c>-re</c> stops pacing at the end
     /// of a file, and a sender that reaches it stops being a sender.
     /// </summary>
-    private const int PatternSeconds = 200;
+    private const int PatternSeconds = 120;
 
     /// <summary>
-    /// How long each step is watched for. Long enough that a player's surplus has filled the buffers
-    /// at both ends several times over - twenty seconds at this bitrate - so that what is measured
-    /// afterwards is the transport's answer rather than its patience.
+    /// How long each step is watched for. The buffers at both ends fill in about twenty seconds at
+    /// this bitrate, so thirty is half again as long as the fill: what is measured after it is the
+    /// transport's answer rather than its patience, and the two steps together still take two
+    /// minutes of a shared machine rather than four.
     /// </summary>
-    private static readonly TimeSpan Stalled = TimeSpan.FromSeconds(60);
+    private static readonly TimeSpan Stalled = TimeSpan.FromSeconds(30);
 
     /// <summary>
     /// How often the process is asked what it is holding. The answer that matters is the peak rather
@@ -242,7 +252,8 @@ public sealed class LiveSlowPlayerTests(ITestOutputHelper output) : IAsyncLifeti
         var before = Vitals.Read(_processes);
         var fed = (await Carrying())?.Packets ?? 0;
         var slow = new List<Process>();
-        var peak = before;
+        var pool = before.PoolThreads;
+        var threads = before.Threads;
 
         output.WriteLine(
             $"{"at",-8}{"players",-9}{"viewers",-9}{"pool",-6}{"threads",-9}{"rss",-8}"
@@ -275,11 +286,11 @@ public sealed class LiveSlowPlayerTests(ITestOutputHelper output) : IAsyncLifeti
                 var stream = await Carrying();
                 var alive = slow.Count(player => !player.HasExited);
 
-                // The peak, not the last reading. See Sample.
-                if (now.PoolThreads > peak.PoolThreads)
-                {
-                    peak = now;
-                }
+                // Both peaks, and separately: a process thread taken without a pool worker is the
+                // shape this route had before #18, one dedicated thread per accepted viewer, and a
+                // peak chosen on the pool figure alone would not see it.
+                pool = Math.Max(pool, now.PoolThreads);
+                threads = Math.Max(threads, now.Threads);
 
                 output.WriteLine(
                     $"{(DateTime.UtcNow - started).TotalSeconds,-8:0}{slow.Count,-9}"
@@ -292,33 +303,53 @@ public sealed class LiveSlowPlayerTests(ITestOutputHelper output) : IAsyncLifeti
         var after = Vitals.Read(_processes);
         var final = await Carrying();
 
+        var skips = Skips(meters);
+
+        output.WriteLine($"skip-to-live: {skips:0}  <- the figure this test turns on");
         output.WriteLine($"before: {Describe(before)}");
-        output.WriteLine($"peak:   {Describe(peak)}");
+        output.WriteLine($"peak:   {pool} pool workers, {threads} process threads");
         output.WriteLine($"after:  {Describe(after)}");
         output.WriteLine($"busiest threads: {after.Since(before, Stalled * Steps).Busiest(6)}");
         output.WriteLine($"stream: {final?.State} {final?.Packets} packets, {final?.Viewers} viewers, "
             + $"lost {final?.PacketsLost}, dropped {final?.PacketsDropped}, "
             + $"retransmitted {final?.Link?.PacketsRetransmitted}, "
-            + $"receiving {final?.Link?.ReceiveRateMbps:0.0} Mbit/s");
-        output.WriteLine($"skip-to-live: {Skips(meters):0}");
+            + $"receiving {final?.Link?.ReceiveRateMbps:0.00} Mbit/s against the "
+            + $"{BitsPerSecond / 1_000_000d:0.00} the reader is paced against");
         output.WriteLine($"the transport said: {_said.About("viewer")}");
         output.WriteLine($"the players said: {SrtSenders.Complaints(slow)}");
 
-        // Half the slow players, and the bound is the same shape as the relayed route's: a pool grows
-        // on queued work whether or not anything is blocked, so a figure of zero would be measuring
-        // scheduling luck. What it excludes is one thread per slow player, which is the fault this
-        // exists to catch and what a send that waits without bound looks like from outside.
+        // The sharpest figure here, and the one that does not depend on thread-count noise at all. A
+        // direct viewer is written to inline, so a send that waits stops this viewer's drain, and four
+        // seconds of it fills the subscription and scores a skip. Zero skips therefore bounds every
+        // single write below about four seconds - which is #20's premise, answered without counting a
+        // thread at all.
+        //
+        // A small allowance rather than exactly zero: the queue is four seconds of the sender's
+        // declared rate, and a collection pause or a genuinely late keyframe on a loaded machine can
+        // cost one. What it excludes is a route where waiting is ordinary, which is what tens of skips
+        // would be.
+        Assert.True(
+            skips <= 2,
+            $"{skips:0} viewers were skipped to live, so a write to a direct player waited about four "
+            + "seconds or more, which is what #20's send timeout exists for");
+
+        // Half the slow players, and read as what it is: this excludes one thread per slow player, the
+        // shape #4 measured on the relayed route, and it does not establish none. A pool grows on
+        // queued work whether or not anything is blocked, and attaching ten players costs about three
+        // workers and three threads by itself, so of the five threads of headroom this bound has the
+        // attach transient spends three. What it can tell apart is "fewer than about half a thread
+        // each" from "one each"; it cannot tell either of those from zero.
         var allowed = Steps * PerStep / 2;
 
         Assert.True(
-            peak.PoolThreads - before.PoolThreads <= allowed,
-            $"the pool grew {peak.PoolThreads - before.PoolThreads} workers for {Steps * PerStep} "
-            + $"slow players ({Describe(before)} then {Describe(peak)})");
+            pool - before.PoolThreads <= allowed,
+            $"the pool grew {pool - before.PoolThreads} workers for {Steps * PerStep} slow players "
+            + $"(from {Describe(before)})");
 
         Assert.True(
-            peak.Threads - before.Threads <= allowed,
-            $"the process grew {peak.Threads - before.Threads} threads for {Steps * PerStep} slow "
-            + $"players ({Describe(before)} then {Describe(peak)})");
+            threads - before.Threads <= allowed,
+            $"the process grew {threads - before.Threads} threads for {Steps * PerStep} slow players "
+            + $"(from {Describe(before)})");
 
         // The other half of the same question, and the half a thread count cannot answer. A replica
         // that coped by abandoning the stream, or by starving the viewer that was behaving, has not
@@ -382,7 +413,7 @@ public sealed class LiveSlowPlayerTests(ITestOutputHelper output) : IAsyncLifeti
             TimeSpan.FromSeconds(60),
             "the stream never went live");
 
-        using var sipping = Sipping.Open(ConsumptionPort, Name, ReadRate * Kilobytes);
+        using var sipping = Sipping.Open(ConsumptionPort, Name, ReadRate * BitsPerSecond / 8);
 
         await LiveReplicas.Until(
             async () => await Carrying() is { Viewers: >= 1 },
@@ -425,9 +456,12 @@ public sealed class LiveSlowPlayerTests(ITestOutputHelper output) : IAsyncLifeti
                 + $"{health.Link.PacketsRetransmitted,-8}{health.Link.RoundTripTimeMs:0.0}");
         }
 
+        var seconds = Math.Max(held.TotalSeconds, 1);
+
         output.WriteLine(
-            $"the reader took {sipping.Bytes / 1024 / 1024} MB of a {Kilobytes * 8 / 1000:0.#} Mbit/s "
-            + $"stream at {ReadRate:0.##} of it; lost {lost}, dropped {dropped}, resent "
+            $"the reader took {sipping.Bytes / 1024 / 1024} MB of a {BitsPerSecond / 1_000_000d:0.00} "
+            + $"Mbit/s stream at {ReadRate:0.##} of it; lost {lost} and dropped {dropped} packets in "
+            + $"{seconds:0} s, which is {(lost + dropped) / seconds:0} a second, resent "
             + $"{retransmitted}, and its connection {(sipping.Faulted ? $"broke after {held.TotalSeconds:0} s" : "held")}");
         output.WriteLine($"skip-to-live: {Skips(meters):0}");
         output.WriteLine($"the transport said: {_said.About("viewer")}");
@@ -442,9 +476,12 @@ public sealed class LiveSlowPlayerTests(ITestOutputHelper output) : IAsyncLifeti
         // waited instead would hand this reader a clean stream at three tenths of the rate and
         // nothing else, and what each of those waits costs in threads is the test above.
         Assert.True(
-            lost + dropped > 0,
-            $"libsrt delivered {sipping.Bytes / 1024 / 1024} MB to a reader taking {ReadRate:0.##} of "
-            + "the stream without losing or dropping a packet, which means it waited for it instead");
+            (lost + dropped) / seconds > 50,
+            $"libsrt lost or dropped {(lost + dropped) / seconds:0} packets a second for a reader "
+            + $"taking {ReadRate:0.##} of the stream, having delivered "
+            + $"{sipping.Bytes / 1024 / 1024} MB. A rate this low is a link having a bad moment; what "
+            + "this measures is a transport discarding most of a stream, which ran at about a "
+            + "thousand a second, and its absence would mean the sender waited instead");
 
         // Enough that the figures above are a slow player's rather than a handshake's: a reader that
         // was refused, or served for a second and dropped, would report no loss for a reason that
@@ -499,11 +536,11 @@ public sealed class LiveSlowPlayerTests(ITestOutputHelper output) : IAsyncLifeti
 
         private long _bytes;
 
-        private Sipping(SrtSocketStream player, double kilobytesASecond)
+        private Sipping(SrtSocketStream player, double bytesASecond)
         {
             _player = player;
 
-            _pump = new Thread(() => Read(kilobytesASecond))
+            _pump = new Thread(() => Read(bytesASecond))
             {
                 IsBackground = true,
                 Name = "slow player",
@@ -517,7 +554,7 @@ public sealed class LiveSlowPlayerTests(ITestOutputHelper output) : IAsyncLifeti
 
         public bool Faulted => _player.Faulted;
 
-        public static Sipping Open(int port, string name, double kilobytesASecond)
+        public static Sipping Open(int port, string name, double bytesASecond)
         {
             Srt.EnsureStarted();
 
@@ -541,7 +578,7 @@ public sealed class LiveSlowPlayerTests(ITestOutputHelper output) : IAsyncLifeti
                     $"Could not reach the consumption port on {port}: {Srt.LastError()}");
             }
 
-            return new Sipping(new SrtSocketStream(socket, writable: false), kilobytesASecond);
+            return new Sipping(new SrtSocketStream(socket, writable: false), bytesASecond);
         }
 
         /// <inheritdoc cref="SrtSocketStream.Health"/>
@@ -558,7 +595,7 @@ public sealed class LiveSlowPlayerTests(ITestOutputHelper output) : IAsyncLifeti
             _stopping.Dispose();
         }
 
-        private void Read(double kilobytesASecond)
+        private void Read(double bytesASecond)
         {
             // Exactly the payload size, which is the smallest buffer an SRT read may be given.
             var buffer = new byte[_player.PayloadSize];
@@ -579,7 +616,7 @@ public sealed class LiveSlowPlayerTests(ITestOutputHelper output) : IAsyncLifeti
 
                 // Paced against the running total rather than a fixed pause per read, so the rate is
                 // the rate asked for however large a payload the handshake settled on.
-                var wait = started + TimeSpan.FromSeconds(total / (kilobytesASecond * 1024)) - DateTime.UtcNow;
+                var wait = started + TimeSpan.FromSeconds(total / bytesASecond) - DateTime.UtcNow;
 
                 if (wait > TimeSpan.Zero)
                 {
