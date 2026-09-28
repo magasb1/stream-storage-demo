@@ -111,6 +111,9 @@ public static class LiveSourceRules
     /// Bearing is 0..360 rather than 0..359.x because ST 0601 tag 5's own scale ends at 360, and
     /// 360 encodes as the largest unsigned short rather than wrapping to zero. A caller that means
     /// due north may say either.
+    ///
+    /// The field of view is the one range narrower than the standard's, and the note on it says
+    /// why: it is what stops a half-filled configuration being stored as a reading.
     /// </summary>
     private static string? Sensor(StaticSensor? sensor)
     {
@@ -143,16 +146,22 @@ public static class LiveSourceRules
 
         // Tag 19's range, which is the full sphere rather than the half a mast would use: a camera
         // may look up, and refusing that would be this service inventing a constraint ST 0601 does
-        // not have.
-        if (sensor.Depression is < -180 or > 180 || double.IsNaN(sensor.Depression))
+        // not have. The sign is the standard's, which is why the member is not called a depression.
+        if (sensor.RelativeElevation is < -180 or > 180 || double.IsNaN(sensor.RelativeElevation))
         {
-            return "A depression angle is -180 to 180 degrees.";
+            return "A relative elevation is -180 to 180 degrees, positive above the horizon.";
         }
 
-        if (sensor.HorizontalFov is < 0 or > 180 || double.IsNaN(sensor.HorizontalFov)
-            || sensor.VerticalFov is < 0 or > 180 || double.IsNaN(sensor.VerticalFov))
+        // Exclusive of zero, unlike every other range here, and deliberately narrower than ST 0601
+        // tag 16 and 17's own. A camera with no field of view is not a camera; and zero is what a
+        // member left out of a partial configuration reads as, so this is the one check that
+        // catches such an object whichever surface it arrived on - the JSON members are required
+        // and the gRPC scalars are optional, but a caller can still send an object of explicit
+        // zeros, and a camera at 0N 0E with a 0x0 field of view must not be stored as a reading.
+        if (sensor.HorizontalFov is <= 0 or > 180 || double.IsNaN(sensor.HorizontalFov)
+            || sensor.VerticalFov is <= 0 or > 180 || double.IsNaN(sensor.VerticalFov))
         {
-            return "A field of view is 0 to 180 degrees.";
+            return "A field of view is above 0 and up to 180 degrees.";
         }
 
         // Absent is unmarked, which Misb0601 already treats as an answer distinct from

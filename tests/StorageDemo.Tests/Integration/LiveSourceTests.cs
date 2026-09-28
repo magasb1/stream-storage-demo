@@ -417,7 +417,7 @@ public sealed class LiveSourceTests : IAsyncLifetime
             Latitude: 51.179,
             AltitudeMetres: 143.5,
             TrueBearing: 218.4,
-            Depression: -12.75,
+            RelativeElevation: -12.75,
             HorizontalFov: 6.2,
             VerticalFov: 3.5,
             Classification: "SECRET");
@@ -449,7 +449,7 @@ public sealed class LiveSourceTests : IAsyncLifetime
                      sensor with { Latitude = 91 },
                      sensor with { Longitude = 181 },
                      sensor with { TrueBearing = 361 },
-                     sensor with { Depression = -181 },
+                     sensor with { RelativeElevation = -181 },
                      sensor with { HorizontalFov = 181 },
                      sensor with { VerticalFov = -1 },
                      sensor with { Classification = "COSMIC" },
@@ -469,6 +469,84 @@ public sealed class LiveSourceTests : IAsyncLifetime
         var cleared = await Saved(name, new SaveLiveSourceRequest(name, Url: null, Enabled: true));
 
         Assert.Null(cleared.StaticSensor);
+    }
+
+    /// <summary>
+    /// Half a configuration is refused rather than completed with zeros.
+    ///
+    /// The case the nesting was once claimed to prevent and does not: nesting makes the presence of
+    /// the whole object detectable and says nothing about its members, so a latitude sent alone
+    /// used to store a camera at 0 degrees north, 0 degrees east - the Gulf of Guinea - and pass
+    /// every range check, because every ST 0601 range here includes zero.
+    ///
+    /// Three guards now stand where one was assumed, because the hole is in three places. The
+    /// members are required, so a partial object does not deserialise. The gRPC scalars are
+    /// optional, because proto3 cannot otherwise tell a field left out from a deliberate zero. And
+    /// the field of view is refused at zero, which catches the object of explicit zeros that gets
+    /// past both - a camera with no field of view is not a camera.
+    /// </summary>
+    [Fact]
+    public async Task Half_a_configuration_is_refused_rather_than_filled_in_with_zeros()
+    {
+        const string name = "mast/partial";
+
+        // Sent as raw JSON rather than as the record, because the record cannot express the bug:
+        // this is what a caller sends, and what used to be stored as a reading.
+        var partial = await _client.PutAsync(
+            $"/api/live/sources/{name}",
+            JsonContent.Create(new Dictionary<string, object?>
+            {
+                ["name"] = name,
+                ["enabled"] = true,
+                ["staticSensor"] = new Dictionary<string, object?> { ["latitude"] = 51.2 },
+            }));
+
+        Assert.Equal(HttpStatusCode.BadRequest, partial.StatusCode);
+
+        // An object of explicit zeros deserialises, so the rule rather than the shape refuses it.
+        var zeroed = await Save(name, new SaveLiveSourceRequest(
+            name,
+            Url: null,
+            Enabled: true,
+            Forwards: null,
+            StaticSensor: new StaticSensor(0, 0, 0, 0, 0, 0, 0)));
+
+        Assert.Equal(HttpStatusCode.BadRequest, zeroed.StatusCode);
+
+        // And a camera pointing somewhere real with no field of view is the same refusal, so the
+        // rule is about the field of view rather than about the row happening to be all zeros.
+        var blind = await Save(name, new SaveLiveSourceRequest(
+            name,
+            Url: null,
+            Enabled: true,
+            Forwards: null,
+            StaticSensor: new StaticSensor(-1.826, 51.179, 143.5, 218.4, -12.75, 0, 0)));
+
+        Assert.Equal(HttpStatusCode.BadRequest, blind.StatusCode);
+
+        // Nothing was stored by any of the three.
+        Assert.Equal(
+            HttpStatusCode.NotFound,
+            (await _client.GetAsync($"/api/live/sources/{name}")).StatusCode);
+
+        // The same over gRPC, where proto3 would otherwise make an unset scalar and a deliberate
+        // zero the same bytes. The message carries a latitude and nothing else.
+        var refused = await Assert.ThrowsAsync<RpcException>(
+            () => _grpc.SaveLiveSourceAsync(
+                new LiveSourceMessage
+                {
+                    Name = "grpc/partial",
+                    Enabled = true,
+                    StaticSensor = new StaticSensorMessage { Latitude = 51.2 },
+                },
+                Metadata()).ResponseAsync);
+
+        Assert.Equal(StatusCode.InvalidArgument, refused.StatusCode);
+        Assert.Contains("longitude", refused.Status.Detail, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(
+            (await _grpc.ListLiveSourcesAsync(new Empty(), Metadata())).Sources,
+            source => source.Name == "grpc/partial");
     }
 
     private Task<HttpResponseMessage> Save(string name, SaveLiveSourceRequest request)

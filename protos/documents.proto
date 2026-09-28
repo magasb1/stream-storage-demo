@@ -302,32 +302,42 @@ message SrtForwardLinkStatsMessage {
 // onto that stream's own metadata track, so a mast or perimeter camera can be placed on a map and
 // its field of view drawn.
 //
-// A nested message rather than eight fields on LiveSourceMessage, so that half a configuration
-// cannot be sent: a latitude without a longitude places a camera in the Gulf of Guinea. Every range
-// is the ST 0601 item's own and the server refuses anything outside it, because a value saturated
-// to an item's endpoint is indistinguishable from a measured one.
+// A nested message rather than eight fields on LiveSourceMessage, so that the presence of a whole
+// configuration is one check. That is all the nesting buys: it says nothing about the presence of
+// the members, and in proto3 an unset scalar and a deliberate zero are the same bytes - so a
+// latitude sent without a longitude would place a camera at 0 degrees north, 0 degrees east, the
+// Gulf of Guinea, inside every range there is. Hence optional on every scalar below, which restores
+// field presence, and a server that rejects a message missing any of them. Every range is the ST
+// 0601 item's own and the server refuses anything outside it, because a value saturated to an
+// item's endpoint is indistinguishable from a measured one; the field of view is refused at zero
+// besides, being the one member a half-filled configuration can never have meant.
 message StaticSensorMessage {
   // ST 0601 tag 14, WGS84 degrees, -180 to 180.
-  double longitude = 1;
+  optional double longitude = 1;
 
   // ST 0601 tag 13, WGS84 degrees, -90 to 90.
-  double latitude = 2;
+  optional double latitude = 2;
 
   // ST 0601 tag 15, sensor true altitude above mean sea level, -900 to 19000.
-  double altitude_metres = 3;
+  optional double altitude_metres = 3;
 
   // Where the camera looks, degrees clockwise from true north, 0 to 360. Carried as ST 0601 tag 5
   // with tag 18, Sensor Relative Azimuth, sent as zero beside it - a fixed mount has no
   // longitudinal axis for tag 18 to be relative to, and this is the spelling that stays true if a
   // pan head is ever added.
-  double true_bearing = 4;
+  optional double true_bearing = 4;
 
-  // How far below the horizontal it looks, ST 0601 tag 19, -180 to 180. Negative is downwards.
-  double depression = 5;
+  // Where it looks in the vertical, ST 0601 tag 19, -180 to 180: positive above the horizon,
+  // negative below, so a mast camera looking twelve degrees down sends -12. Named after the
+  // standard's item rather than after a depression, which is the same angle with the opposite
+  // sign; a field called depression carrying an elevation is wrong in range and silent about it.
+  optional double relative_elevation = 5;
 
-  // ST 0601 tags 16 and 17, degrees, 0 to 180. What lets a client draw a wedge rather than a pin.
-  double horizontal_fov = 6;
-  double vertical_fov = 7;
+  // ST 0601 tags 16 and 17, degrees, above 0 and up to 180. What lets a client draw a wedge rather
+  // than a pin. Zero is inside the standard's range and refused anyway: a camera with no field of
+  // view is not a camera, and zero is what a member left out of a partial configuration reads as.
+  optional double horizontal_fov = 6;
+  optional double vertical_fov = 7;
 
   // The ST 0102 marking to carry in ST 0601 tag 48. Absent means unmarked, which is a different
   // answer from UNCLASSIFIED: requiring an operator to declare a marking would invent data.

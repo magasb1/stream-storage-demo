@@ -40,11 +40,15 @@ every viewer's queue on that stream. It carries a role, so the metadata index ca
 the platform-metadata track.
 
 **Static sensor.** Where a fixed camera is and where it looks, configured on its source rather than
-reported by it: position, altitude, true bearing, depression and field of view, with an optional
-marking. A mast or perimeter camera has no platform and no INS, so all of that is configuration and
-none of it changes, and the service synthesises a valid ST 0601 Local Set from it onto a synthetic
-track. A stream that sends KLV of its own gets none: the camera reporting for itself always wins,
-and the transition is a layout change a reconnect makes visible rather than a quiet swap.
+reported by it: position, altitude, true bearing, relative elevation and field of view, with an
+optional marking. Angles follow ST 0601's signs rather than a mast operator's, so the vertical is
+an elevation and a camera looking down carries a negative one. A mast or perimeter camera has no
+platform and no INS, so all of that is configuration and none of it changes, and the service
+synthesises a valid ST 0601 Local Set from it onto a synthetic track. All of it or none: a
+half-filled configuration is refused rather than completed with zeros, which would put a camera at
+0°N 0°E inside every range there is. A stream that sends KLV of its own gets none: the camera
+reporting for itself always wins, and the transition is a layout change a reconnect makes visible
+rather than a quiet swap.
 
 **Synthesised metadata.** A KLV packet this service built from a static sensor rather than received.
 Marked in band as ST 0601 tag 10, Platform Designation, so it survives to any conforming consumer

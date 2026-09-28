@@ -87,6 +87,14 @@ public sealed record RecordingStatus(
 /// has a <see cref="StaticSensor"/> configured and reads false here is one whose configuration is
 /// not yet on the wire - a pushed stream waiting for its encoder to reconnect, or one whose sender
 /// declares KLV of its own and therefore wins.
+///
+/// True has a quieter second reading worth knowing, and it is <see cref="HasKlv"/>'s as much as
+/// this one's. Both are read off the layout, so both say a track is there rather than that anything
+/// is going down it. A track can only be added to or taken off a layout at a connection, so when an
+/// operator removes a sensor from a pushed camera the track stays until its encoder reconnects
+/// while nothing publishes on it: the pair reads true and true, and <see cref="KlvAt"/> is the
+/// field that tells the truth by standing still. A client showing metadata as live should be
+/// looking at <see cref="KlvAt"/>, not at either of these.
 /// </param>
 /// <param name="KlvAt">When the last KLV packet arrived, if any has.</param>
 /// <param name="Classification">

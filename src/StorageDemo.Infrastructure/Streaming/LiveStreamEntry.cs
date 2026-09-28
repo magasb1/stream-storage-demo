@@ -67,7 +67,8 @@ public sealed class LiveStreamEntry : IAsyncDisposable
     /// configuration as it is now.
     ///
     /// Idempotent, which is what lets the heartbeat call it every beat: the sensor is a record, so
-    /// an unchanged configuration compares equal and nothing is torn down. A changed one replaces
+    /// an unchanged configuration compares equal and nothing is torn down - unless the publisher
+    /// has stopped, in which case the next beat starts it again. A changed one replaces
     /// the publisher rather than editing it, because the sets it writes are built from the sensor
     /// it was given and a half-applied change would be a stream reporting one position and one
     /// bearing from different configurations.
@@ -84,7 +85,14 @@ public sealed class LiveStreamEntry : IAsyncDisposable
 
         lock (_gate)
         {
-            if (_sensor == sensor)
+            // The completed check is not redundant with the comparison beside it. The publisher
+            // catches everything and logs, so that a configuration the encoder refuses costs the
+            // stream its metadata rather than its life - but on the comparison alone that cost is
+            // permanent, because the configuration has not changed and never will. Not a
+            // reconnect, not a re-adopted layout, nothing restarts it. A completed task with a
+            // sensor still configured is a publisher that has stopped and should not have, so it
+            // is built again.
+            if (_sensor == sensor && _synthesised is not { IsCompleted: true })
             {
                 return;
             }

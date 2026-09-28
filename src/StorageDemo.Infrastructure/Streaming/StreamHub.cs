@@ -32,8 +32,14 @@ public sealed class StreamHub : IDisposable
     private IReadOnlyList<SyntheticTrack> _synthetic = [];
 
     /// <summary>
-    /// Where the arriving feed has reached on the reference clock, or null before anything has
-    /// arrived on this connection. See <see cref="PublishAtLiveEdge"/>, which is all it is for.
+    /// Where the arriving feed has reached on the reference clock, or null before anything has been
+    /// published on this connection. See <see cref="PublishAtLiveEdge"/>, which is all it is for.
+    ///
+    /// Published rather than timestamped, and the difference is real if narrow: the demultiplexer
+    /// carries its last known reference position forward across packets that have none, so a feed
+    /// whose first packets arrive with no timestamp sets this to zero rather than leaving it null.
+    /// Zero is then this stream's honest position, because it is the same position the buffer put
+    /// those packets at - the two cannot disagree, which is the only property this needs.
     /// </summary>
     private long? _liveEdge;
 
@@ -287,16 +293,34 @@ public sealed class StreamHub : IDisposable
     /// Read outside the lock, the edge can be a reconnect old by the time the packet is published -
     /// a returning encoder counts from its own zero again - and that is precisely the first case.
     /// Exactly at the edge is the one stamp that cannot be either.
+    ///
+    /// The track is named by its role and resolved here for the same reason, and that one is worse.
+    /// A caller that resolved an index of its own and handed it in would be reading the layout at a
+    /// different moment from the one this publishes in, and a reconnect landing between the two is
+    /// enough: index 1 of the departed layout was this service's synthetic track, and index 1 of
+    /// the arriving one can be the sender's own KLV track. The packet does not fail - it lands, at
+    /// the live edge, on a real platform's telemetry track, in every viewer, forward and recording,
+    /// carrying a configured position and saying it is genuine, because <see cref="KlvExtractor"/>
+    /// reads provenance from the layout and the layout now says this index is the sender's. Nothing
+    /// downstream can tell. Re-reading the layout once a tick does not close that window; resolving
+    /// the role against the layout under this lock does, because it is the same read.
     /// </summary>
     /// <returns>
-    /// False when nothing has arrived yet, so there is no edge to stamp against, or when the hub
-    /// has closed. A caller publishing on a schedule tries again on its next tick.
+    /// False when nothing has arrived yet, so there is no edge to stamp against, when the hub has
+    /// closed, or when the layout carries no track with this role - which is what a reconnect to a
+    /// sender that has started reporting for itself looks like. A caller publishing on a schedule
+    /// tries again on its next tick.
     /// </returns>
-    public bool PublishAtLiveEdge(int streamIndex, byte[] data)
+    public bool PublishAtLiveEdge(SyntheticTrackRole role, byte[] data)
     {
         lock (_gate)
         {
             if (Closed || _liveEdge is not { } edge)
+            {
+                return false;
+            }
+
+            if (_layout?.SyntheticIndexOf(role) is not { } streamIndex || streamIndex < 0)
             {
                 return false;
             }

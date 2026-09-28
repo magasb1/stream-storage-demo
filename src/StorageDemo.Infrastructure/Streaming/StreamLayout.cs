@@ -43,13 +43,30 @@ public enum SyntheticTrackRole
 public sealed record SyntheticTrack(SyntheticTrackRole Role, double PacketsPerSecond)
 {
     /// <summary>
-    /// Thrown rather than clamped. A sender's impossible rate is a claim to be disbelieved; this
-    /// one is this service's own arithmetic, and a wrong figure here silently resizes every
-    /// viewer's queue on the stream.
+    /// Held to the same ceiling a sender's claim is, and thrown rather than replaced.
+    ///
+    /// The ceiling is the part that is not obvious. Left unchecked, a declared 999,999 adds
+    /// straight into <see cref="StreamLayout.PacketsPerSecond"/> - past a million for a 25 fps
+    /// stream - and pins <see cref="StreamLayout.QueueDepth"/> to the packet ceiling, which is a
+    /// fraction of a second of queue for every viewer: precisely the failure
+    /// <see cref="StreamLayout"/>'s own <c>Believable</c> exists to prevent, arriving by the one
+    /// door that did not have the check on it. Unreachable from configuration today, since the
+    /// only caller passes a constant, and that is a reason to make it impossible rather than a
+    /// reason to leave it.
+    ///
+    /// Thrown rather than replaced with the assumption, which is where this parts company with
+    /// <c>Believable</c>. A sender's impossible claim has a sensible fallback - treat it as a
+    /// stream that declared nothing - because the sender is not ours to fix. This rate is this
+    /// service's own arithmetic, and there is no figure that would be right for a track whose
+    /// publisher we also wrote; a wrong one silently resizes every viewer's queue on the stream.
     /// </summary>
-    public double PacketsPerSecond { get; } = double.IsFinite(PacketsPerSecond) && PacketsPerSecond > 0
-        ? PacketsPerSecond
-        : throw new ArgumentOutOfRangeException(nameof(PacketsPerSecond), PacketsPerSecond, "A synthetic track has to declare a real rate.");
+    public double PacketsPerSecond { get; } =
+        double.IsFinite(PacketsPerSecond) && PacketsPerSecond is > 0 and <= StreamLayout.MaxPacketsPerSecond
+            ? PacketsPerSecond
+            : throw new ArgumentOutOfRangeException(
+                nameof(PacketsPerSecond),
+                PacketsPerSecond,
+                $"A synthetic track declares a real rate, above 0 and at most {StreamLayout.MaxPacketsPerSecond} a second.");
 }
 
 /// <summary>
@@ -89,7 +106,7 @@ public sealed unsafe class StreamLayout : IDisposable
     /// to a fraction of a second of queue, which is a sender opting its own viewers out of ever
     /// riding out a hiccup.
     /// </summary>
-    private const double MaxPacketsPerSecond = 1_000;
+    internal const double MaxPacketsPerSecond = 1_000;
 
     /// <summary>
     /// The floor under a queue, in seconds, because a floor in packets is the bug this arithmetic

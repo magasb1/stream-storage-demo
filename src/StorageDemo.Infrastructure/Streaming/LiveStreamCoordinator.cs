@@ -1365,8 +1365,14 @@ public sealed class LiveStreamCoordinator(
             // beside LiveStream.HasKlv - rather than reported as live, which is the one answer that
             // would be a lie. Debug rather than information because this is a standing state rather
             // than an event, and the heartbeat visits it every two seconds for as long as it lasts.
+            // Both directions of the mismatch reach here and they are not the same news: one is a
+            // configuration waiting to appear, the other a track waiting to go. Reported as one
+            // message they would read as the first, which for a stream that is carrying a track
+            // nothing publishes on any more is the opposite of what is happening.
             logger.LogDebug(
-                "'{Name}' has sensor metadata configured that its layout does not carry; it will appear when the feed reconnects",
+                sensor is null
+                    ? "'{Name}' carries a synthesised metadata track that is no longer configured and nothing is publishing on it; it goes when the feed reconnects"
+                    : "'{Name}' has sensor metadata configured that its layout does not carry; it will appear when the feed reconnects",
                 entry.Name);
 
             return false;

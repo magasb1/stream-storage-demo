@@ -166,7 +166,7 @@ public sealed unsafe class PacketMuxerTests
                 hub.Publish(Video(pts), pts);
             }
 
-            Assert.True(hub.PublishAtLiveEdge(klv, Payload(seed: 11, length: 64)));
+            Assert.True(hub.PublishAtLiveEdge(SyntheticTrackRole.PlatformMetadata, Payload(seed: 11, length: 64)));
             Assert.True(subscription.Packets.TryRead(out published));
         }
 
@@ -196,6 +196,79 @@ public sealed unsafe class PacketMuxerTests
         Assert.True(
             late > alone + 1.5,
             $"the control did not rebase, so this test proves nothing: {late:F2}s against {alone:F2}s");
+    }
+
+    /// <summary>
+    /// After a reconnect to a sender that carries its own KLV, nothing is published at all - and in
+    /// particular nothing is published onto the sender's track.
+    ///
+    /// The window is a reconnect between a publisher resolving a track index and the hub writing
+    /// to it, and what makes it worth a test is not its width but what it does. Index 1 of the
+    /// departed layout is this service's synthetic track; index 1 of the arriving one can be a real
+    /// platform's telemetry track. A packet on the stale index does not fail - it lands, at the
+    /// live edge, in every viewer, forward and recording, carrying a configured position under
+    /// ST 0601 tag 10 saying it was synthesised, while <see cref="KlvExtractor"/> reports it as
+    /// genuine, because provenance is read from the layout and the layout now says that index is
+    /// the sender's. Real sensor telemetry, silently falsified.
+    ///
+    /// So the track is named by its role and resolved inside the same lock that publishes, and
+    /// re-reading the layout once a tick is not a substitute: it closes the window between ticks
+    /// and leaves the one inside a tick exactly where it was.
+    /// </summary>
+    [Fact]
+    public void Nothing_is_published_onto_a_track_the_sender_has_taken_back()
+    {
+        Assert.SkipUnless(Ffmpeg.IsPresent, "No FFmpeg. Run scripts/fetch-ffmpeg.sh.");
+
+        FfmpegLibrary.EnsureLoaded();
+
+        var options = new LiveOptions();
+
+        using var hub = new StreamHub("taken-back", options, NullLogger.Instance);
+
+        using var synthesising = Augmented(videoFrameRate: 25);
+        using var reporting = Reporting(videoFrameRate: 25);
+
+        hub.Adopt(synthesising);
+
+        // Attached to index 1 and never re-reading the layout, which is every consumer that writes
+        // bytes: Serve, the recorder, every forward and the snapshot muxer.
+        using var subscription = hub.Subscribe(capacity: 64, OverflowPolicy.SkipToLive, streamIndexes: [1]);
+
+        hub.Publish(Video(0), 0);
+
+        Assert.True(hub.PublishAtLiveEdge(SyntheticTrackRole.PlatformMetadata, Payload(seed: 11, length: 64)));
+        Assert.True(subscription.Packets.TryRead(out _));
+
+        // The camera comes back reporting its own telemetry. Index 1 is now the sender's KLV track:
+        // same count, same codec parameters, different provenance.
+        Assert.Equal(synthesising.Count, reporting.Count);
+        Assert.Equal(1, reporting.KlvIndex);
+        Assert.False(reporting.KlvIsSynthetic);
+
+        hub.Adopt(reporting);
+
+        // A live edge on the new layout, so the refusal below is about the track rather than about
+        // there being nothing to stamp against. Without this the test would pass for the wrong
+        // reason and prove nothing.
+        hub.Publish(Video(Second), Second);
+
+        Assert.False(
+            hub.PublishAtLiveEdge(SyntheticTrackRole.PlatformMetadata, Payload(seed: 11, length: 64)),
+            "a synthesised set was published after the sender took the track back");
+
+        // Nothing of ours reached a real telemetry track.
+        Assert.False(subscription.Packets.TryRead(out var leaked), $"a packet reached the sender's own KLV track: {leaked}");
+
+        // And that emptiness is the refusal rather than a subscription that had stopped delivering:
+        // the sender's own packet on the same index arrives. Without this the assertion above would
+        // pass whatever the hub did.
+        var reported = new MediaPacket(1, Payload(seed: 21, length: 48), Second, Second, 0, IsKeyframe: true);
+
+        hub.Publish(reported, Second);
+
+        Assert.True(subscription.Packets.TryRead(out var arrived));
+        Assert.Equal(reported.Data, arrived!.Data);
     }
 
     /// <summary>
@@ -303,10 +376,14 @@ public sealed unsafe class PacketMuxerTests
 
     private static StreamLayout Bare(int videoFrameRate) => Layout(videoFrameRate, []);
 
+    /// <summary>A sender carrying KLV of its own, which gets no synthetic track however much is asked for.</summary>
+    private static StreamLayout Reporting(int videoFrameRate)
+        => Layout(videoFrameRate, [new SyntheticTrack(SyntheticTrackRole.PlatformMetadata, StaticSensorPublisher.PacketsPerSecond)], klv: true);
+
     private static StreamLayout Augmented(int videoFrameRate)
         => Layout(videoFrameRate, [new SyntheticTrack(SyntheticTrackRole.PlatformMetadata, StaticSensorPublisher.PacketsPerSecond)]);
 
-    private static StreamLayout Layout(int videoFrameRate, IReadOnlyList<SyntheticTrack> synthetic)
+    private static StreamLayout Layout(int videoFrameRate, IReadOnlyList<SyntheticTrack> synthetic, bool klv = false)
     {
         var format = ffmpeg.avformat_alloc_context();
 
@@ -320,6 +397,15 @@ public sealed unsafe class PacketMuxerTests
             video->codecpar->codec_id = AVCodecID.AV_CODEC_ID_MPEG2VIDEO;
             video->codecpar->width = 320;
             video->codecpar->height = 240;
+
+            if (klv)
+            {
+                var data = ffmpeg.avformat_new_stream(format, null);
+
+                data->time_base = Clock;
+                data->codecpar->codec_type = AVMediaType.AVMEDIA_TYPE_DATA;
+                data->codecpar->codec_id = AVCodecID.AV_CODEC_ID_SMPTE_KLV;
+            }
 
             return StreamLayout.From(format, synthetic);
         }

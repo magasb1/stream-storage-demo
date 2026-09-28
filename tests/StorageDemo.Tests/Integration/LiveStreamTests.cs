@@ -926,7 +926,7 @@ public sealed class LiveStreamTests : IAsyncLifetime
             Latitude: 51.179,
             AltitudeMetres: 143.5,
             TrueBearing: 218.4,
-            Depression: -12.75,
+            RelativeElevation: -12.75,
             HorizontalFov: 6.2,
             VerticalFov: 3.5,
             Classification: "UNCLASSIFIED");
@@ -982,7 +982,7 @@ public sealed class LiveStreamTests : IAsyncLifetime
         Assert.Equal(sensor.AltitudeMetres, sample.Fields.SensorTrueAltitude!.Value, 0.5);
         Assert.Equal(sensor.HorizontalFov, sample.Fields.SensorHorizontalFov!.Value, 1e-2);
         Assert.Equal(sensor.VerticalFov, sample.Fields.SensorVerticalFov!.Value, 1e-2);
-        Assert.Equal(sensor.Depression, sample.Fields.SensorRelativeElevation!.Value, 1e-6);
+        Assert.Equal(sensor.RelativeElevation, sample.Fields.SensorRelativeElevation!.Value, 1e-6);
 
         // The bearing a client's north arrow is drawn from, through the expression that composes
         // tags 5 and 18 rather than off either one.

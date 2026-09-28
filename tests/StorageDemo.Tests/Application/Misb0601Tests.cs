@@ -63,7 +63,7 @@ public sealed class Misb0601Tests
             Latitude: 51.179,
             AltitudeMetres: 143.5,
             TrueBearing: 218.4,
-            Depression: -12.75,
+            RelativeElevation: -12.75,
             HorizontalFov: 6.2,
             VerticalFov: 3.5,
             Classification: "SECRET");
@@ -82,6 +82,16 @@ public sealed class Misb0601Tests
         Assert.Equal(at, set.Timestamp);
         Assert.Equal("SYNTHESISED STATIC SENSOR", set.PlatformDesignation);
         Assert.Equal("SECRET", set.Classification);
+
+        // The ST 0102 set carries its own version beside the marking: tag 22, two bytes, twelve.
+        // Mandatory in ST 0102.12 and the only one of that revision's mandatory items this service
+        // can answer without inventing a classifying country, so it is the difference between a
+        // strict consumer's two complaints and its three. Asserted on the bytes because the
+        // decoder reads only tag 1 out of the security set and stops there.
+        Assert.Contains(
+            Convert.ToHexString([0x16, 0x02, 0x00, 0x0C]),
+            Convert.ToHexString(packet),
+            StringComparison.Ordinal);
         Assert.Equal(Misb0601.Version, set.Version);
 
         Assert.Equal(sensor.Latitude, set.SensorLatitude!.Value, 90.0 / int.MaxValue);
@@ -90,7 +100,7 @@ public sealed class Misb0601Tests
         Assert.Equal(sensor.HorizontalFov, set.SensorHorizontalFov!.Value, 180.0 / ushort.MaxValue);
         Assert.Equal(sensor.VerticalFov, set.SensorVerticalFov!.Value, 180.0 / ushort.MaxValue);
         Assert.Equal(sensor.TrueBearing, set.PlatformHeading!.Value, 360.0 / ushort.MaxValue);
-        Assert.Equal(sensor.Depression, set.SensorRelativeElevation!.Value, 180.0 / int.MaxValue);
+        Assert.Equal(sensor.RelativeElevation, set.SensorRelativeElevation!.Value, 180.0 / int.MaxValue);
 
         // Present although it is zero. SensorBearing is tag 5 plus tag 18 and returns null if
         // either is absent, so a set that left this out would carry a bearing nothing could read.
@@ -123,7 +133,7 @@ public sealed class Misb0601Tests
             Latitude: 0,
             AltitudeMetres: 30,
             TrueBearing: 218.4,
-            Depression: -8,
+            RelativeElevation: -8,
             HorizontalFov: 40,
             VerticalFov: 22);
 
@@ -147,7 +157,7 @@ public sealed class Misb0601Tests
     [Fact]
     public void A_configuration_outside_an_items_range_is_refused_rather_than_saturated()
     {
-        var sensor = new StaticSensor(0, 0, AltitudeMetres: 25_000, TrueBearing: 0, Depression: 0, HorizontalFov: 40, VerticalFov: 22);
+        var sensor = new StaticSensor(0, 0, AltitudeMetres: 25_000, TrueBearing: 0, RelativeElevation: 0, HorizontalFov: 40, VerticalFov: 22);
 
         Assert.Throws<ArgumentOutOfRangeException>(
             () => Misb0601.Encode(sensor, DateTimeOffset.UnixEpoch, "SYNTHESISED STATIC SENSOR"));

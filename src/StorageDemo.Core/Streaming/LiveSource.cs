@@ -107,10 +107,20 @@ public sealed record SrtForwardLinkStats(
 /// and synthesised into a valid ST 0601 Local Set on the stream's own metadata track.
 ///
 /// One nullable sub-record rather than eight nullable fields on <see cref="LiveSource"/>, so that
-/// half a configuration cannot be stored - a latitude without a longitude places a camera in the
-/// Gulf of Guinea - and so that "is this camera configured" is one null check rather than eight.
-/// Both stores serialise the whole <see cref="LiveSource"/> with System.Text.Json, so a row
-/// written before this existed reads back with a null here and needs no migration.
+/// "is this camera configured" is one null check rather than eight. Both stores serialise the whole
+/// <see cref="LiveSource"/> with System.Text.Json, so a row written before this existed reads back
+/// with a null here and needs no migration.
+///
+/// What the nesting buys is exactly that, and no more. It makes the presence of the whole object
+/// detectable; it says nothing about the presence of its members, and a member left out of the
+/// object is a zero rather than an absence. A latitude sent without a longitude therefore used to
+/// store a camera at 0 degrees north, 0 degrees east - the Gulf of Guinea - and pass every range
+/// check, because every range here includes zero. So the members carry
+/// <see cref="System.Text.Json.Serialization.JsonRequiredAttribute"/> and a partial object fails to
+/// deserialise rather than filling itself in. The same guarantee is made twice more where the same
+/// hole exists: the gRPC message marks its scalars <c>optional</c>, because proto3 cannot otherwise
+/// tell a field left out from a deliberate zero, and <c>LiveSourceRules.Refuse</c> refuses a field
+/// of view of zero, which is the one member of a partial configuration that can never be meant.
 ///
 /// Every range is the ST 0601 item's own, so that a configured value has an exact encoding rather
 /// than a saturated one; <c>LiveSourceRules.Refuse</c> refuses anything outside them. The ranges
@@ -130,12 +140,24 @@ public sealed record SrtForwardLinkStats(
 /// tag 5 keeps describing the mount. <see cref="SensorGeometry.SensorBearing"/> adds the two, so
 /// either spelling gives a consumer the same answer today.
 /// </param>
-/// <param name="Depression">
-/// How far below the horizontal the camera looks, ST 0601 tag 19 (Sensor Relative Elevation),
-/// -180..180. Negative is downwards, which is the standard's sign and the usual case for a mast.
+/// <param name="RelativeElevation">
+/// Where the camera looks in the vertical, ST 0601 tag 19 (Sensor Relative Elevation), -180..180:
+/// positive above the horizon, negative below it, so a mast camera looking twelve degrees down is
+/// -12.
+///
+/// Named after the standard's item rather than after the angle an operator of a fixed camera
+/// thinks in, which is a depression. The two have opposite signs, and a field called depression
+/// carrying an elevation is the sort of thing an integrator discovers by pointing a camera at the
+/// sky: entering 20 for a mast would be in range, would be accepted, and would be wrong with
+/// nothing anywhere to say so. If a depression is ever wanted it belongs on a form, negated once
+/// on the way in, not in the record that feeds the encoder.
 /// </param>
-/// <param name="HorizontalFov">ST 0601 tag 16, degrees, 0..180. What lets a client draw a wedge rather than a pin.</param>
-/// <param name="VerticalFov">ST 0601 tag 17, degrees, 0..180.</param>
+/// <param name="HorizontalFov">
+/// ST 0601 tag 16, degrees, above 0 and up to 180. What lets a client draw a wedge rather than a
+/// pin. Zero is inside the standard's own range and is refused anyway: a camera with no field of
+/// view is not a camera, and it is what a field left out of a partial configuration reads as.
+/// </param>
+/// <param name="VerticalFov">ST 0601 tag 17, degrees, above 0 and up to 180, for the same reason.</param>
 /// <param name="Classification">
 /// The ST 0102 marking to carry in ST 0601 tag 48, or null for an unmarked stream. Optional
 /// because requiring an operator to declare a marking invents data: absent means unmarked, which
@@ -143,13 +165,13 @@ public sealed record SrtForwardLinkStats(
 /// <see cref="Misb0601.Classifications"/>.
 /// </param>
 public sealed record StaticSensor(
-    double Longitude,
-    double Latitude,
-    double AltitudeMetres,
-    double TrueBearing,
-    double Depression,
-    double HorizontalFov,
-    double VerticalFov,
+    [property: JsonRequired] double Longitude,
+    [property: JsonRequired] double Latitude,
+    [property: JsonRequired] double AltitudeMetres,
+    [property: JsonRequired] double TrueBearing,
+    [property: JsonRequired] double RelativeElevation,
+    [property: JsonRequired] double HorizontalFov,
+    [property: JsonRequired] double VerticalFov,
     string? Classification = null);
 
 /// <summary>

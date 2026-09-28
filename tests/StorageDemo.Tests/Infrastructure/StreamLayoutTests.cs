@@ -156,6 +156,34 @@ public sealed unsafe class StreamLayoutTests
     }
 
     /// <summary>
+    /// A synthetic track cannot declare a rate that would wreck the arithmetic it feeds.
+    ///
+    /// The same ceiling a sender's claim is held to, reached by the other door. A declared 999,999
+    /// adds straight into the transport's rate - past a million for a 25 fps stream - and pins
+    /// every viewer's queue to the packet ceiling, which is a fraction of a second: exactly what
+    /// <c>Believable</c> and the work behind it exist to prevent. Unreachable from configuration
+    /// today, because the only caller passes a constant, which is why it is worth closing now
+    /// rather than after something else starts declaring one.
+    /// </summary>
+    [Fact]
+    public void A_synthetic_track_cannot_declare_an_impossible_rate()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => new SyntheticTrack(SyntheticTrackRole.PlatformMetadata, 999_999));
+
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => new SyntheticTrack(SyntheticTrackRole.PlatformMetadata, 0));
+
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => new SyntheticTrack(SyntheticTrackRole.PlatformMetadata, double.PositiveInfinity));
+
+        // Thrown rather than replaced with the assumption, which is the difference from a sender's
+        // claim: a sender is not ours to fix and gets the fallback, and there is no rate that would
+        // be right for a track whose publisher we wrote as well.
+        Assert.Equal(1, new SyntheticTrack(SyntheticTrackRole.PlatformMetadata, 1).PacketsPerSecond);
+    }
+
+    /// <summary>
     /// A stream that declares KLV of its own gets no synthetic track, and keeps its own index.
     ///
     /// Precedence, decided at the one moment it can be decided at. A camera that starts reporting

@@ -72,10 +72,14 @@ public sealed record Misb0601Set
 /// Decodes the ST 0902 minimum set out of an ST 0601 packet, and encodes the fixed subset of it a
 /// static sensor's configuration amounts to.
 ///
-/// The two halves share one scale table, which is the point of them being in one file: the encoder
-/// inverts what the decoder reads, so the round trip in Misb0601Tests holds the encoder to a table
-/// already checked against a real sender's arithmetic in Misb0601RealStreamTests. A second table
-/// somewhere else would be the copy that rots.
+/// The two halves are in one file by convention rather than by construction. There is no shared
+/// scale table: each range is written out where it is used, in <see cref="Decode"/>'s switch, in
+/// <see cref="Encode"/>'s item list and again in <c>LiveSourceRules.Sensor</c>, and nothing in the
+/// compiler holds those three in step. What holds them in step is
+/// <c>Misb0601Tests.A_synthesised_set_decodes_to_the_configuration_it_was_built_from</c>: it
+/// encodes a configuration and decodes it back, so a scale that moved on one side and not the
+/// other fails there. That test is the guarantee, and it is worth what it is worth because the
+/// decoder's side of it is checked against a real sender's arithmetic in Misb0601RealStreamTests.
 ///
 /// Sources, so the scaling can be checked against a document rather than against this file:
 /// - STANAG 4609 Ed. 5 adopts MISP-2019.1, whose normative references are MISB ST 0601.14 (UAS
@@ -213,14 +217,16 @@ public static class Misb0601
     ///   emitted although it is zero, and that is not tidiness: <see cref="SensorGeometry.SensorBearing"/>
     ///   is the sum of the two and returns null if either is absent, so a set without tag 18 would
     ///   carry a bearing no consumer could read.
-    /// - Tag 19, sensor relative elevation, the depression angle.
+    /// - Tag 19, sensor relative elevation: positive above the horizon, negative below.
     /// - Tags 13, 14, 15, where the sensor is.
     /// - Tags 16 and 17, the field of view, which is what lets a client draw a wedge.
     /// - Tag 10, platform designation, carrying <paramref name="designation"/>. This is the
     ///   in-band half of saying the set was synthesised: <see cref="Misb0601Set.PlatformDesignation"/>
     ///   already decodes it, so it survives the round trip to any conforming consumer rather than
     ///   only to this service's own clients.
-    /// - Tag 48, the ST 0102 security set, only when a marking was configured.
+    /// - Tag 48, the ST 0102 security set, only when a marking was configured. Partial rather than
+    ///   complete, for a reason given on <see cref="Security"/> that is worth reading before
+    ///   calling this conforming.
     /// - Tag 65, the version, last before the checksum.
     /// - Tag 1, the checksum, last, per ST 0601.8-08.
     ///
@@ -265,7 +271,7 @@ public static class Misb0601
         // bearing.
         Item(body, 18, U32(0, 0, 360));
 
-        Item(body, 19, S32(sensor.Depression, 180));
+        Item(body, 19, S32(sensor.RelativeElevation, 180));
 
         if (sensor.Classification is { Length: > 0 } marking)
         {
@@ -295,12 +301,21 @@ public static class Misb0601
     public const byte Version = 16;
 
     /// <summary>
-    /// The ST 0102 Security Local Set for tag 48, carrying the marking and nothing else.
+    /// The ST 0102 Security Local Set for tag 48: the marking, and which revision of ST 0102 it is
+    /// written to.
     ///
-    /// Only tag 1. A full ST 0102 set also carries a classifying country and a releasing
-    /// instruction, and this service is told neither: emitting a country because the set expects
-    /// one would be inventing the very field an operator would read to decide what may be shared.
-    /// Tag 1 alone is what <see cref="Decode"/> reads, and what a consumer needs to show a marking.
+    /// Not a complete ST 0102 set, and this is where that is stated rather than left to be found.
+    /// ST 0102.12 also makes tag 2 (classifying country and releasing instructions country coding
+    /// method), tag 3 (classifying country) and tag 22 (version) mandatory, and a strict consumer
+    /// may reject a security set without them. Tag 22 is emitted, because saying which revision
+    /// this is written to invents nothing. Tags 2 and 3 are not, and deliberately: this service is
+    /// never told a classifying country, and emitting one because the set expects one would be
+    /// inventing the exact field an operator reads to decide what may be shared with whom. A set a
+    /// strict consumer refuses is recoverable; a plausible releasability marking nobody asserted is
+    /// not.
+    ///
+    /// Tag 1 is what <see cref="Decode"/> reads and what a consumer needs to show a marking, so a
+    /// consumer that accepts the set at all gets the answer.
     /// </summary>
     private static byte[] Security(string marking)
     {
@@ -323,10 +338,22 @@ public static class Misb0601
         }
 
         var set = new List<byte>();
+
         Item(set, 1, [(byte)code]);
+
+        // Tag 22, Version, a 16-bit revision number: the ST 0102 revision this set is written to,
+        // which is the one the codes above were read from. Mandatory in ST 0102.12 and the only
+        // one of its mandatory items this service can answer without inventing anything.
+        Item(set, 22, [0, SecurityVersion]);
 
         return [.. set];
     }
+
+    /// <summary>
+    /// The ST 0102 revision the security set above is written to, sent as its tag 22. Twelve,
+    /// because ST 0102.12 is where <see cref="Classifications"/> and its codes come from.
+    /// </summary>
+    private const byte SecurityVersion = 12;
 
     private static byte[] Microseconds(DateTimeOffset timestamp)
     {

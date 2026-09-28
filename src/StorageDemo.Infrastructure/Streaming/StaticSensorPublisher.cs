@@ -49,8 +49,18 @@ public sealed class StaticSensorPublisher(StreamHub hub, StaticSensor sensor, IL
     public const string Designation = "SYNTHESISED STATIC SENSOR";
 
     /// <summary>
-    /// Runs until the token is cancelled or the hub closes. Every tick re-reads the layout, because
-    /// a reconnect adopts a new one and the track's index is not promised to be where it was.
+    /// Runs until the token is cancelled or the hub closes, offering one set a tick.
+    ///
+    /// It names the track by its role and never resolves an index of its own. That is not tidiness:
+    /// an index resolved here would be read at a different moment from the one the hub publishes
+    /// in, and a reconnect landing between the two is enough to put a synthesised set onto a real
+    /// platform's telemetry track, marked genuine. Re-reading the layout every tick does not close
+    /// that window - only resolving the role in the same read that publishes does, which is why
+    /// <see cref="StreamHub.PublishAtLiveEdge"/> takes the role and this takes nothing.
+    ///
+    /// So every reason not to publish is the hub's to decide and all of them read the same here:
+    /// nothing has arrived yet, the hub has closed, or the layout carries no synthetic track
+    /// because the sender has started reporting for itself and wins.
     /// </summary>
     public async Task RunAsync(CancellationToken cancellationToken)
     {
@@ -60,19 +70,11 @@ public sealed class StaticSensorPublisher(StreamHub hub, StaticSensor sensor, IL
 
             while (await timer.WaitForNextTickAsync(cancellationToken) && !hub.Closed)
             {
-                if (hub.Layout?.SyntheticIndexOf(SyntheticTrackRole.PlatformMetadata) is not { } index
-                    || index < 0)
-                {
-                    // Nothing demultiplexed yet, or a reconnect brought a layout with no synthetic
-                    // track - a camera that has started reporting its own telemetry, which wins.
-                    continue;
-                }
-
-                // Stamped by the hub at the live edge rather than here. The rules that stamp has to
-                // satisfy are unforgiving in both directions and are stated once, on
-                // StreamHub.PublishAtLiveEdge, where the live edge is actually readable without a
-                // race. False here only means nothing has arrived yet.
-                hub.PublishAtLiveEdge(index, Misb0601.Encode(sensor, DateTimeOffset.UtcNow, Designation));
+                // Stamped by the hub at the live edge rather than here, for the same reason the
+                // track is chosen there: the rules that stamp has to satisfy are unforgiving in
+                // both directions and are stated once, where the live edge is readable without a
+                // race.
+                hub.PublishAtLiveEdge(SyntheticTrackRole.PlatformMetadata, Misb0601.Encode(sensor, DateTimeOffset.UtcNow, Designation));
             }
         }
         catch (OperationCanceledException)
