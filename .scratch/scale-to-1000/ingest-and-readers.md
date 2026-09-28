@@ -106,11 +106,39 @@ At the clean 200-stream, 550-reader row:
 
 - **The per-stream demultiplexer threads are the cost, not the receive worker.** `.NET Long Runni` is
   the `LongRunning` task per feed - `LiveStreamCoordinator.Feed`, which is synchronous and so really
-  does hold a thread - and at the collapse it is 1.8 cores against the receive worker's 0.24. The open
-  TODO about pooling `StreamDemuxer.Pump`'s per-packet `byte[]` is aimed at exactly this thread, and
-  this is the measurement that says it is worth doing: ingest scale on a Linux node is bounded by
-  demultiplexing cost per packet rather than by the accept path. Note what that does *not* say - the
-  socket reader is not exonerated, it is starved; the bullet below is the careful version.
+  does hold a thread - and at the collapse it is 1.8 cores against the receive worker's 0.24. Ingest
+  scale on a Linux node is therefore bounded by per-packet cost on that thread rather than by the
+  accept path. Note what that does *not* say - the socket reader is not exonerated, it is starved;
+  the bullet below is the careful version.
+
+  **Corrected**: this bullet used to say the same measurement made pooling `StreamDemuxer.Pump`'s
+  per-packet `byte[]` worth doing, and it does not. `perf-ingest.md`'s Experiment 1 had already
+  bounded that at a hundred streams and dropped it, and `demux-packet-cost.md` has since measured it
+  at camera rate off a file, where the effect is an order of magnitude above the noise instead of an
+  order below it. Pooling's whole ceiling - the pump's loop against the same loop with the allocation
+  removed outright, differing in one line - is **3.1 to 5.4 µs a packet** depending on how hard the
+  collector happens to be running, against the **250 to 300 µs** this thread spends on a packet on a
+  rig. That is 0.014 to 0.024 of a core at 150 streams, out of the 2.1 the pod spends there.
+  Allocating without zeroing, which needs no reference count and no change of contract, is worth
+  **0.2 to 0.4 µs** - measured in isolation, because in the pump it never showed at all in twelve
+  replicates. And a pool holds **23.8 %** more memory for the same window, where memory binds first.
+
+  The same measurement says where that cost actually is, which is the part this bullet got most
+  wrong: **the retention, not the allocation.** Allocating a packet's array and dropping it at once
+  costs the same however often the collector runs; holding it for the buffer's thirty seconds costs
+  2.5 to 3.6 µs/pkt more when the collector runs three times as often. A pool cannot have that back
+  without knowing when the last holder is finished, which is the reference count - so there is no
+  cheap end of this to pick up.
+
+  Naming the thread was right; naming the allocation inside it was a guess. What the figures do
+  support is the transport read: reading the same pattern at libsrt's 1,316-byte message granularity
+  rather than 64 KB costs **3.4 to 4.9 µs a packet** on this side of the P/Invoke alone, about what
+  the whole allocation costs, and `perf-ingest.md`'s Experiment 3 puts 68.9 % of the demultiplexer
+  thread's *samples* inside `SrtSocketStream.Read`. Two cautions on that last figure, which this
+  branch has already once cited wrongly: those are wall-clock samples, blocked or running, so they
+  include time asleep waiting for a message; and the "69 %" in that note is `SRT:RcvQ:w2`'s
+  system-time share, a different thread group. The processor split for this thread group is 46 %
+  system against 54 % user.
 - **The demultiplexer threads ate the cores the receive worker needed** - which is a weaker claim
   than "the receive path is fine", and the weaker one is what the rig supports. At the collapsed row
   the pod wanted 2.8 cores and the rig 2.0 on a four-core box, so every thread there is
