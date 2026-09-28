@@ -1,4 +1,5 @@
 using FFmpeg.AutoGen.Abstractions;
+using Microsoft.Extensions.Logging.Abstractions;
 using StorageDemo.Infrastructure.Media;
 using StorageDemo.Infrastructure.Streaming;
 
@@ -115,11 +116,186 @@ public sealed unsafe class StreamLayoutTests
     }
 
     /// <summary>
+    /// A synthetic track declares the rate it will actually be published at, and a viewer's deepest
+    /// rollback is sized from that rather than from the assumption.
+    ///
+    /// The regression this pins is silent, which is why it is here rather than left to be noticed.
+    /// A track that declares no rate falls through to the sixty a stream that said nothing gets, and
+    /// on a 25 fps stream that takes the transport from 25 packets a second to 85. That figure is
+    /// what LiveStreamCoordinator.Fitting divides the viewer queue ceiling by, so the deepest
+    /// rollback this service can honour collapses from 76 seconds to 19.5 - in exactly the number
+    /// two rounds of work already went into getting right, and with nothing anywhere saying so.
+    /// Declared truthfully at one hertz it reads 26 and 72.9 seconds, which is the second of video
+    /// that the metadata track costs and nothing more.
+    /// </summary>
+    [Fact]
+    public void A_declared_synthetic_rate_is_what_a_viewers_rollback_is_sized_from()
+    {
+        Assert.SkipUnless(Ffmpeg.IsPresent, "No FFmpeg. Run scripts/fetch-ffmpeg.sh.");
+
+        FfmpegLibrary.EnsureLoaded();
+
+        using var bare = Layout(videoFrameRate: 25);
+        using var declared = Layout(videoFrameRate: 25, synthetic: [new SyntheticTrack(SyntheticTrackRole.PlatformMetadata, 1)]);
+
+        // What the assumption would have cost, expressed the way RateOf reaches it: a data track
+        // that declares nothing is taken to send sixty.
+        using var undeclared = Layout(videoFrameRate: 25, synthetic: [new SyntheticTrack(SyntheticTrackRole.PlatformMetadata, 60)]);
+
+        Assert.Equal(25, bare.PacketsPerSecond);
+        Assert.Equal(26, declared.PacketsPerSecond);
+        Assert.Equal(85, undeclared.PacketsPerSecond);
+
+        // Fitting's own expression, reproduced rather than called because it is private to the
+        // coordinator and a viewer's rollback is the only thing it computes. If that expression
+        // changes this test is wrong and should be changed with it; what it must never do is keep
+        // passing while the figure it names moves.
+        Assert.Equal(76, Rollback(bare), 1);
+        Assert.Equal(72.9, Rollback(declared), 1);
+        Assert.Equal(19.5, Rollback(undeclared), 1);
+    }
+
+    /// <summary>
+    /// A synthetic track cannot declare a rate that would wreck the arithmetic it feeds.
+    ///
+    /// The same ceiling a sender's claim is held to, reached by the other door. A declared 999,999
+    /// adds straight into the transport's rate - past a million for a 25 fps stream - and pins
+    /// every viewer's queue to the packet ceiling, which is a fraction of a second: exactly what
+    /// <c>Believable</c> and the work behind it exist to prevent. Unreachable from configuration
+    /// today, because the only caller passes a constant, which is why it is worth closing now
+    /// rather than after something else starts declaring one.
+    /// </summary>
+    [Fact]
+    public void A_synthetic_track_cannot_declare_an_impossible_rate()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => new SyntheticTrack(SyntheticTrackRole.PlatformMetadata, 999_999));
+
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => new SyntheticTrack(SyntheticTrackRole.PlatformMetadata, 0));
+
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => new SyntheticTrack(SyntheticTrackRole.PlatformMetadata, double.PositiveInfinity));
+
+        // Thrown rather than replaced with the assumption, which is the difference from a sender's
+        // claim: a sender is not ours to fix and gets the fallback, and there is no rate that would
+        // be right for a track whose publisher we wrote as well.
+        Assert.Equal(1, new SyntheticTrack(SyntheticTrackRole.PlatformMetadata, 1).PacketsPerSecond);
+    }
+
+    /// <summary>
+    /// A stream that declares KLV of its own gets no synthetic track, and keeps its own index.
+    ///
+    /// Precedence, decided at the one moment it can be decided at. A camera that starts reporting
+    /// its own telemetry wins over what somebody typed about it, and the transition is a layout
+    /// change a reconnect makes visible rather than a quiet swap of what a consumer is reading.
+    /// </summary>
+    [Fact]
+    public void A_stream_that_sends_its_own_metadata_gets_no_synthetic_track()
+    {
+        Assert.SkipUnless(Ffmpeg.IsPresent, "No FFmpeg. Run scripts/fetch-ffmpeg.sh.");
+
+        FfmpegLibrary.EnsureLoaded();
+
+        var asked = new SyntheticTrack[] { new(SyntheticTrackRole.PlatformMetadata, 1) };
+
+        using var reporting = Layout(videoFrameRate: 25, klv: true, synthetic: asked);
+
+        Assert.Equal(2, reporting.Count);
+        Assert.Equal(1, reporting.KlvIndex);
+        Assert.False(reporting.KlvIsSynthetic);
+        Assert.Equal(-1, reporting.SyntheticIndexOf(SyntheticTrackRole.PlatformMetadata));
+
+        // And the rate is the sender's, not ours: nothing was appended, so nothing was declared.
+        // A data track that declares no rate is taken to send sixty, which is where 85 comes from.
+        Assert.Equal(85, reporting.PacketsPerSecond);
+
+        using var silent = Layout(videoFrameRate: 25, synthetic: asked);
+
+        Assert.Equal(2, silent.Count);
+        Assert.Equal(1, silent.KlvIndex);
+        Assert.True(silent.KlvIsSynthetic);
+        Assert.Equal(1, silent.SyntheticIndexOf(SyntheticTrackRole.PlatformMetadata));
+    }
+
+    /// <summary>
+    /// A reconnect that brings the same shape matches, so the buffer survives and a recording in
+    /// progress carries on appending.
+    ///
+    /// This is why the layout is augmented before <see cref="StreamHub.Adopt"/> rather than swapped
+    /// into a running hub. Adopt compares what arrives with what it holds; a hub holding an
+    /// augmented layout and a reconnect handing it a bare one do not match, and every reconnect of
+    /// a static camera would then rebuild the buffer and close its own recording. Augmenting first
+    /// means both sides of that comparison are the same kind of thing.
+    ///
+    /// The second half is the case the role exists for. A camera that starts sending its own KLV
+    /// presents a layout whose codec parameters are identical to the synthesised one - both are
+    /// SMPTE KLV data streams with no width, no format and no extradata - so without comparing the
+    /// roles it would match, the buffer would survive, and the publisher would carry on writing
+    /// onto the index the sender is now using.
+    /// </summary>
+    [Fact]
+    public void A_reconnect_carrying_the_same_synthetic_track_keeps_the_buffer()
+    {
+        Assert.SkipUnless(Ffmpeg.IsPresent, "No FFmpeg. Run scripts/fetch-ffmpeg.sh.");
+
+        FfmpegLibrary.EnsureLoaded();
+
+        var asked = new SyntheticTrack[] { new(SyntheticTrackRole.PlatformMetadata, 1) };
+        var options = new LiveOptions();
+
+        using var hub = new StreamHub("reconnecting", options, NullLogger.Instance);
+
+        using var first = Layout(videoFrameRate: 25, synthetic: asked);
+        using var again = Layout(videoFrameRate: 25, synthetic: asked);
+        using var bare = Layout(videoFrameRate: 25);
+        using var reporting = Layout(videoFrameRate: 25, klv: true, synthetic: asked);
+
+        Assert.True(hub.Adopt(first));
+
+        var buffer = hub.Buffer;
+
+        Assert.NotNull(buffer);
+
+        Assert.True(again.Matches(first));
+        Assert.True(hub.Adopt(again), "a reconnect with the same synthetic track rebuilt the buffer");
+        Assert.Same(buffer, hub.Buffer);
+
+        // The same feed with its configuration removed - one fewer track - is a real change and is
+        // reported as one.
+        Assert.False(bare.Matches(again));
+
+        // And the same count with a different provenance is too, although nothing in the codec
+        // parameters says so.
+        Assert.Equal(again.Count, reporting.Count);
+        Assert.False(reporting.Matches(again));
+        Assert.False(hub.Adopt(reporting), "a camera that started reporting for itself matched the layout that was synthesising for it");
+        Assert.NotSame(buffer, hub.Buffer);
+    }
+
+    /// <summary>
+    /// The deepest rollback <c>LiveStreamCoordinator.Fitting</c> would give a viewer of this
+    /// stream: the viewer queue ceiling in seconds of this stream, less the room held back for the
+    /// live flow.
+    /// </summary>
+    private static double Rollback(StreamLayout layout)
+    {
+        var options = new LiveOptions();
+
+        return (options.ViewerQueuePackets / layout.PacketsPerSecond) - options.ViewerQueueSeconds;
+    }
+
+    /// <summary>
     /// A layout with the fields the depth is derived from and nothing else, built without a
     /// transport: a frame rate is what a demultiplexer reports after probing, and none of this
     /// needs a real one.
     /// </summary>
-    private static StreamLayout Layout(int videoFrameRate, int sampleRate = 0, int frameSize = 0)
+    private static StreamLayout Layout(
+        int videoFrameRate,
+        int sampleRate = 0,
+        int frameSize = 0,
+        bool klv = false,
+        IReadOnlyList<SyntheticTrack>? synthetic = null)
     {
         var format = ffmpeg.avformat_alloc_context();
 
@@ -145,7 +321,18 @@ public sealed unsafe class StreamLayoutTests
                 audio->codecpar->frame_size = frameSize;
             }
 
-            return StreamLayout.From(format);
+            if (klv)
+            {
+                // What a real KLV-carrying transport presents: a data stream whose registration
+                // descriptor says KLVA, which libav reports as the SMPTE KLV codec.
+                var data = ffmpeg.avformat_new_stream(format, null);
+
+                data->time_base = new AVRational { num = 1, den = 90_000 };
+                data->codecpar->codec_type = AVMediaType.AVMEDIA_TYPE_DATA;
+                data->codecpar->codec_id = AVCodecID.AV_CODEC_ID_SMPTE_KLV;
+            }
+
+            return StreamLayout.From(format, synthetic ?? []);
         }
         finally
         {

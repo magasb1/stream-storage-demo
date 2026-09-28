@@ -186,7 +186,8 @@ message LiveStreamMessage {
   //
   // Fields are only ever added here, never renumbered or removed: an older client reads zero
   // for what it does not know and a newer one reads zero from an older server. 19 to 21 are
-  // detection, below; 22 to 25 stay held for further KLV fields; 26 is the forward list; 27 is
+  // detection, below; 22 says whether the KLV is synthesised and 23 to 25 stay held for further
+  // KLV fields; 26 is the forward list; 27 is
   // the link stats; 28 is the viewer count; 29 and 30 are detection configuration.
   int32 packets_lost = 14;
   int32 packets_dropped = 15;
@@ -201,6 +202,13 @@ message LiveStreamMessage {
   // picture without a marking is the failure the marking exists to prevent. Absent and empty are
   // different answers, which is why this is optional rather than a plain string.
   optional string classification = 18;
+
+  // Whether that metadata is the service's own synthesis from a fixed camera's configured position
+  // rather than the sender's telemetry. False when the stream carries none at all, so a camera with
+  // a static sensor configured that reads false here is one whose configuration is not yet on the
+  // wire: a pushed stream waiting for its encoder to reconnect, or one whose sender declares KLV of
+  // its own and therefore wins. One of the four numbers held above for further KLV fields.
+  bool klv_synthesised = 22;
 
   // Detection, per stream and on demand. The toggle is set through the owner and read by
   // workers; the rate is detections per second while enabled, zero meaning the worker's default;
@@ -289,6 +297,53 @@ message SrtForwardLinkStatsMessage {
   int32 negotiated_latency_ms = 5;
 }
 
+// Where a fixed camera is and where it looks, as an operator configured it rather than as the
+// camera reported it. Sending this is what makes the service synthesise a valid ST 0601 Local Set
+// onto that stream's own metadata track, so a mast or perimeter camera can be placed on a map and
+// its field of view drawn.
+//
+// A nested message rather than eight fields on LiveSourceMessage, so that the presence of a whole
+// configuration is one check. That is all the nesting buys: it says nothing about the presence of
+// the members, and in proto3 an unset scalar and a deliberate zero are the same bytes - so a
+// latitude sent without a longitude would place a camera at 0 degrees north, 0 degrees east, the
+// Gulf of Guinea, inside every range there is. Hence optional on every scalar below, which restores
+// field presence, and a server that rejects a message missing any of them. Every range is the ST
+// 0601 item's own and the server refuses anything outside it, because a value saturated to an
+// item's endpoint is indistinguishable from a measured one; the field of view is refused at zero
+// besides, being the one member a half-filled configuration can never have meant.
+message StaticSensorMessage {
+  // ST 0601 tag 14, WGS84 degrees, -180 to 180.
+  optional double longitude = 1;
+
+  // ST 0601 tag 13, WGS84 degrees, -90 to 90.
+  optional double latitude = 2;
+
+  // ST 0601 tag 15, sensor true altitude above mean sea level, -900 to 19000.
+  optional double altitude_metres = 3;
+
+  // Where the camera looks, degrees clockwise from true north, 0 to 360. Carried as ST 0601 tag 5
+  // with tag 18, Sensor Relative Azimuth, sent as zero beside it - a fixed mount has no
+  // longitudinal axis for tag 18 to be relative to, and this is the spelling that stays true if a
+  // pan head is ever added.
+  optional double true_bearing = 4;
+
+  // Where it looks in the vertical, ST 0601 tag 19, -180 to 180: positive above the horizon,
+  // negative below, so a mast camera looking twelve degrees down sends -12. Named after the
+  // standard's item rather than after a depression, which is the same angle with the opposite
+  // sign; a field called depression carrying an elevation is wrong in range and silent about it.
+  optional double relative_elevation = 5;
+
+  // ST 0601 tags 16 and 17, degrees, above 0 and up to 180. What lets a client draw a wedge rather
+  // than a pin. Zero is inside the standard's range and refused anyway: a camera with no field of
+  // view is not a camera, and zero is what a member left out of a partial configuration reads as.
+  optional double horizontal_fov = 6;
+  optional double vertical_fov = 7;
+
+  // The ST 0102 marking to carry in ST 0601 tag 48. Absent means unmarked, which is a different
+  // answer from UNCLASSIFIED: requiring an operator to declare a marking would invent data.
+  optional string classification = 8;
+}
+
 // A standing instruction about one stream name: fetch it from here, and copy it to there.
 //
 // The difference from LiveStreamMessage is the point of the type. That one is what is on air now
@@ -314,6 +369,11 @@ message LiveSourceMessage {
   // The stream of this name that is on air, absent when none is. Set on the listing only and
   // ignored by SaveLiveSource, so that showing configuration beside current state costs one call.
   LiveStreamMessage stream = 6;
+
+  // Where this camera is and where it looks, for a fixed one. Absent means nothing is synthesised
+  // for this stream, which is the ordinary case. It takes effect on the stream's next connection,
+  // because the metadata track it adds is part of the layout every attached consumer joined on.
+  StaticSensorMessage static_sensor = 7;
 }
 
 message LiveSourceListResponse {
@@ -437,6 +497,12 @@ message LiveKlvMessage {
 
   // The packet exactly as it arrived, for whatever the fields leave out.
   bytes raw = 5;
+
+  // True when the service built this packet from a fixed camera's configured position rather than
+  // receiving it, so a client can say "configured position" rather than "reported position"
+  // without parsing a string. The same packet says so in band through ST 0601 tag 10, which
+  // survives to any conforming consumer downstream of this service.
+  bool synthesised = 6;
 }
 
 message LiveListResponse {

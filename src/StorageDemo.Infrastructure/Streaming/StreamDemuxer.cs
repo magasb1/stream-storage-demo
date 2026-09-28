@@ -178,7 +178,15 @@ public sealed unsafe class StreamDemuxer(
                 return DemuxOutcome.NeverStarted;
             }
 
-            var layout = StreamLayout.From(format);
+            // Augmented here, between reading what arrived and handing it to the hub, and nowhere
+            // else. Adopt is what compares the new layout with the one the hub holds, so both
+            // sides of that comparison have to be the same kind of thing: a hub holding an
+            // augmented layout and a reconnect handing it a bare one do not match, the buffer is
+            // rebuilt and any recording in progress closes - which would mean every reconnect of a
+            // static camera broke its own recording. Swapping the layout after Adopt instead would
+            // be worse still: every consumer already attached subscribed to the indexes of the old
+            // one and none of them re-reads it.
+            var layout = StreamLayout.From(format, hub.SyntheticTracks);
 
             if (!hub.Adopt(layout))
             {

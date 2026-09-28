@@ -3,6 +3,73 @@ using FFmpeg.AutoGen.Abstractions;
 namespace StorageDemo.Infrastructure.Streaming;
 
 /// <summary>
+/// What a synthetic track carries, which is what decides whether <see cref="StreamLayout.KlvIndex"/>
+/// may point at it.
+///
+/// The role is here from the first track rather than added when a second one appears, because the
+/// second one is already decided: VMTI rides a standalone track of its own (issue #30, and the
+/// entry in TODO beginning "Decided: VMTI rides standalone"), and both
+/// tracks are SMPTE KLV data streams. Without the role, <c>KlvIndex</c> would be "the first data
+/// track we appended" and would silently start meaning the detections once that lands, which
+/// <see cref="KlvExtractor"/> would then try to decode as ST 0601.
+/// </summary>
+public enum SyntheticTrackRole
+{
+    /// <summary>
+    /// ST 0601 platform metadata: where the sensor is and where it looks. The only role
+    /// <see cref="StreamLayout.KlvIndex"/> ever points at.
+    /// </summary>
+    PlatformMetadata,
+}
+
+/// <summary>
+/// A track this replica produces rather than receives, appended to what a sender presented.
+///
+/// Both the role's carriages are SMPTE KLV data streams, so there is no codec to choose, and the
+/// time base is not chosen here either: <see cref="StreamLayout"/>'s synthetic-track overload of
+/// <c>From</c> gives every synthetic track the reference time base, which is what makes
+/// <c>PacketMuxer</c>'s rescaling of a locally produced packet the identity rather than an
+/// arithmetic step that has to be got right in two places.
+/// </summary>
+/// <param name="PacketsPerSecond">
+/// How often this track will actually be published. The single most consequential figure in a
+/// synthetic track: an undeclared one falls through to <see cref="StreamLayout"/>'s assumption of
+/// sixty, which takes a 25 fps stream from 25 packets a second to 85 and collapses a viewer's
+/// maximum rollback from 76 seconds to 19.5 - measured, and pinned by
+/// <c>StreamLayoutTests.A_declared_synthetic_rate_is_what_a_viewers_rollback_is_sized_from</c>.
+/// Declared truthfully
+/// at one hertz it reads 26 and 72.9 seconds.
+/// </param>
+public sealed record SyntheticTrack(SyntheticTrackRole Role, double PacketsPerSecond)
+{
+    /// <summary>
+    /// Held to the same ceiling a sender's claim is, and thrown rather than replaced.
+    ///
+    /// The ceiling is the part that is not obvious. Left unchecked, a declared 999,999 adds
+    /// straight into <see cref="StreamLayout.PacketsPerSecond"/> - past a million for a 25 fps
+    /// stream - and pins <see cref="StreamLayout.QueueDepth"/> to the packet ceiling, which is a
+    /// fraction of a second of queue for every viewer: precisely the failure
+    /// <see cref="StreamLayout"/>'s own <c>Believable</c> exists to prevent, arriving by the one
+    /// door that did not have the check on it. Unreachable from configuration today, since the
+    /// only caller passes a constant, and that is a reason to make it impossible rather than a
+    /// reason to leave it.
+    ///
+    /// Thrown rather than replaced with the assumption, which is where this parts company with
+    /// <c>Believable</c>. A sender's impossible claim has a sensible fallback - treat it as a
+    /// stream that declared nothing - because the sender is not ours to fix. This rate is this
+    /// service's own arithmetic, and there is no figure that would be right for a track whose
+    /// publisher we also wrote; a wrong one silently resizes every viewer's queue on the stream.
+    /// </summary>
+    public double PacketsPerSecond { get; } =
+        double.IsFinite(PacketsPerSecond) && PacketsPerSecond is > 0 and <= StreamLayout.MaxPacketsPerSecond
+            ? PacketsPerSecond
+            : throw new ArgumentOutOfRangeException(
+                nameof(PacketsPerSecond),
+                PacketsPerSecond,
+                $"A synthetic track declares a real rate, above 0 and at most {StreamLayout.MaxPacketsPerSecond} a second.");
+}
+
+/// <summary>
 /// What the streams inside one transport are: their codecs, their parameters and their clocks.
 ///
 /// It is held apart from the demultiplexer that produced it because it outlives one. A stream
@@ -39,7 +106,7 @@ public sealed unsafe class StreamLayout : IDisposable
     /// to a fraction of a second of queue, which is a sender opting its own viewers out of ever
     /// riding out a hiccup.
     /// </summary>
-    private const double MaxPacketsPerSecond = 1_000;
+    internal const double MaxPacketsPerSecond = 1_000;
 
     /// <summary>
     /// The floor under a queue, in seconds, because a floor in packets is the bug this arithmetic
@@ -59,15 +126,24 @@ public sealed unsafe class StreamLayout : IDisposable
     private readonly IntPtr[] _parameters;
     private readonly AVRational[] _timeBases;
 
+    /// <summary>
+    /// What each track is, for the tracks this service produces; null at every index that came off
+    /// the wire. Indexed the same as <see cref="_parameters"/> so a role is one lookup rather than
+    /// a search.
+    /// </summary>
+    private readonly SyntheticTrackRole?[] _roles;
+
     private StreamLayout(
         IntPtr[] parameters,
         AVRational[] timeBases,
+        SyntheticTrackRole?[] roles,
         double packetsPerSecond,
         int videoIndex,
         int klvIndex)
     {
         _parameters = parameters;
         _timeBases = timeBases;
+        _roles = roles;
         PacketsPerSecond = packetsPerSecond;
         VideoIndex = videoIndex;
         KlvIndex = klvIndex;
@@ -80,8 +156,32 @@ public sealed unsafe class StreamLayout : IDisposable
     /// The MISB metadata stream, or -1 when there is none. In MPEG-TS it is a data stream whose
     /// registration descriptor says KLVA, which libav reports as the SMPTE KLV codec; a data
     /// stream carrying anything else is not metadata this service understands.
+    ///
+    /// It points at a synthetic track only when the sender declared no KLV of its own - see the
+    /// synthetic-track overload of <see cref="From(AVFormatContext*)"/> - so a camera that starts
+    /// reporting its own telemetry keeps its own index.
     /// </summary>
     public int KlvIndex { get; }
+
+    /// <summary>
+    /// Whether the metadata on <see cref="KlvIndex"/> is this service's own synthesis from
+    /// configuration rather than the sender's telemetry. False when there is no KLV at all.
+    /// </summary>
+    public bool KlvIsSynthetic => KlvIndex >= 0 && _roles[KlvIndex] is not null;
+
+    /// <summary>Where the track carrying this role sits, or -1 when this layout has none.</summary>
+    public int SyntheticIndexOf(SyntheticTrackRole role)
+    {
+        for (var index = 0; index < _roles.Length; index++)
+        {
+            if (_roles[index] == role)
+            {
+                return index;
+            }
+        }
+
+        return -1;
+    }
 
     public int Count => _parameters.Length;
 
@@ -118,16 +218,53 @@ public sealed unsafe class StreamLayout : IDisposable
 
     public AVCodecParameters* Parameters(int index) => (AVCodecParameters*)_parameters[index];
 
-    public static StreamLayout From(AVFormatContext* format)
+    public static StreamLayout From(AVFormatContext* format) => From(format, []);
+
+    /// <summary>
+    /// The same, with tracks this replica produces appended to what the sender presented.
+    ///
+    /// Appended last, never inserted, so every index a sender declared keeps its number and a
+    /// stream that carries real KLV keeps its own <see cref="KlvIndex"/>. The synthetic tracks are
+    /// dropped entirely when the sender declared KLV of its own: synthesis fills a gap rather than
+    /// competing with telemetry, and a camera that starts reporting for itself wins.
+    ///
+    /// This runs before <c>StreamHub.Adopt</c> and never after. Swapping an augmented layout into
+    /// a hub that is already running would break every consumer attached to the old one -
+    /// <c>Serve</c>, the recorder, every forward and the snapshot muxer subscribe to every index
+    /// and none of them re-reads the layout - and would make <see cref="Matches"/> compare an
+    /// augmented layout against a bare one on the next reconnect, which closes any recording in
+    /// progress. Augmenting here means <c>Matches</c> compares like with like.
+    /// </summary>
+    public static StreamLayout From(AVFormatContext* format, IReadOnlyList<SyntheticTrack> synthetic)
     {
-        var count = (int)format->nb_streams;
-        var parameters = new IntPtr[count];
-        var timeBases = new AVRational[count];
+        ArgumentNullException.ThrowIfNull(synthetic);
+
+        var arrived = (int)format->nb_streams;
         var packetsPerSecond = 0d;
         var videoIndex = -1;
         var klvIndex = -1;
 
-        for (var index = 0; index < count; index++)
+        for (var index = 0; index < arrived; index++)
+        {
+            var stream = format->streams[index];
+
+            if (klvIndex < 0
+                && stream->codecpar->codec_type == AVMediaType.AVMEDIA_TYPE_DATA
+                && stream->codecpar->codec_id == AVCodecID.AV_CODEC_ID_SMPTE_KLV)
+            {
+                klvIndex = index;
+            }
+        }
+
+        // Read before anything is allocated, so the "the sender already sends KLV" case costs
+        // nothing to decide and leaves nothing to free.
+        IReadOnlyList<SyntheticTrack> appended = klvIndex >= 0 ? [] : synthetic;
+        var count = arrived + appended.Count;
+        var parameters = new IntPtr[count];
+        var timeBases = new AVRational[count];
+        var roles = new SyntheticTrackRole?[count];
+
+        for (var index = 0; index < arrived; index++)
         {
             var stream = format->streams[index];
 
@@ -148,16 +285,46 @@ public sealed unsafe class StreamLayout : IDisposable
             {
                 videoIndex = index;
             }
+        }
 
-            if (klvIndex < 0
-                && stream->codecpar->codec_type == AVMediaType.AVMEDIA_TYPE_DATA
-                && stream->codecpar->codec_id == AVCodecID.AV_CODEC_ID_SMPTE_KLV)
+        // The clock the appended tracks are put on. The same expression ReferenceTimeBase uses,
+        // read here because the layout does not exist yet; 90 kHz is MPEG-TS's own clock and is
+        // what an arriving transport with no picture at all would have to be given anyway.
+        var reference = arrived > 0
+            ? format->streams[videoIndex >= 0 ? videoIndex : 0]->time_base
+            : new AVRational { num = 1, den = 90_000 };
+
+        for (var offset = 0; offset < appended.Count; offset++)
+        {
+            var index = arrived + offset;
+            var track = appended[offset];
+            var copy = ffmpeg.avcodec_parameters_alloc();
+
+            // A data stream libav's MPEG-TS muxer writes with the KLVA registration descriptor a
+            // STANAG 4609 consumer keys off, on stream type 0x06 private data. profile is left at
+            // what avcodec_parameters_alloc set it to, deliberately: AV_PROFILE_KLVA_SYNC selects
+            // stream type 0x15 instead, and libav's demuxer then strips the five-byte ST 1402
+            // metadata AU cell header that its own muxer never writes, so its own round trip loses
+            // the first five bytes of every packet. Measured; see Misb.WriteTransportStream, which
+            // writes a KLV track the same way for the same reason.
+            copy->codec_type = AVMediaType.AVMEDIA_TYPE_DATA;
+            copy->codec_id = AVCodecID.AV_CODEC_ID_SMPTE_KLV;
+
+            parameters[index] = (IntPtr)copy;
+            timeBases[index] = reference;
+            roles[index] = track.Role;
+
+            // Declared rather than left to the assumption. This is the line the rollback figure
+            // hangs on; SyntheticTrack.PacketsPerSecond says what it costs to get wrong.
+            packetsPerSecond += track.PacketsPerSecond;
+
+            if (klvIndex < 0 && track.Role == SyntheticTrackRole.PlatformMetadata)
             {
                 klvIndex = index;
             }
         }
 
-        return new StreamLayout(parameters, timeBases, packetsPerSecond, videoIndex, klvIndex);
+        return new StreamLayout(parameters, timeBases, roles, packetsPerSecond, videoIndex, klvIndex);
     }
 
     /// <summary>
@@ -282,6 +449,16 @@ public sealed unsafe class StreamLayout : IDisposable
         {
             var mine = Parameters(index);
             var theirs = other.Parameters(index);
+
+            // Compared first because the codec parameters cannot tell these apart: a synthetic
+            // ST 0601 track and a KLV track the sender declared are both SMPTE KLV data streams
+            // with no width, no format and no extradata. A camera that starts reporting its own
+            // telemetry would otherwise match the layout that was synthesising for it, and the
+            // injector would carry on publishing onto the index the sender is now using.
+            if (_roles[index] != other._roles[index])
+            {
+                return false;
+            }
 
             if (mine->codec_id != theirs->codec_id
                 || mine->codec_type != theirs->codec_type

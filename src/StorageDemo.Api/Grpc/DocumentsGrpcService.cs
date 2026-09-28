@@ -315,6 +315,7 @@ public sealed class DocumentsGrpcService(
             PacketsLost = stream.PacketsLost,
             PacketsDropped = stream.PacketsDropped,
             HasKlv = stream.HasKlv,
+            KlvSynthesised = stream.KlvSynthesised,
             DetectionEnabled = stream.DetectionEnabled,
             DetectionRate = stream.DetectionRate,
             Viewers = stream.Viewers,
@@ -410,7 +411,8 @@ public sealed class DocumentsGrpcService(
             request.Enabled,
             LiveSourceRules.WithIds([.. request.Forwards.Select(forward =>
                 new ForwardTarget(forward.Id, forward.Url, forward.Enabled))]),
-            DateTimeOffset.UtcNow);
+            DateTimeOffset.UtcNow,
+            request.StaticSensor is { } sensor ? FromMessage(sensor) : null);
 
         if (LiveSourceRules.Refuse(source, liveOptions.Value.AllowedSchemes) is { } rejection)
         {
@@ -434,6 +436,47 @@ public sealed class DocumentsGrpcService(
         return new Empty();
     }
 
+    /// <summary>
+    /// A configured fixed camera off the wire, with every member insisted upon.
+    ///
+    /// The insistence is the point. proto3 gives an unset scalar and a deliberate zero the same
+    /// bytes, so without <c>optional</c> on the message and this check behind it, a caller sending
+    /// a latitude alone would store a camera at 0 degrees north, 0 degrees east - the Gulf of
+    /// Guinea - and pass every range check, because every range includes zero. The REST surface
+    /// gets the same guarantee from JsonRequired on the record's members; this is that guarantee
+    /// for the port that cannot use it.
+    /// </summary>
+    private static StaticSensor FromMessage(StaticSensorMessage sensor)
+    {
+        string[] missing =
+        [
+            .. sensor.HasLongitude ? (string[])[] : ["longitude"],
+            .. sensor.HasLatitude ? (string[])[] : ["latitude"],
+            .. sensor.HasAltitudeMetres ? (string[])[] : ["altitude_metres"],
+            .. sensor.HasTrueBearing ? (string[])[] : ["true_bearing"],
+            .. sensor.HasRelativeElevation ? (string[])[] : ["relative_elevation"],
+            .. sensor.HasHorizontalFov ? (string[])[] : ["horizontal_fov"],
+            .. sensor.HasVerticalFov ? (string[])[] : ["vertical_fov"],
+        ];
+
+        if (missing.Length > 0)
+        {
+            throw new RpcException(new Status(
+                StatusCode.InvalidArgument,
+                $"A static sensor needs every field. Missing: {string.Join(", ", missing)}."));
+        }
+
+        return new StaticSensor(
+            sensor.Longitude,
+            sensor.Latitude,
+            sensor.AltitudeMetres,
+            sensor.TrueBearing,
+            sensor.RelativeElevation,
+            sensor.HorizontalFov,
+            sensor.VerticalFov,
+            sensor.HasClassification ? sensor.Classification : null);
+    }
+
     private static LiveSourceMessage ToMessage(LiveSource source, LiveStream? stream = null)
     {
         var message = new LiveSourceMessage
@@ -452,6 +495,28 @@ public sealed class DocumentsGrpcService(
                 Url = forward.Url,
                 Enabled = forward.Enabled,
             });
+        }
+
+        if (source.StaticSensor is { } sensor)
+        {
+            var configured = new StaticSensorMessage
+            {
+                Longitude = sensor.Longitude,
+                Latitude = sensor.Latitude,
+                AltitudeMetres = sensor.AltitudeMetres,
+                TrueBearing = sensor.TrueBearing,
+                RelativeElevation = sensor.RelativeElevation,
+                HorizontalFov = sensor.HorizontalFov,
+                VerticalFov = sensor.VerticalFov,
+            };
+
+            // Absent stays absent: unmarked is not the same answer as an empty marking.
+            if (sensor.Classification is { } marking)
+            {
+                configured.Classification = marking;
+            }
+
+            message.StaticSensor = configured;
         }
 
         if (stream is not null)
@@ -790,6 +855,7 @@ public sealed class DocumentsGrpcService(
             },
             ReceivedAt = Timestamp.FromDateTimeOffset(sample.ReceivedAt),
             Raw = ByteString.CopyFrom(sample.Raw),
+            Synthesised = sample.Synthesised,
         };
 
         if (sample.ReferencePts is { } pts)

@@ -144,6 +144,19 @@ public sealed unsafe class PacketMuxer : IDisposable
             return;
         }
 
+        // Bounds-checked as well as mapped, because a subscriber's stream indexes and this
+        // muxer's layout can disagree. Every consumer that writes bytes - Serve, the recorder,
+        // every forward, the snapshot muxer - subscribes to every index and none of them re-reads
+        // the layout afterwards, so a packet on an index this muxer's layout never had is a stale
+        // consumer rather than a corrupt stream. Dropping the track is what the line below already
+        // does for a track the container refused; without the check it is an
+        // IndexOutOfRangeException on the hub's publishing thread instead, which ends the stream
+        // for everybody rather than the one track for one consumer.
+        if (packet.StreamIndex < 0 || packet.StreamIndex >= _mapping.Length)
+        {
+            return;
+        }
+
         var output = _mapping[packet.StreamIndex];
 
         if (output < 0)

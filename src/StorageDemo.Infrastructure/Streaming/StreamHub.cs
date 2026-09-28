@@ -28,6 +28,21 @@ public sealed class StreamHub : IDisposable
 
     private StreamLayout? _layout;
 
+    /// <summary>What <see cref="Synthesise"/> was last told to append to the next layout.</summary>
+    private IReadOnlyList<SyntheticTrack> _synthetic = [];
+
+    /// <summary>
+    /// Where the arriving feed has reached on the reference clock, or null before anything has been
+    /// published on this connection. See <see cref="PublishAtLiveEdge"/>, which is all it is for.
+    ///
+    /// Published rather than timestamped, and the difference is real if narrow: the demultiplexer
+    /// carries its last known reference position forward across packets that have none, so a feed
+    /// whose first packets arrive with no timestamp sets this to zero rather than leaving it null.
+    /// Zero is then this stream's honest position, because it is the same position the buffer put
+    /// those packets at - the two cannot disagree, which is the only property this needs.
+    /// </summary>
+    private long? _liveEdge;
+
     /// <summary>
     /// Layouts this stream has had. They are kept rather than freed on replacement because a
     /// decoder or a muxer may still be holding one: freeing underneath a consumer would be a
@@ -67,6 +82,29 @@ public sealed class StreamHub : IDisposable
     /// <summary>Null until a layout is known, because a buffer needs a clock to measure itself by.</summary>
     public RollingBuffer? Buffer { get; private set; }
 
+    /// <summary>
+    /// Tracks to append to the next layout this hub adopts - metadata this replica produces for a
+    /// stream whose sender has none of its own.
+    ///
+    /// Read at <see cref="Adopt"/> and never afterwards, which is what makes a configuration
+    /// change take effect on the next connection rather than under a running one. Swapping a live
+    /// layout would break every consumer already attached to it, since none of them re-reads it;
+    /// see <see cref="StreamLayout"/>'s synthetic-track overload of <c>From</c>.
+    /// </summary>
+    public void Synthesise(IReadOnlyList<SyntheticTrack> tracks)
+    {
+        lock (_gate)
+        {
+            _synthetic = tracks;
+        }
+    }
+
+    /// <summary>What <see cref="Synthesise"/> was last told, for the demultiplexer about to adopt.</summary>
+    public IReadOnlyList<SyntheticTrack> SyntheticTracks
+    {
+        get { lock (_gate) { return _synthetic; } }
+    }
+
     public long Packets { get; private set; }
 
     public long Bytes { get; private set; }
@@ -91,6 +129,12 @@ public sealed class StreamHub : IDisposable
         lock (_gate)
         {
             var matches = _layout is null || _layout.Matches(layout);
+
+            // Forgotten with the connection that established it. A returning encoder counts from
+            // its own zero again and the buffer shifts everything after it onto its own clock; a
+            // synthetic packet stamped at the departed feed's edge in between would be the packet
+            // that shift is computed from, and every real packet after it would inherit it.
+            _liveEdge = null;
 
             if (_layout is not null)
             {
@@ -222,16 +266,100 @@ public sealed class StreamHub : IDisposable
                 return;
             }
 
-            Buffer?.Add(packet, startsSegment, referencePts);
+            _liveEdge = referencePts;
 
             Packets++;
             Bytes += packet.Bytes;
             LastPacketAt = DateTimeOffset.UtcNow;
 
-            foreach (var subscriber in _subscribers)
+            Offer(packet, startsSegment, referencePts);
+        }
+    }
+
+    /// <summary>
+    /// Publishes a packet this replica produced rather than received, stamped where the arriving
+    /// feed has got to.
+    ///
+    /// The stamping is here, under the same lock the arriving packets are published under, rather
+    /// than left to the caller, because the two rules it has to satisfy are both about the live
+    /// edge and both are unforgiving:
+    ///
+    /// - More than a second behind it and <c>PacketMuxer.Rebase</c> reads the packet as an encoder
+    ///   that has restarted its clock and rebases the whole timeline onto it, which corrupts it for
+    ///   every viewer, forward and recording on the stream.
+    /// - Ahead of it and <c>Segment.Add</c> advances the buffer's <c>EndPts</c>, which shrinks
+    ///   <c>HeldSeconds</c> and evicts the oldest segment before its time.
+    ///
+    /// Read outside the lock, the edge can be a reconnect old by the time the packet is published -
+    /// a returning encoder counts from its own zero again - and that is precisely the first case.
+    /// Exactly at the edge is the one stamp that cannot be either.
+    ///
+    /// The track is named by its role and resolved here for the same reason, and that one is worse.
+    /// A caller that resolved an index of its own and handed it in would be reading the layout at a
+    /// different moment from the one this publishes in, and a reconnect landing between the two is
+    /// enough: index 1 of the departed layout was this service's synthetic track, and index 1 of
+    /// the arriving one can be the sender's own KLV track. The packet does not fail - it lands, at
+    /// the live edge, on a real platform's telemetry track, in every viewer, forward and recording,
+    /// carrying a configured position and saying it is genuine, because <see cref="KlvExtractor"/>
+    /// reads provenance from the layout and the layout now says this index is the sender's. Nothing
+    /// downstream can tell. Re-reading the layout once a tick does not close that window; resolving
+    /// the role against the layout under this lock does, because it is the same read.
+    /// </summary>
+    /// <returns>
+    /// False when nothing has arrived yet, so there is no edge to stamp against, when the hub has
+    /// closed, or when the layout carries no track with this role - which is what a reconnect to a
+    /// sender that has started reporting for itself looks like. A caller publishing on a schedule
+    /// tries again on its next tick.
+    /// </returns>
+    public bool PublishAtLiveEdge(SyntheticTrackRole role, byte[] data)
+    {
+        lock (_gate)
+        {
+            if (Closed || _liveEdge is not { } edge)
             {
-                subscriber.Offer(packet, startsSegment);
+                return false;
             }
+
+            if (_layout?.SyntheticIndexOf(role) is not { } streamIndex || streamIndex < 0)
+            {
+                return false;
+            }
+
+            // Duration zero: a metadata item describes an instant, not a span. A keyframe because
+            // nothing about it depends on a packet before it, which is what every consumer's
+            // muxer wants to hear about a track it may be joining mid-flight.
+            var packet = new MediaPacket(streamIndex, data, edge, edge, Duration: 0, IsKeyframe: true);
+
+            // Never starting a segment, whatever StartsSegment would say. A segment boundary is
+            // where a viewer may join, and joining on a metadata packet gives it no picture; on a
+            // transport with no video at all StartsSegment would otherwise say yes to this, on the
+            // rule that every packet of an audio-only stream is a starting point.
+            Offer(packet, startsSegment: false, edge);
+
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// The buffer and the fan-out, for a packet however it was produced. Assumes <see cref="_gate"/>
+    /// and that the hub is open.
+    ///
+    /// The counters are not here, and that is the point of the split. <see cref="LastPacketAt"/> is
+    /// what the grace period is measured from: moved by a packet this replica produced, a stream
+    /// whose camera had gone away would report itself live for as long as the process ran, and
+    /// would never be interrupted, never expire and never be released to another replica.
+    /// <see cref="Packets"/> and <see cref="Bytes"/> are the feed's own totals and the meter turns
+    /// them into an ingest rate, so they stay what arrived. What the synthetic track carries is
+    /// counted where it is decoded, by <see cref="KlvExtractor"/>, and reported as this stream's
+    /// KLV rate like any other metadata.
+    /// </summary>
+    private void Offer(MediaPacket packet, bool startsSegment, long referencePts)
+    {
+        Buffer?.Add(packet, startsSegment, referencePts);
+
+        foreach (var subscriber in _subscribers)
+        {
+            subscriber.Offer(packet, startsSegment);
         }
     }
 

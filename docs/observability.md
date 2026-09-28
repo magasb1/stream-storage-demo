@@ -102,7 +102,7 @@ What arrived, sampled per stream per beat and summed:
 | `live_packets_lost` | Never arrived and could not be retransmitted in time: the network, or a receive path past its knee. |
 | `live_packets_dropped` | Arrived too late for the latency window, which usually means the window is too small for the link. A different fault from loss, and adding the two together loses what decides the fix. |
 | `live_udp_receive_errors` | The kernel's `Udp: InErrors` for the pod's whole network namespace. Linux only. |
-| `live_klv_packets`, `live_klv_rejected` | MISB metadata decoded, and packets that were ST 0601 and failed their checksum. |
+| `live_klv_packets`, `live_klv_rejected` | MISB metadata decoded, and packets that were ST 0601 and failed their checksum. Includes sets this replica synthesised for a configured static sensor, which are metadata the stream carries like any other; `live_packets` and `live_bytes` do not, being what was demultiplexed. |
 
 What happened:
 
@@ -111,7 +111,7 @@ What happened:
 | `live_accepts` | `port` | Callers accepted, by the port they arrived on. |
 | `live_rejects` | `port`, `reason` | Refused at the handshake. `conflict` is the name lock working; `overload` is `Live:MaxStreams` working. |
 | `live_claims` | `outcome` | `taken`, `resumed`, `refused`. A rolling update should read as resumed, which is what a move looks like when nothing is lost. |
-| `live_streams_ended` | `reason` | `stopped`, `expired`, `source-off`, `displaced`, `shutdown`. |
+| `live_streams_ended` | `reason` | `stopped`, `expired`, `source-off`, `sensor-changed`, `displaced`, `shutdown`. `sensor-changed` is a pulled stream reopened to pick up a change to its static sensor, so it should be followed by a claim on the same name; a stream of them means a configuration the next connection does not settle. |
 | `live_viewer_sessions` | `route` | How a player reached the replica that owns its stream: `direct` on that replica's own consumption port, `relayed` when it reached another one and is fetched from there. Counted by the owner, once the viewer is actually subscribed, so one viewer is one session however many pods it passed through and a retrying attach is not a session at all. |
 | `live_overflows` | `policy` | A subscriber fell behind. `skip-to-live` is a viewer losing a moment; `fail` is a recorder stopping. |
 | `live_snapshots` | `outcome` | `stored`, `preview` — served from the harvester's older, smaller picture — or `none`. |

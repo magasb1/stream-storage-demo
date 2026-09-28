@@ -98,6 +98,83 @@ public sealed record SrtForwardLinkStats(
     int NegotiatedLatencyMs);
 
 /// <summary>
+/// Where a fixed camera is and where it looks, as an operator configured it.
+///
+/// Configuration rather than telemetry, which is the whole reason this type exists. A mast, tower
+/// or perimeter camera has no platform, no INS and nothing to report, so it sends no KLV and is
+/// invisible to everything downstream that works in geodetic terms. None of what it would report
+/// changes: position is fixed and orientation changes rarely or never, so it can be stated once
+/// and synthesised into a valid ST 0601 Local Set on the stream's own metadata track.
+///
+/// One nullable sub-record rather than eight nullable fields on <see cref="LiveSource"/>, so that
+/// "is this camera configured" is one null check rather than eight. Both stores serialise the whole
+/// <see cref="LiveSource"/> with System.Text.Json, so a row written before this existed reads back
+/// with a null here and needs no migration.
+///
+/// What the nesting buys is exactly that, and no more. It makes the presence of the whole object
+/// detectable; it says nothing about the presence of its members, and a member left out of the
+/// object is a zero rather than an absence. A latitude sent without a longitude therefore used to
+/// store a camera at 0 degrees north, 0 degrees east - the Gulf of Guinea - and pass every range
+/// check, because every range here includes zero. So the members carry
+/// <see cref="System.Text.Json.Serialization.JsonRequiredAttribute"/> and a partial object fails to
+/// deserialise rather than filling itself in. The same guarantee is made twice more where the same
+/// hole exists: the gRPC message marks its scalars <c>optional</c>, because proto3 cannot otherwise
+/// tell a field left out from a deliberate zero, and <c>LiveSourceRules.Refuse</c> refuses a field
+/// of view of zero, which is the one member of a partial configuration that can never be meant.
+///
+/// Every range is the ST 0601 item's own, so that a configured value has an exact encoding rather
+/// than a saturated one; <c>LiveSourceRules.Refuse</c> refuses anything outside them. The ranges
+/// are stated there, once, beside the refusal that enforces them.
+/// </summary>
+/// <param name="Longitude">ST 0601 tag 14, WGS84 degrees, -180..180.</param>
+/// <param name="Latitude">ST 0601 tag 13, WGS84 degrees, -90..90.</param>
+/// <param name="AltitudeMetres">ST 0601 tag 15, sensor true altitude above MSL, -900..19000.</param>
+/// <param name="TrueBearing">
+/// Where the camera looks, degrees clockwise from true north, 0..360. Carried as ST 0601 tag 5,
+/// Platform Heading Angle, with tag 18, Sensor Relative Azimuth, sent as zero beside it.
+///
+/// That split rather than the reverse - heading zero and the bearing in tag 18 - because tag 18 is
+/// defined against the platform's own longitudinal axis, and a fixed mount has no such axis to be
+/// relative to. Saying the mount points this way and the camera points straight along it is the
+/// arrangement that stays true if a pan head is ever added: the bearing then moves into tag 18 and
+/// tag 5 keeps describing the mount. <see cref="SensorGeometry.SensorBearing"/> adds the two, so
+/// either spelling gives a consumer the same answer today.
+/// </param>
+/// <param name="RelativeElevation">
+/// Where the camera looks in the vertical, ST 0601 tag 19 (Sensor Relative Elevation), -180..180:
+/// positive above the horizon, negative below it, so a mast camera looking twelve degrees down is
+/// -12.
+///
+/// Named after the standard's item rather than after the angle an operator of a fixed camera
+/// thinks in, which is a depression. The two have opposite signs, and a field called depression
+/// carrying an elevation is the sort of thing an integrator discovers by pointing a camera at the
+/// sky: entering 20 for a mast would be in range, would be accepted, and would be wrong with
+/// nothing anywhere to say so. If a depression is ever wanted it belongs on a form, negated once
+/// on the way in, not in the record that feeds the encoder.
+/// </param>
+/// <param name="HorizontalFov">
+/// ST 0601 tag 16, degrees, above 0 and up to 180. What lets a client draw a wedge rather than a
+/// pin. Zero is inside the standard's own range and is refused anyway: a camera with no field of
+/// view is not a camera, and it is what a field left out of a partial configuration reads as.
+/// </param>
+/// <param name="VerticalFov">ST 0601 tag 17, degrees, above 0 and up to 180, for the same reason.</param>
+/// <param name="Classification">
+/// The ST 0102 marking to carry in ST 0601 tag 48, or null for an unmarked stream. Optional
+/// because requiring an operator to declare a marking invents data: absent means unmarked, which
+/// <see cref="Misb0601"/> already treats as an answer distinct from "unclassified". One of
+/// <see cref="Misb0601.Classifications"/>.
+/// </param>
+public sealed record StaticSensor(
+    [property: JsonRequired] double Longitude,
+    [property: JsonRequired] double Latitude,
+    [property: JsonRequired] double AltitudeMetres,
+    [property: JsonRequired] double TrueBearing,
+    [property: JsonRequired] double RelativeElevation,
+    [property: JsonRequired] double HorizontalFov,
+    [property: JsonRequired] double VerticalFov,
+    string? Classification = null);
+
+/// <summary>
 /// A standing instruction about one stream name: fetch it from here, and copy it to there.
 ///
 /// The difference from <see cref="LiveStream"/> is the whole point of this type. A
@@ -123,12 +200,22 @@ public sealed record SrtForwardLinkStats(
 /// is untouched, because stopping an encoder is not this toggle's business - refusing a name is
 /// the lock's, and ending a feed is the stop call's.
 /// </param>
+/// <param name="StaticSensor">
+/// Where this camera is and where it looks, when it is a fixed one and somebody said. Null means
+/// nothing is synthesised for this stream, which is the ordinary case and the state every row
+/// written before this field existed deserialises to.
+///
+/// It takes effect on the next connection rather than under the running one - see
+/// <c>LiveStreamCoordinator.ReconcileMetadata</c> - because the track it adds is part of the
+/// stream's layout, and every consumer already attached subscribed against the layout it joined on.
+/// </param>
 public sealed record LiveSource(
     string Name,
     string? Url,
     bool Enabled,
     IReadOnlyList<ForwardTarget> Forwards,
-    DateTimeOffset UpdatedAt)
+    DateTimeOffset UpdatedAt,
+    StaticSensor? StaticSensor = null)
 {
     /// <summary>
     /// True when this service is meant to fetch the stream rather than wait for it.

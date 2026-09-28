@@ -160,7 +160,9 @@ internal static unsafe class Misb
     /// Not written as stream type 0x15 (<c>AV_PROFILE_KLVA_SYNC</c>): libav's demuxer strips the
     /// five-byte ST 1402 metadata AU cell header from such a stream, as a real encoder's output
     /// requires, but libav's muxer does not write one, so its own round trip loses the first five
-    /// bytes of every packet.
+    /// bytes of every packet. That reasoning now governs production code as well - a synthetic
+    /// track leaves <c>codecpar-&gt;profile</c> unset for it - and is stated where that happens, in
+    /// <c>StreamLayout.From</c>'s synthetic-track overload.
     /// </summary>
     public static void WriteTransportStream(string videoPath, string outputPath, byte[] klv, double intervalSeconds)
     {

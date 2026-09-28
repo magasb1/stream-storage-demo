@@ -376,7 +376,10 @@ public sealed class LiveMetrics : IDisposable
 
     /// <param name="reason">
     /// Why the stream stopped being this replica's: <c>stopped</c>, <c>expired</c>,
-    /// <c>source-off</c>, <c>displaced</c> or <c>shutdown</c>. A rolling update shows up as
+    /// <c>source-off</c>, <c>sensor-changed</c>, <c>displaced</c> or <c>shutdown</c>.
+    /// <c>sensor-changed</c> is a pulled stream being reopened to pick up a change to its static
+    /// sensor, which is the only way a metadata track can be added to or taken off a layout; it is
+    /// a reconnect rather than a loss, and the name comes back on a later beat. A rolling update shows up as
     /// <c>shutdown</c> here and <c>resumed</c> on <see cref="Claimed"/> somewhere else, which is
     /// what a move looks like when nothing is lost.
     /// </param>

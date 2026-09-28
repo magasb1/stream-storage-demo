@@ -46,6 +46,126 @@ public sealed class Misb0601Tests
         Assert.Equal(Misb.Known.TailNumber, Assert.Single(set.Unparsed).Value);
     }
 
+    /// <summary>
+    /// A synthesised set decodes to the configuration it was built from.
+    ///
+    /// The round trip is worth more than it looks. The decoder's scale table is already checked
+    /// against a real stream in <see cref="Misb0601RealStreamTests"/> - over its 711 packets the
+    /// slant range agrees with the distance computed from the positions to within four metres,
+    /// which it cannot do if a scale is wrong - so an encoder that agrees with that decoder is
+    /// agreeing with a table that has been held against a real sender's arithmetic.
+    /// </summary>
+    [Fact]
+    public void A_synthesised_set_decodes_to_the_configuration_it_was_built_from()
+    {
+        var sensor = new StaticSensor(
+            Longitude: -1.826,
+            Latitude: 51.179,
+            AltitudeMetres: 143.5,
+            TrueBearing: 218.4,
+            RelativeElevation: -12.75,
+            HorizontalFov: 6.2,
+            VerticalFov: 3.5,
+            Classification: "SECRET");
+
+        // Truncated to whole microseconds, which is ST 0603's resolution and so the most tag 2 can
+        // carry: comparing against a DateTimeOffset with ticks on it would be testing the clock.
+        var at = new DateTimeOffset(2026, 9, 28, 11, 12, 13, TimeSpan.Zero);
+
+        var packet = Misb0601.Encode(sensor, at, "SYNTHESISED STATIC SENSOR");
+        var set = Misb0601.Decode(packet);
+
+        // Not null is the checksum, the BER lengths and the key all being right at once, since
+        // Decode returns null for any of them.
+        Assert.NotNull(set);
+
+        Assert.Equal(at, set.Timestamp);
+        Assert.Equal("SYNTHESISED STATIC SENSOR", set.PlatformDesignation);
+        Assert.Equal("SECRET", set.Classification);
+
+        // The ST 0102 set carries its own version beside the marking: tag 22, two bytes, twelve.
+        // Mandatory in ST 0102.12 and the only one of that revision's mandatory items this service
+        // can answer without inventing a classifying country, so it is the difference between a
+        // strict consumer's two complaints and its three. Asserted on the bytes because the
+        // decoder reads only tag 1 out of the security set and stops there.
+        Assert.Contains(
+            Convert.ToHexString([0x16, 0x02, 0x00, 0x0C]),
+            Convert.ToHexString(packet),
+            StringComparison.Ordinal);
+        Assert.Equal(Misb0601.Version, set.Version);
+
+        Assert.Equal(sensor.Latitude, set.SensorLatitude!.Value, 90.0 / int.MaxValue);
+        Assert.Equal(sensor.Longitude, set.SensorLongitude!.Value, 180.0 / int.MaxValue);
+        Assert.Equal(sensor.AltitudeMetres, set.SensorTrueAltitude!.Value, 19900.0 / ushort.MaxValue);
+        Assert.Equal(sensor.HorizontalFov, set.SensorHorizontalFov!.Value, 180.0 / ushort.MaxValue);
+        Assert.Equal(sensor.VerticalFov, set.SensorVerticalFov!.Value, 180.0 / ushort.MaxValue);
+        Assert.Equal(sensor.TrueBearing, set.PlatformHeading!.Value, 360.0 / ushort.MaxValue);
+        Assert.Equal(sensor.RelativeElevation, set.SensorRelativeElevation!.Value, 180.0 / int.MaxValue);
+
+        // Present although it is zero. SensorBearing is tag 5 plus tag 18 and returns null if
+        // either is absent, so a set that left this out would carry a bearing nothing could read.
+        Assert.Equal(0, set.SensorRelativeAzimuth!.Value, 360.0 / uint.MaxValue);
+
+        // Absent on purpose, each for a stated reason: an unrolled fixed mount is what a missing
+        // tag 20 already means, and a frame centre needs a range or a terrain model this service
+        // does not have. Guessing either would give anything built on top of it an invention.
+        Assert.Null(set.SensorRelativeRoll);
+        Assert.Null(set.SlantRange);
+        Assert.Null(set.FrameCenterLatitude);
+        Assert.Null(set.FrameCenterLongitude);
+        Assert.Null(set.FrameCenterElevation);
+
+        // Nothing rode along that this encoder did not mean to write.
+        Assert.Empty(set.Unparsed);
+    }
+
+    /// <summary>
+    /// The bearing a consumer reads off a synthesised set is the bearing that was configured.
+    ///
+    /// The end-to-end statement of what tag 5 and tag 18 are for, through the same expression a
+    /// client's north arrow is drawn from rather than through the two raw items.
+    /// </summary>
+    [Fact]
+    public void The_bearing_read_off_a_synthesised_set_is_the_one_that_was_configured()
+    {
+        var sensor = new StaticSensor(
+            Longitude: 0,
+            Latitude: 0,
+            AltitudeMetres: 30,
+            TrueBearing: 218.4,
+            RelativeElevation: -8,
+            HorizontalFov: 40,
+            VerticalFov: 22);
+
+        var set = Misb0601.Decode(Misb0601.Encode(sensor, DateTimeOffset.UnixEpoch, "SYNTHESISED STATIC SENSOR"));
+
+        Assert.NotNull(set);
+
+        var bearing = SensorGeometry.SensorBearing(set.PlatformHeading, set.SensorRelativeAzimuth);
+
+        Assert.NotNull(bearing);
+        Assert.Equal(sensor.TrueBearing, bearing.Value, 360.0 / ushort.MaxValue);
+
+        // An unmarked stream stays unmarked rather than becoming unclassified.
+        Assert.Null(set.Classification);
+    }
+
+    /// <summary>
+    /// A value outside an ST 0601 item's range is refused rather than saturated, because a packet
+    /// carrying the range's endpoint is indistinguishable from one carrying a measurement.
+    /// </summary>
+    [Fact]
+    public void A_configuration_outside_an_items_range_is_refused_rather_than_saturated()
+    {
+        var sensor = new StaticSensor(0, 0, AltitudeMetres: 25_000, TrueBearing: 0, RelativeElevation: 0, HorizontalFov: 40, VerticalFov: 22);
+
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => Misb0601.Encode(sensor, DateTimeOffset.UnixEpoch, "SYNTHESISED STATIC SENSOR"));
+
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => Misb0601.Encode(sensor with { AltitudeMetres = 30, Classification = "COSMIC" }, DateTimeOffset.UnixEpoch, "X"));
+    }
+
     [Fact]
     public void A_packet_whose_checksum_does_not_match_is_rejected()
     {
