@@ -80,7 +80,10 @@ public sealed class LiveConsumptionService(
         // The position rides in the identifier's user_from key, so returning to live is a new
         // connection rather than a control message and the connection stays one-way.
         var from = StreamName.Position(socket.StreamId) ?? 0;
-        var viewer = new SrtSocketStream(socket.Release(), writable: true);
+        var viewer = new SrtSocketStream(
+            socket.Release(),
+            writable: true,
+            sendStallBudget: TimeSpan.FromSeconds(_options.ViewerSendStallSeconds));
 
         // Pool work, and now it says so. Serving a viewer is an await loop, so the LongRunning
         // thread this used to ask for lived only until the first await that actually yielded: the
@@ -97,11 +100,10 @@ public sealed class LiveConsumptionService(
         // StartNew bound TaskScheduler.Current, so this no longer inherits a scheduler from
         // whoever called it.
         //
-        // The pool pays for the write, because a viewer's writes block inline in srt_sendmsg and no
-        // SRTO_SNDTIMEO is set on these sockets. The fear that came with that - a viewer which is
-        // slow but still alive pinning whatever thread is serving it for as long as it likes - has
-        // since been measured on both sides, and the answer carries a condition that is the viewer's
-        // to set rather than ours.
+        // The pool pays for the write, because a viewer's writes block inline in srt_sendmsg. The
+        // fear that came with that - a viewer which is slow but still alive pinning whatever thread
+        // is serving it for as long as it likes - has since been measured on both sides, and the
+        // answer carries a condition that is the viewer's to set rather than ours.
         //
         // For a viewer whose handshake advertised too-late-packet drop, which is libsrt's default and
         // what an ordinary player does, the send does not wait. libsrt discards from this socket's
@@ -114,18 +116,26 @@ public sealed class LiveConsumptionService(
         // relayed route, is excluded.
         //
         // Clear that flag and nothing frees the buffer. It fills to its twelve megabytes and the send
-        // waits on a condition variable no timeout ever wakes, while the peer goes on acknowledging
-        // so the connection is never declared lost either: measured at twelve seconds and still
-        // waiting when the test closed the socket under it. A caller sets that with one query
-        // parameter on its URL, and can raise the drop threshold instead by asking for a longer
-        // latency, which the handshake settles at the larger of the two sides. Admit above says yes
-        // to everyone by design, so that waiting thread is a stranger's to take, and with the pool
-        // carrying these bodies it is also what a newly accepted viewer queues behind.
+        // waits, while the peer goes on acknowledging so the connection is never declared lost
+        // either: before this budget existed, that was measured at twelve seconds and still waiting
+        // when the test closed the socket under it. A caller sets that with one query parameter on
+        // its URL, and can raise the drop
+        // threshold instead by asking for a longer latency, which the handshake settles at the larger
+        // of the two sides. Admit above says yes to everyone by design, so that waiting thread is a
+        // stranger's to take, and with the pool carrying these bodies it is also what a newly
+        // accepted viewer queues behind.
         //
-        // So #20 stays open, re-scoped: a send timeout, sized together with SRTO_SNDBUF and
-        // ViewerQueueSeconds, because those three are one policy. SrtSendPressureTests measures both
-        // cases on the sending socket; LiveSlowPlayerTests measures what the ordinary one costs this
-        // replica, and #11, which asked whether a slow player loses picture, is answered: it does.
+        // That is what the budget passed in above ends, and it ends the memory with it: twelve
+        // megabytes of send buffer per such viewer is returned only by dropping the viewer, and
+        // nothing else bounds it - SRTO_SNDBUF is pre-bind only, so there is no per-viewer size to
+        // set. The budget is wall-clock with no bytes accepted rather than a count of timeouts,
+        // because a viewer asking for a rollback produces a couple of isolated timeouts while being
+        // seeded and must not be dropped for them. See LiveOptions.ViewerSendStallSeconds for the measurements
+        // and SrtSocketStream.Write for what the loop does with them.
+        //
+        // SrtSendPressureTests measures both peers on the sending socket; LiveSlowPlayerTests
+        // measures what the ordinary one costs this replica, and #11, which asked whether a slow
+        // player loses picture, is answered: it does, and that is the right answer for it.
         //
         // Ingest is the other way round, and the difference is the point: the listener started above
         // and the coordinator's feed are synchronous from their first line to their last, blocking
@@ -254,6 +264,23 @@ public sealed class LiveConsumptionService(
         }
         finally
         {
+            if (viewer.SendStalled)
+            {
+                // Here rather than beside the Faulted check above, because the budget reports itself
+                // by throwing and the throw can leave the loop through either route: the muxer
+                // swallows a failed write and the loop sees Faulted, or a write outside the muxer
+                // lets the IOException reach the catch above, which reads as "the viewer closed the
+                // player" and is right about every other viewer. This is the one place both arrive.
+                logger.LogWarning(
+                    "Dropped a viewer of '{Name}': its socket accepted nothing for {Budget} s while "
+                    + "the connection stayed up, which is a peer that cleared SRTO_TLPKTDROP and "
+                    + "stopped reading",
+                    name,
+                    _options.ViewerSendStallSeconds);
+
+                metrics.ViewerDropped("direct");
+            }
+
             await viewer.DisposeAsync();
         }
     }

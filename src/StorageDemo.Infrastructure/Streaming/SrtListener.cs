@@ -91,6 +91,22 @@ public sealed unsafe class SrtListener(
     /// </summary>
     private const int ReceiveTimeoutMilliseconds = 1000;
 
+    /// <summary>
+    /// How often a blocked send looks up. A const rather than an option, because measurement says the
+    /// value decides nothing: with it set, a peer advertising too-late-packet drop stalls about a
+    /// second and recovers - that is libsrt's drop threshold, max(latency + SRTO_SNDDROPDELAY, 1000)
+    /// + 20 ms, not this - and a peer that cleared the flag never recovers at any setting: probing
+    /// libsrt 1.5.3 directly for #20 gave sixteen unbroken seconds of timeouts in a sixteen-second
+    /// window. The two cases stay two orders of magnitude apart however this is set, so what a
+    /// stalled viewer costs is decided by
+    /// <see cref="LiveOptions.ViewerSendStallSeconds"/> in <c>SrtSocketStream.Write</c>. Exposing this
+    /// as well would only invite an operator to tune the knob that does nothing.
+    ///
+    /// A second, matching <see cref="ReceiveTimeoutMilliseconds"/>, so a blocked send checks its
+    /// budget about as often as a blocked read checks for a shutdown.
+    /// </summary>
+    private const int SendTimeoutMilliseconds = 1000;
+
     private string PortName => intent == StreamIntent.Publish ? "ingest" : "consumption";
 
     /// <summary>
@@ -297,6 +313,20 @@ public sealed unsafe class SrtListener(
         }
 
         Srt.SetInt32(socket, SRT_SOCKOPT.SRTO_RCVTIMEO, ReceiveTimeoutMilliseconds);
+
+        if (intent == StreamIntent.Subscribe)
+        {
+            // Viewers only. A send on an ingest socket is the handshake's business and nothing
+            // here writes to one, whereas a viewer's socket is the one a stranger can stop reading
+            // from. libsrt's default is -1, which is a send that waits for as long as the peer
+            // likes; this turns the wait into a poll, and SrtSocketStream.Write decides what to do
+            // with it. Post-accept rather than on the listener, because only half of what this
+            // listener accepts should have it.
+            //
+            // SRTO_SNDBUF is deliberately not set beside it - see
+            // LiveOptions.ViewerSendStallSeconds for the measurement that rules it out.
+            Srt.SetInt32(socket, SRT_SOCKOPT.SRTO_SNDTIMEO, SendTimeoutMilliseconds);
+        }
 
         // What the handshake settled on, not what was asked for: the larger of the two sides wins,
         // so a caller that knows its link can raise this and an operator should be able to see that

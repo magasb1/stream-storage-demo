@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using StorageDemo.Core.Streaming;
 
 namespace StorageDemo.Infrastructure.Streaming;
@@ -34,10 +35,29 @@ public sealed unsafe class SrtSocketStream : Stream, IWireWriter
 
     private readonly Receive _receive;
 
+    /// <summary>
+    /// How long a send may make no progress at all before the peer is dropped, or zero for the
+    /// behaviour every socket here had before <see cref="LiveOptions.ViewerSendStallSeconds"/>
+    /// existed: no retry, and the first refused send faults the stream.
+    /// </summary>
+    private readonly long _stallBudgetTicks;
+
     private bool _closed;
 
-    public SrtSocketStream(int socket, bool writable)
-        : this(socket, writable, send: null, receive: null, payloadSize: PayloadSizeOf(socket))
+    /// <summary>
+    /// When the chunk currently being offered to libsrt was first offered, as a
+    /// <see cref="Stopwatch"/> timestamp, or zero when no send is in progress or the budget is off.
+    /// </summary>
+    private long _offeredAt;
+
+    public SrtSocketStream(int socket, bool writable, TimeSpan sendStallBudget = default)
+        : this(
+            socket,
+            writable,
+            send: null,
+            receive: null,
+            payloadSize: PayloadSizeOf(socket),
+            sendStallBudget: sendStallBudget)
     {
     }
 
@@ -53,7 +73,8 @@ public sealed unsafe class SrtSocketStream : Stream, IWireWriter
         bool writable,
         Send? send,
         Receive? receive,
-        int payloadSize = Srt.LiveDefaultPayloadSize)
+        int payloadSize = Srt.LiveDefaultPayloadSize,
+        TimeSpan sendStallBudget = default)
     {
         _socket = socket;
         _writable = writable;
@@ -61,6 +82,10 @@ public sealed unsafe class SrtSocketStream : Stream, IWireWriter
 
         _send = send ?? SendToSocket;
         _receive = receive ?? ReceiveFromSocket;
+
+        _stallBudgetTicks = sendStallBudget > TimeSpan.Zero
+            ? (long)(sendStallBudget.TotalSeconds * Stopwatch.Frequency)
+            : 0;
     }
 
     public override bool CanRead => !_writable && !_closed;
@@ -78,6 +103,21 @@ public sealed unsafe class SrtSocketStream : Stream, IWireWriter
     /// listening to, forever.
     /// </summary>
     public bool Faulted { get; private set; }
+
+    /// <summary>
+    /// True when <see cref="Faulted"/> was set by the no-progress budget rather than by a socket
+    /// that refused a send outright - that is, when this peer stopped taking bytes for longer than
+    /// <see cref="LiveOptions.ViewerSendStallSeconds"/> while the connection itself stayed up.
+    ///
+    /// Separate from <see cref="Faulted"/> because the two are different events to an operator and
+    /// only one of them is worth counting. A viewer closing its player faults every socket on the
+    /// way out and is the ordinary end of a session; a viewer still acknowledging packets and
+    /// accepting none of them is a peer that cleared its too-late-packet drop flag, which
+    /// <c>Admit</c> cannot screen for because <c>SRTO_TLPKTDROP</c> on an accepted socket reads back
+    /// our own setting rather than the peer's. This flag is the only way that condition is visible
+    /// at all, which is why <c>LiveMetrics.ViewerDropped</c> exists and reads it.
+    /// </summary>
+    public bool SendStalled { get; private set; }
 
     /// <summary>What a write is cut into and the smallest buffer a read may be given.</summary>
     public int PayloadSize => _payloadSize;
@@ -241,6 +281,42 @@ public sealed unsafe class SrtSocketStream : Stream, IWireWriter
     public override void Write(byte[] buffer, int offset, int count)
         => Write(buffer.AsSpan(offset, count));
 
+    /// <summary>
+    /// Cuts the buffer into payload-sized sends, and bounds how long a peer that has stopped taking
+    /// them may hold this thread.
+    ///
+    /// The bound is wall-clock time in which libsrt accepted nothing, never a count of timeouts,
+    /// and the measurements in <c>SrtSendPressureTests</c> are why. <c>SRTO_SNDTIMEO</c> is a polling
+    /// interval rather than a policy: a peer that advertised too-late-packet drop stalls for about
+    /// a second and recovers whatever the option is set to, because that second is libsrt's own drop
+    /// threshold - max(latency + SRTO_SNDDROPDELAY, 1000) + 20 ms, so 1020 ms at the 120 ms this
+    /// service negotiates - showing through, while a peer that cleared the flag never recovers at any
+    /// setting: probing libsrt 1.5.3 directly for #20 gave sixteen seconds of unbroken timeouts in a
+    /// sixteen-second window, ended only by closing the socket. Two orders of magnitude apart, and the
+    /// gap does not move with the timeout value, so the timeout value cannot be what the decision is
+    /// made on.
+    ///
+    /// Retrying the timed-out chunk is lossless, which is the assumption the whole design rests on:
+    /// <c>srt_sendmsg</c> returning SRT_ETIMEOUT has queued nothing, so the same bytes sent again are
+    /// sent once. Measured rather than assumed, in
+    /// <c>SrtSendPressureTests.A_send_that_timed_out_and_was_retried_loses_nothing_and_reorders_nothing</c>:
+    /// forty thousand numbered messages through a peer with the drop flag cleared reading in bursts,
+    /// twenty-three of them timed out and were retried, forty thousand received, none missing, none
+    /// duplicated, none out of order.
+    ///
+    /// Isolated timeouts must not accumulate, which is why the clock resets on every accepted chunk.
+    /// A viewer asking for a rollback is seeded with up to <c>ViewerQueuePackets</c> packets - about
+    /// twenty-three seconds of media and thirty-six megabytes, well past the twelve-megabyte send
+    /// buffer - before a live packet arrives, and that shows up as a couple of isolated timeouts with
+    /// sends succeeding either side of them: two of them seeding thirty-six megabytes, never two in a
+    /// row, the longest stretch with nothing accepted being one poll. A rule that counted timeouts, or
+    /// dropped on the first, would drop every viewer that asked to start from the past.
+    ///
+    /// With a zero budget this loop is exactly what it was before the budget existed, and a socket
+    /// with no <c>SRTO_SNDTIMEO</c> never returns SRT_ETIMEOUT in the first place. That is what keeps
+    /// the forward's dialled socket and the ingest socket out of it without either being special-cased
+    /// here.
+    /// </summary>
     public override void Write(ReadOnlySpan<byte> buffer)
     {
         if (_closed || buffer.IsEmpty)
@@ -252,14 +328,42 @@ public sealed unsafe class SrtSocketStream : Stream, IWireWriter
         {
             var chunk = buffer[..Math.Min(_payloadSize, buffer.Length)];
 
+            // Taken before the send rather than when one first times out, so the budget covers the
+            // whole window in which nothing was accepted - including the first SRTO_SNDTIMEO
+            // interval, which is otherwise a second of stall the budget cannot see. One timestamp
+            // read per packet, on a path that is already a syscall per packet.
+            if (_stallBudgetTicks > 0 && _offeredAt == 0)
+            {
+                _offeredAt = Stopwatch.GetTimestamp();
+            }
+
             if (_send(chunk) < 0)
             {
+                if (_stallBudgetTicks > 0 && Srt.LastErrorCode() == Srt.SRT_ETIMEOUT)
+                {
+                    if (Stopwatch.GetTimestamp() - _offeredAt < _stallBudgetTicks)
+                    {
+                        // The send buffer is full and nothing has aged out of it yet. Offer the same
+                        // chunk again: nothing was queued, so nothing is duplicated by doing so.
+                        continue;
+                    }
+
+                    SendStalled = true;
+                    Faulted = true;
+
+                    throw new IOException(
+                        $"The socket accepted nothing for {_stallBudgetTicks / (double)Stopwatch.Frequency:0.#} s, "
+                        + "which is the no-progress budget for a peer that is still connected.");
+                }
+
                 // The socket's own error, which libsrt reports by return value. Without this a
                 // viewer who walked away would be written to forever.
                 Faulted = true;
 
                 throw new IOException($"The socket refused {chunk.Length} bytes: {Srt.LastError()}");
             }
+
+            _offeredAt = 0;
 
             Written += chunk.Length;
 
@@ -274,11 +378,12 @@ public sealed unsafe class SrtSocketStream : Stream, IWireWriter
     /// non-blocking would mean libsrt's own epoll rather than anything a .NET task can express. A
     /// write to an SRT peer therefore occupies a thread whatever this method does.
     ///
-    /// How long it occupies one is the peer's business, not this class's, and it is measured in
+    /// How long it occupies one used to be the peer's business entirely, and it is measured in
     /// <c>SrtSendPressureTests</c>: a peer advertising too-late-packet drop lets libsrt discard from
     /// this buffer, so the write never waits; a peer that cleared that flag fills the buffer and the
-    /// write then waits with no timeout, because nothing sets SRTO_SNDTIMEO. That is #20, and it is
-    /// the reason the consumption port's comment about this method is as long as it is. What the base
+    /// write waited with no bound at all until <see cref="Write(ReadOnlySpan{byte})"/> grew one. It is
+    /// now the peer's business up to the no-progress budget and this class's after it, which is the
+    /// reason the consumption port's comment about this method is as long as it is. What the base
     /// class does is not wrong so much as pointless here: it moves the blocking send to a
     /// thread-pool worker and releases the caller while it runs, which for a consumer that has
     /// nothing else to do until the write finishes buys a hop and a <see cref="Task"/> and no

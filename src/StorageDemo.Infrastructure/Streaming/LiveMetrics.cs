@@ -118,6 +118,8 @@ public sealed class LiveMetrics : IDisposable
 
     private readonly Counter<long> _viewerSessions;
 
+    private readonly Counter<long> _viewersDropped;
+
     private readonly Counter<long> _overflows;
 
     private readonly Counter<long> _snapshots;
@@ -228,6 +230,16 @@ public sealed class LiveMetrics : IDisposable
         _viewerSessions = _meter.CreateCounter<long>(
             "live.viewer.sessions",
             description: "Viewers served, by whether this replica owned the stream or fetched it.");
+
+        // The only observable for a condition that cannot be screened for. A viewer that clears its
+        // too-late-packet drop flag and then stops reading is indistinguishable from a healthy one
+        // at accept time - SRTO_TLPKTDROP read back on an accepted socket answers with our own
+        // setting, not the peer's - so Admit cannot refuse it and nothing else in this service ever
+        // names it. Without this counter the only trace of a viewer held for its whole send budget
+        // and then dropped is one log line.
+        _viewersDropped = _meter.CreateCounter<long>(
+            "live.viewer.dropped",
+            description: "Viewers dropped for accepting no bytes within the send-stall budget.");
 
         // The fan-out's fault signal. A viewer overflowing skips forward and loses a moment; a
         // recorder overflowing stops and marks its document truncated. Both mean this pod could not
@@ -396,6 +408,21 @@ public sealed class LiveMetrics : IDisposable
     /// </param>
     public void Viewing(string route)
         => _viewerSessions.Add(1, new KeyValuePair<string, object?>("route", route));
+
+    /// <param name="route">
+    /// Which socket stopped taking bytes. <c>direct</c> is the player's own SRT socket on this pod,
+    /// which is every case today, whether the stream was owned here or fetched from another replica
+    /// - the bytes leave by the same socket either way, and it is that socket's peer that chose not
+    /// to read. The tag exists for the forward's dialled socket, which can be stalled by its own far
+    /// end in the same way and is a separate change.
+    ///
+    /// A non-zero rate here is a viewer that cleared <c>SRTO_TLPKTDROP</c> and stopped reading, held
+    /// <see cref="LiveOptions.ViewerSendStallSeconds"/> of a pool thread and about twelve megabytes
+    /// of send buffer, and was dropped for it. An ordinary slow viewer never appears: libsrt discards
+    /// from the send buffer for a peer that advertised drop, so its sends do not time out at all.
+    /// </param>
+    public void ViewerDropped(string route)
+        => _viewersDropped.Add(1, new KeyValuePair<string, object?>("route", route));
 
     public void Overflowed(OverflowPolicy policy)
         => _overflows.Add(
