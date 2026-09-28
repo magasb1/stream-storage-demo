@@ -90,7 +90,10 @@ Scaling to a thousand streams. The plan, the reasoning and the research behind e
       callback, so a consumer that will not take the bytes holds the thread writing to them. Viewers
       per pod are therefore bounded by threads rather than bandwidth, on the route a cluster uses for
       every viewer that reached the wrong pod. Bounded writers with a dropping queue, an async write
-      path, or disconnect a viewer that cannot keep up - any of the three beats a thread
+      path, or disconnect a viewer that cannot keep up - any of the three beats a thread. #19 took the
+      async write path on the relayed route and left this scoped to the direct one; #11 then measured
+      that route and found no thread to save there - the ceiling on it is the twelve megabytes of
+      libsrt send buffer a slow player fills, not a worker
 - [ ] (#5) ViewerQueuePackets is 2000 packets, which at 25 fps is eighty seconds of lag before skip-to-live
       engages, and a viewer eighty seconds behind live is not a viewer. RecorderQueuePackets has the
       same shape at 20000. Both want to be seconds of media rather than packets, since the packet is a
@@ -103,10 +106,22 @@ Scaling to a thousand streams. The plan, the reasoning and the research behind e
 - [ ] (#7) The document tail is about eleven a second: 200 recordings finishing together took 18 s for the
       last document, in every healthy run. Storage write plus document write, serialized by LiteDB on
       this configuration. Fine at 200, and it scales with the stream count
-- [ ] (#11) Measure a slow player on the consumption port, which the rig can now hold three hundred of
-      (ffmpeg -readrate 0.3). SRT is live and drops rather than blocking its sender, so a slow direct
-      viewer should lose picture where a slow relayed one holds a thread - that is code reading, not a
-      measurement
+- [x] (#11) Measured a slow player on the consumption port, ffmpeg -readrate 0.3 against a 12 Mbit/s
+      stream, in LiveSlowPlayerTests. The code reading was right: SRT drops rather than blocking its
+      sender. Ten slow direct players moved this process from 5 pool workers to 5 and 29 threads to
+      28 over two minutes, with no viewer skipped to live, against the 219 workers 200 slow relayed
+      readers cost before #19 - libsrt's sender-side too-late-packet drop keeps the send buffer
+      drained, so srt_sendmsg never waits. The player loses picture instead: asked of libsrt from the
+      receiving end, such a reader gets 1.3-1.9 Mbit/s of a 12.4 Mbit/s stream and loses about a
+      thousand packets a second, and a reader pacing itself strictly by bytes is disconnected by its
+      own library after about thirty seconds ("SEQUENCE DISCREPANCY ... Reception no longer possible").
+      What a slow direct viewer costs this replica is memory, and it is bounded: about twelve
+      megabytes of libsrt send buffer plus that viewer's four-second queue, measured as 197 MB
+      resident going to 404 MB for ten of them and then flattening. Ingest, the healthy player and the
+      publisher's own link were untouched throughout. So #20's send timeout would bound something that
+      does not happen, and #4's direct half is a memory ceiling rather than a thread one: what wants
+      measuring next is a hundred slow direct players against that per-viewer twelve megabytes, and
+      whether SRTO_SNDBUF should be sized per viewer the way the queue now is
 - [ ] (#13) The scale rig exercises no detection, no KLV and no forwards. Detection is the one that
       would move the ceiling: the frame tier decodes at keyframes for the preview, and a detector asks
       for a rate, which makes the decoder decode everything between keyframes for those streams

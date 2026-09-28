@@ -97,13 +97,22 @@ public sealed class LiveConsumptionService(
         // StartNew bound TaskScheduler.Current, so this no longer inherits a scheduler from
         // whoever called it.
         //
-        // The pool is not strictly better off, which should be read before this is taken for a win
-        // everywhere. A viewer's writes block inline in srt_sendmsg2 and no SRTO_SNDTIMEO is set on
-        // these sockets, so a viewer that is slow but still alive pins whatever thread is serving it
-        // for as long as it likes. That used to be a thread of its own and is now a pool thread, so
-        // a pool saturated by such sends makes a newly accepted viewer queue for its own body to
-        // begin - and that body is what disposes the socket accepted just above. The missing send
-        // timeout is #20; this change does not pretend to be its fix.
+        // The pool pays for the write, because a viewer's writes block inline in srt_sendmsg2 and no
+        // SRTO_SNDTIMEO is set on these sockets. The fear that came with that - a viewer which is
+        // slow but still alive pinning whatever thread is serving it for as long as it likes, and a
+        // pool saturated by such sends leaving a newly accepted viewer queueing for the body that
+        // disposes the socket accepted just above - has since been measured, and libsrt does not
+        // allow it. Ten players taking three tenths of a 12 Mbit/s stream held this process at five
+        // pool workers and twenty-eight threads for two minutes and overflowed no viewer's queue:
+        // libsrt's sender-side too-late-packet drop keeps that socket's send buffer drained rather
+        // than letting a send wait on it, so the send returns and the loop carries on.
+        //
+        // What a slow viewer costs instead is memory and picture. Memory, because libsrt fills that
+        // socket's send buffer first - about twelve megabytes with its defaults, plus that viewer's
+        // own queue, and then it stops growing. Picture, because past that the transport discards the
+        // surplus: such a player receives under two of those twelve megabits and loses the rest.
+        // Neither is a thread, and both are bounded. LiveSlowPlayerTests holds the figures, #11 asked
+        // the question, and #20's send timeout would bound something that was not happening.
         //
         // Ingest is the other way round, and the difference is the point: the listener started above
         // and the coordinator's feed are synchronous from their first line to their last, blocking
