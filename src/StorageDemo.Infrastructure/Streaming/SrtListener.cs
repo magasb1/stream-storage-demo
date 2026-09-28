@@ -93,14 +93,14 @@ public sealed unsafe class SrtListener(
 
     /// <summary>
     /// How often a blocked send looks up. A const rather than an option, because measurement says the
-    /// value decides nothing: with it set, a peer advertising too-late-packet drop stalls about a
-    /// second and recovers - that is libsrt's drop threshold, max(latency + SRTO_SNDDROPDELAY, 1000)
-    /// + 20 ms, not this - and a peer that cleared the flag never recovers at any setting: probing
-    /// libsrt 1.5.3 directly for #20 gave sixteen unbroken seconds of timeouts in a sixteen-second
-    /// window. The two cases stay two orders of magnitude apart however this is set, so what a
-    /// stalled viewer costs is decided by
-    /// <see cref="LiveOptions.ViewerSendStallSeconds"/> in <c>SrtSocketStream.Write</c>. Exposing this
-    /// as well would only invite an operator to tune the knob that does nothing.
+    /// value decides nothing: with it set, a peer advertising too-late-packet drop stalls and then
+    /// recovers once what is in the buffer has aged past <see cref="Srt.SendDropThreshold"/>, which
+    /// is libsrt's figure and not this one, while a peer that cleared the flag never recovers at any
+    /// setting - probing libsrt 1.5.3 directly for #20 gave sixteen unbroken seconds of timeouts in
+    /// a sixteen-second window. The gap between the two does not move with this however it is set,
+    /// so what a stalled viewer costs is decided by <c>LiveConsumptionService.ViewerSendBudget</c>
+    /// and spent in <c>SrtSocketStream.Write</c>. Exposing this as well would only invite an
+    /// operator to tune the knob that does nothing.
     ///
     /// A second, matching <see cref="ReceiveTimeoutMilliseconds"/>, so a blocked send checks its
     /// budget about as often as a blocked read checks for a shutdown.

@@ -31,6 +31,13 @@ public sealed class LiveConsumptionService(
     IOptions<LiveOptions> options,
     ILogger<LiveConsumptionService> logger) : BackgroundService
 {
+    /// <summary>
+    /// The largest negotiated latency <see cref="ViewerSendBudget"/> will derive a budget from, which
+    /// is <see cref="LiveOptions.SrtLatencyMs"/>'s own ceiling: the most this service would ever ask
+    /// for, and so the most a deployment can reach without a caller choosing it unilaterally.
+    /// </summary>
+    private const int MaxNegotiatedLatencyMs = 8000;
+
     private readonly LiveOptions _options = options.Value;
 
     private CancellationToken _stopping;
@@ -70,6 +77,60 @@ public sealed class LiveConsumptionService(
     private static int? Admit(Admission admission) => null;
 
     /// <summary>
+    /// How long this viewer's socket may accept nothing before it is dropped, from the option and
+    /// from what its handshake settled on.
+    ///
+    /// The option alone is not safe, because the condition it has to stay clear of moves with the
+    /// negotiated latency. libsrt frees a sending buffer only once what is in it has been there
+    /// longer than <see cref="Srt.SendDropThreshold"/>, while the flow-control window caps that
+    /// buffer at 8192 packets - about 10.8 MB, so about 86 Mbit - and a send that finds the buffer
+    /// full therefore waits for roughly <c>threshold - 86 Mbit / bitrate</c> even against an
+    /// ordinary peer that advertises packet drop. Negative at 120 ms and 12 Mbit/s, which is why the
+    /// first measurements of this saw a stalled send of 0.00 s and a fixed five seconds looked
+    /// generous; positive and growing as either latency or bitrate rises. Probed against libsrt
+    /// 1.5.3 with a peer advertising drop and reading nothing: 1.00 s at 120 ms and 200 Mbit/s,
+    /// 5.00 s at 6000 ms and 50 Mbit/s, 6.00 s at 8000 ms and 30 Mbit/s, 7.00 s at 8000 ms and
+    /// 50 Mbit/s. The third of those is a test of its own -
+    /// <c>SrtSendPressureTests.An_ordinary_peer_at_the_highest_latency_a_caller_can_ask_for_is_not_dropped</c>
+    /// - which reproduces the 6.00 s stall and holds this method to clearing it. Both halves are
+    /// reachable without anyone misbehaving:
+    /// <see cref="LiveOptions.SrtLatencyMs"/> allows up to 8000 and its own documentation invites
+    /// raising it, and a caller can raise it single-handed because the handshake settles at the
+    /// larger of the two sides - which <c>SrtListener</c> says in as many words.
+    ///
+    /// So the floor is the threshold plus a second, and the option only ever raises it. That makes
+    /// the margin structural rather than a coincidence of the default latency: whatever the two ends
+    /// negotiate, the budget is a second clear of the longest wait libsrt can impose on a peer that
+    /// is behaving.
+    ///
+    /// The latency is clamped because it is not ours to set. libsrt puts no ceiling on it at all -
+    /// probed at 20000 and 60000 ms, both asked for by the caller alone against a listener at 120,
+    /// and both read back from the accepted socket as the negotiated figure - so an uncapped rule
+    /// would let a stranger choose how long it may hold a pool thread and eleven megabytes, which is
+    /// the thing this budget exists to bound. The ceiling is the largest figure this service would
+    /// ever configure for itself, so no deployment can reach it by configuration; past it a peer is
+    /// asking for a grace it does not get, and may be dropped.
+    ///
+    /// Zero means off, and stays off: a deployment that has turned the budget off has said that no
+    /// viewer is to be dropped for this, and a derived floor must not quietly turn it back on.
+    /// </summary>
+    public static TimeSpan ViewerSendBudget(int configuredSeconds, int negotiatedLatencyMilliseconds)
+    {
+        if (configuredSeconds <= 0)
+        {
+            return TimeSpan.Zero;
+        }
+
+        var negotiated = Math.Clamp(negotiatedLatencyMilliseconds, 0, MaxNegotiatedLatencyMs);
+
+        var floor = Srt.SendDropThreshold(negotiated) + TimeSpan.FromSeconds(1);
+
+        var configured = TimeSpan.FromSeconds(configuredSeconds);
+
+        return configured > floor ? configured : floor;
+    }
+
+    /// <summary>
     /// Takes an accepted viewer off the accept thread. As on ingest, everything real happens
     /// elsewhere: time spent here is time the consumption port is not listening.
     /// </summary>
@@ -80,10 +141,33 @@ public sealed class LiveConsumptionService(
         // The position rides in the identifier's user_from key, so returning to live is a new
         // connection rather than a control message and the connection stays one-way.
         var from = StreamName.Position(socket.StreamId) ?? 0;
-        var viewer = new SrtSocketStream(
-            socket.Release(),
-            writable: true,
-            sendStallBudget: TimeSpan.FromSeconds(_options.ViewerSendStallSeconds));
+
+        // The budget is derived from what this connection actually negotiated, not from the option
+        // alone: see ViewerSendBudget above, and LiveOptions.ViewerSendStallSeconds for why a fixed
+        // figure drops working viewers at the latencies this service allows.
+        var released = socket.Release();
+
+        SrtSocketStream viewer;
+
+        try
+        {
+            viewer = new SrtSocketStream(
+                released,
+                writable: true,
+                sendStallBudget: ViewerSendBudget(
+                    _options.ViewerSendStallSeconds,
+                    Srt.GetInt32(released, SRT_SOCKOPT.SRTO_PEERLATENCY)));
+        }
+        catch
+        {
+            // The socket has been released, so the AcceptedSocket above will not close it and
+            // nothing else holds it. Only reachable if the budget and the socket's send timeout
+            // disagree, which is a wiring fault rather than a viewer's doing - but a wiring fault
+            // that leaked a socket per caller would be a worse one than the fault itself.
+            Srt.srt_close(released);
+
+            throw;
+        }
 
         // Pool work, and now it says so. Serving a viewer is an await loop, so the LongRunning
         // thread this used to ask for lived only until the first await that actually yielded: the
@@ -105,18 +189,28 @@ public sealed class LiveConsumptionService(
         // is serving it for as long as it likes - has since been measured on both sides, and the
         // answer carries a condition that is the viewer's to set rather than ours.
         //
-        // For a viewer whose handshake advertised too-late-packet drop, which is libsrt's default and
-        // what an ordinary player does, the send does not wait. libsrt discards from this socket's
-        // send buffer whatever has been queued longer than its drop threshold - the negotiated
-        // latency or a second, whichever is larger, plus a little - so against a peer that had
-        // stopped reading altogether the buffer settled at 1020 ms and 1.5 MB, an eighth of the
-        // twelve megabytes libsrt said it could hold, while it discarded 461 packets a second out of
-        // it and no send waited at all. Ten slow players then cost this process fewer than half a thread
-        // each and skipped no viewer to live; one thread each, which is what #4 measured on the
-        // relayed route, is excluded.
+        // For a viewer whose handshake advertised too-late-packet drop, which is libsrt's default
+        // and what an ordinary player does, the send barely waits at the rate and the latency this
+        // service runs at. libsrt discards from this socket's send buffer whatever has been queued
+        // longer than its drop threshold - the negotiated latency or a second, whichever is larger,
+        // plus a little - so against a peer that had stopped reading altogether the buffer settled
+        // at 1020 ms and 1581 KB, a seventh of what the flow-control window allows it, while
+        // it discarded 461 packets a second out of it and no send waited at all. Ten slow players
+        // then cost this process fewer than half a thread each and skipped no viewer to live; one
+        // thread each, which is what #4 measured on the relayed route, is excluded.
         //
-        // Clear that flag and nothing frees the buffer. It fills to its twelve megabytes and the send
-        // waits, while the peer goes on acknowledging so the connection is never declared lost
+        // "Barely" rather than "never", and the difference is what sizes the budget. That buffer is
+        // freed by age, not by fullness, so a send that fills it waits out whatever is left of the
+        // drop threshold: nothing at all at 120 ms and 12.29 Mbit/s, a second at 200 Mbit/s, and a
+        // measured six seconds at the 8000 ms a caller may ask for unilaterally. ViewerSendBudget
+        // above derives this viewer's budget from what this connection negotiated for that reason,
+        // and An_ordinary_peer_at_the_highest_latency_a_caller_can_ask_for_is_not_dropped is the
+        // case that holds it to it.
+        //
+        // Clear that flag and nothing frees the buffer at all. It fills to the 10,880 KB the
+        // window allows - 8192 packets, not the twelve megabytes SRTO_SNDBUF defaults to - and the
+        // send waits, while the peer goes on acknowledging so the connection is never declared
+        // lost
         // either: before this budget existed, that was measured at twelve seconds and still waiting
         // when the test closed the socket under it. A caller sets that with one query parameter on
         // its URL, and can raise the drop
@@ -125,12 +219,12 @@ public sealed class LiveConsumptionService(
         // stranger's to take, and with the pool carrying these bodies it is also what a newly
         // accepted viewer queues behind.
         //
-        // That is what the budget passed in above ends, and it ends the memory with it: twelve
-        // megabytes of send buffer per such viewer is returned only by dropping the viewer, and
-        // nothing else bounds it - SRTO_SNDBUF is pre-bind only, so there is no per-viewer size to
-        // set. The budget is wall-clock with no bytes accepted rather than a count of timeouts,
-        // because a viewer asking for a rollback produces a couple of isolated timeouts while being
-        // seeded and must not be dropped for them. See LiveOptions.ViewerSendStallSeconds for the measurements
+        // That is what the budget passed in above ends, and it ends the memory with it: the eleven
+        // megabytes of send buffer such a viewer holds are returned only by dropping it, and nothing
+        // else bounds them - SRTO_SNDBUF is pre-bind only, so there is no per-viewer size to set.
+        // The budget is wall-clock with no bytes accepted rather than a count of timeouts, because a
+        // viewer asking for a rollback produces a couple of isolated timeouts while being seeded and
+        // must not be dropped for them. See LiveOptions.ViewerSendStallSeconds for the measurements
         // and SrtSocketStream.Write for what the loop does with them.
         //
         // SrtSendPressureTests measures both peers on the sending socket; LiveSlowPlayerTests
@@ -271,14 +365,20 @@ public sealed class LiveConsumptionService(
                 // swallows a failed write and the loop sees Faulted, or a write outside the muxer
                 // lets the IOException reach the catch above, which reads as "the viewer closed the
                 // player" and is right about every other viewer. This is the one place both arrive.
+                //
+                // What was observed first, then what it most likely means. The log cannot know the
+                // cause: the peer's SRTO_TLPKTDROP is not readable from this end - an accepted
+                // socket answers with our own setting - so the flag is an inference from the only
+                // condition measured to produce this, not something this pod saw.
                 logger.LogWarning(
-                    "Dropped a viewer of '{Name}': its socket accepted nothing for {Budget} s while "
-                    + "the connection stayed up, which is a peer that cleared SRTO_TLPKTDROP and "
-                    + "stopped reading",
+                    "Dropped a viewer of '{Name}': its socket accepted no bytes for {Budget:0.##} s "
+                    + "while the connection stayed up. Most likely a peer that cleared "
+                    + "SRTO_TLPKTDROP and stopped reading, which is the only condition measured to "
+                    + "produce this",
                     name,
-                    _options.ViewerSendStallSeconds);
+                    viewer.SendStallBudget.TotalSeconds);
 
-                metrics.ViewerDropped("direct");
+                metrics.ViewerDropped("viewer");
             }
 
             await viewer.DisposeAsync();

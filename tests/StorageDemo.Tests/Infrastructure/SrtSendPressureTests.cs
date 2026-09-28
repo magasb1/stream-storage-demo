@@ -30,10 +30,21 @@ namespace StorageDemo.Tests.Infrastructure;
 ///
 /// Since #20 the pair is also the boundary of a policy rather than a description of two behaviours.
 /// The accepted socket now carries <c>SRTO_SNDTIMEO</c> and the stream over it a no-progress budget,
-/// so the first case must still be untouched and the second must end inside the budget. Two further
-/// cases hold up the shape of that policy: that isolated timeouts do not accumulate into it, which is
-/// what a viewer asking for a rollback produces, and that retrying a timed-out send loses nothing,
-/// which is the assumption the retry rests on.
+/// so the peer that behaves must still be untouched and the peer that does not must be dropped inside
+/// the budget. The rest of the cases hold up the shape of that policy: that isolated timeouts do not
+/// accumulate into it, which is what a viewer asking for a rollback produces; that retrying a
+/// timed-out send loses nothing, which is the assumption the retry rests on; that the budget clears
+/// libsrt's drop threshold at every latency a viewer can negotiate; and that a budget over a socket
+/// which cannot time out is refused rather than spun on.
+///
+/// Latency is an axis here and not a setting, which it was not at first and which is the correction
+/// that matters most. Both of the original cases run at the 120 ms this service negotiates by
+/// default, where the drop threshold is 1020 ms and the flow-control window holds some 86 Mbit of
+/// stream, so an ordinary peer never waits at all and any budget whatever looks safe. Raise the
+/// latency - which <c>LiveOptions.SrtLatencyMs</c> allows to 8000, and which a caller can do
+/// single-handed because the handshake settles at the larger of the two sides - and an ordinary peer
+/// waits seconds. A fixed budget drops it. That case is measured here now, and it is the one to read
+/// before touching the figure.
 /// </summary>
 public sealed unsafe class SrtSendPressureTests(ITestOutputHelper output)
 {
@@ -62,12 +73,29 @@ public sealed unsafe class SrtSendPressureTests(ITestOutputHelper output)
     /// <summary>
     /// <c>LiveOptions.ViewerSendStallSeconds</c> at its default, for the same reason.
     /// </summary>
-    private static readonly TimeSpan Budget = TimeSpan.FromSeconds(5);
+    private const int BudgetSeconds = 5;
+
+    /// <summary>The latency this service negotiates unless a deployment or a caller says otherwise.</summary>
+    private const int DefaultLatencyMs = 120;
+
+    /// <summary>
+    /// The largest <see cref="LiveOptions.SrtLatencyMs"/> allows, and a figure a caller can reach
+    /// single-handed however this service is configured.
+    /// </summary>
+    private const int HighLatencyMs = 8000;
+
+    /// <summary>
+    /// The budget the consumption port would give a viewer at this latency. Asked of the service
+    /// rather than restated, because a copy of the arithmetic here could agree with itself while
+    /// disagreeing with what viewers actually get.
+    /// </summary>
+    private static TimeSpan Budget(int latencyMs)
+        => LiveConsumptionService.ViewerSendBudget(BudgetSeconds, latencyMs);
 
     /// <summary>
     /// What seeding a viewer's rollback hands the socket in one go: <c>ViewerQueuePackets</c> of 2000
     /// demultiplexed frames, which at the frame sizes this bitrate produces is about this much, and
-    /// three times the twelve megabytes libsrt's send buffer holds.
+    /// more than three times what the sending socket can hold.
     /// </summary>
     private const long SeedBytes = 36L * 1024 * 1024;
 
@@ -91,8 +119,9 @@ public sealed unsafe class SrtSendPressureTests(ITestOutputHelper output)
     /// <summary>
     /// How many numbered messages the retry case sends.
     ///
-    /// Sized against the buffers rather than picked: the sender's twelve megabytes and the peer's
-    /// twelve megabytes hold about eighteen thousand messages of this size between them, and until a
+    /// Sized against the buffers rather than picked: the sending and the receiving socket hold about
+    /// eighteen thousand messages of this size between them - some 10,880 KB each, which is the
+    /// flow-control window rather than the twelve-megabyte SRTO_SNDBUF default - and until a
     /// sequence is comfortably past that the sender is never made to wait at all - twenty thousand
     /// through a peer reading five hundred at a time produced zero timeouts and proved nothing. This
     /// leaves some twenty-two thousand that have to be metered through the reader's pauses, which is
@@ -111,7 +140,7 @@ public sealed unsafe class SrtSendPressureTests(ITestOutputHelper output)
         // send buffer, so the write always had somewhere to put the next packet. Measured here at 461
         // packets a second discarded out of about 1170 written, with the buffer holding steady at
         // 1020 ms - which is the threshold itself, max(negotiated latency + SRTO_SNDDROPDELAY, 1000)
-        // + 20 ms - and at 1581 KB, an eighth of the twelve megabytes libsrt says it could hold. The
+        // + 20 ms - and at 1581 KB, a seventh of the 10,880 KB the flow-control window allows. The
         // rest of the stream went onto the wire and was discarded by the receiver instead, which is
         // the other half of the picture and is measured in LiveSlowPlayerTests.
         Assert.True(
@@ -127,18 +156,78 @@ public sealed unsafe class SrtSendPressureTests(ITestOutputHelper output)
             $"a send was outstanding for {pressed.Stalled.TotalSeconds:0.0} s against a peer "
             + "advertising packet drop, which is longer than the drop threshold can explain");
 
-        // The ordinary viewer, and the reason this assertion is here rather than in the test below:
-        // this peer is on the worst network there is - it reads nothing at all - and it must survive
-        // the send budget untouched, because what it loses is picture and #11 settled that losing
-        // picture is the right answer for it. Measured with SRTO_SNDTIMEO set: zero timeouts across
-        // the whole window, the full 12.29 Mbit/s onto the socket, 1.7 MB resident. If tuning
-        // ViewerSendStallSeconds down ever starts dropping real viewers, this is the assertion that
-        // says so, and it should be read before the figure is changed rather than after.
+        // The ordinary viewer at this service's defaults, and it is worth being exact about how
+        // little this proves. At 120 ms and 12.29 Mbit/s the retry loop is not merely clear of the
+        // budget, it is never entered at all: zero timeouts across the whole window, because the
+        // drop threshold is 1020 ms and the flow-control window holds some 86 Mbit of stream, so
+        // libsrt frees space faster than this rate can fill it. A budget of one millisecond would
+        // pass this assertion. The case that can actually catch a budget too low for a working
+        // viewer is the high-latency one below, and that is where that claim belongs.
+        Assert.Equal(0, pressed.Timeouts);
+
         Assert.False(
             pressed.Faulted,
-            $"a peer advertising packet drop was faulted by the {Budget.TotalSeconds:0} s send budget "
-            + $"after {pressed.Written / 1024} KB, which means the budget can reach an ordinary viewer "
-            + "on a bad network and not only one that cleared its drop flag");
+            $"a peer advertising packet drop was faulted after {pressed.Written / 1024} KB, which "
+            + "means the budget can reach an ordinary viewer on a bad network and not only one that "
+            + "cleared its drop flag");
+    }
+
+    /// <summary>
+    /// The same ordinary peer, at a latency this service allows and a caller can reach on its own -
+    /// and this is the case that says whether the budget drops working viewers.
+    ///
+    /// libsrt frees a sending buffer by age rather than by fullness: <c>sndDropTooLate</c> discards
+    /// only what has been queued longer than the drop threshold, which is the negotiated latency or a
+    /// second, whichever is larger, plus 20 ms. Meanwhile the flow-control window caps what can sit in
+    /// that buffer at 8192 packets, about 86 Mbit of stream. So a send that fills the buffer waits for
+    /// roughly the threshold less the buffer's own worth of stream - and against a peer that is doing
+    /// nothing wrong at all. That is negative at 120 ms and 12 Mbit/s, which is why the first
+    /// measurements of this saw nothing and a flat five-second budget looked safe; it is 5.00 s at
+    /// 6000 ms and 50 Mbit/s, and 6.00 s at the latency below.
+    ///
+    /// Hence <c>LiveConsumptionService.ViewerSendBudget</c>, and hence this test: the budget is
+    /// derived from what the connection negotiated, so the margin is a property of the arithmetic
+    /// rather than of one measurement taken at one latency. With a flat five seconds this peer is
+    /// dropped, having done nothing but read slowly.
+    /// </summary>
+    [Fact]
+    public void An_ordinary_peer_at_the_highest_latency_a_caller_can_ask_for_is_not_dropped()
+    {
+        Assert.SkipUnless(Srt.IsAvailable, LiveReplicas.NoLibsrt);
+
+        // The rate has to be above what the window holds divided by the threshold - about 86 Mbit
+        // over 8.02 s, so roughly 11 Mbit/s - or the buffer is never full and there is nothing to
+        // measure. Thirty is comfortably past it and is an ordinary figure for a stream this service
+        // carries. The watched window is shorter than the other cases' because at this rate the
+        // buffer fills in about three seconds rather than fourteen.
+        var pressed = Pressure(
+            peerDropsLatePackets: true,
+            latencyMs: HighLatencyMs,
+            bitsPerSecond: 30_000_000,
+            watched: TimeSpan.FromSeconds(15));
+
+        // Non-vacuous, and this is the assertion that makes it so: the stall this guards against has
+        // to have actually happened. Measured at 6.00 s with nothing accepted, against a peer
+        // advertising packet drop - six seconds of a pool thread held by a viewer doing nothing
+        // wrong, which is also worth knowing on its own.
+        Assert.True(
+            pressed.LongestStall > TimeSpan.FromSeconds(3),
+            $"the longest stretch with nothing accepted was {pressed.LongestStall.TotalSeconds:0.00} s "
+            + $"over {pressed.Timeouts} timeouts, so the buffer never filled and this case proves "
+            + "nothing about false positives");
+
+        // And the budget stayed clear of it, which a flat five seconds would not have.
+        Assert.False(
+            pressed.Faulted,
+            $"an ordinary peer at {HighLatencyMs} ms of negotiated latency was dropped after "
+            + $"{pressed.Written / 1024} KB and a {pressed.LongestStall.TotalSeconds:0.00} s stall, "
+            + $"against a derived budget of {Budget(HighLatencyMs).TotalSeconds:0.##} s");
+
+        Assert.True(
+            pressed.LongestStall < Budget(HighLatencyMs),
+            $"the stall reached {pressed.LongestStall.TotalSeconds:0.00} s of a "
+            + $"{Budget(HighLatencyMs).TotalSeconds:0.##} s budget, so the margin the derivation is "
+            + "supposed to guarantee is not there");
     }
 
     /// <summary>
@@ -157,7 +246,8 @@ public sealed unsafe class SrtSendPressureTests(ITestOutputHelper output)
         // The other half, and the reason #20 stays open rather than closing with the measurement
         // above. One query parameter on a player's URL clears this flag, the consumption port admits
         // every caller by design, and libsrt then has nothing to free its send buffer with: it fills
-        // to its twelve megabytes and the next send waits. Before the budget it waited on a condition
+        // to the 10,880 KB the window allows and the next send waits. Before the budget it waited
+        // on a condition
         // variable with no timeout at all, because SRTO_SNDTIMEO was -1 and nobody set it, and a peer
         // that keeps acknowledging never trips the connection-lost exit either: measured then at the
         // buffer filling in fourteen seconds and one send still inside libsrt twelve seconds later,
@@ -170,13 +260,14 @@ public sealed unsafe class SrtSendPressureTests(ITestOutputHelper output)
         // only how often the budget is consulted. What ends the wait is the budget, and the figure
         // below is what a stranger can now cost this pod: one thread and one send buffer for that
         // long, rather than until somebody notices. Measured here at 5.00 s for the send that gave
-        // up, with the buffer at 10.9 MB and nothing free.
+        // up, with the buffer at 10,880 KB and nothing free.
         Assert.True(
-            pressed.Longest > TimeSpan.Zero && pressed.Longest < Budget + TimeSpan.FromSeconds(2),
+            pressed.Longest > TimeSpan.Zero
+                && pressed.Longest < Budget(DefaultLatencyMs) + TimeSpan.FromSeconds(2),
             $"the send that gave up took {pressed.Longest.TotalSeconds:0.00} s against a peer that "
-            + $"reads nothing and drops nothing, which is not the {Budget.TotalSeconds:0} s budget "
-            + $"plus at most one poll; it had taken {pressed.Written / 1024} KB first and discarded "
-            + $"{pressed.Drops}");
+            + $"reads nothing and drops nothing, which is not the "
+            + $"{Budget(DefaultLatencyMs).TotalSeconds:0.##} s budget plus at most one poll; it had "
+            + $"taken {pressed.Written / 1024} KB first and discarded {pressed.Drops}");
 
         // And it gave up because of the budget rather than because the socket broke under it, which
         // is the difference the log line and the dropped-viewer counter are built on.
@@ -197,8 +288,8 @@ public sealed unsafe class SrtSendPressureTests(ITestOutputHelper output)
     ///
     /// Serving a viewer that asked to start from the past muxes up to <c>ViewerQueuePackets</c>
     /// packets into its socket before a single live packet arrives - two thousand demultiplexed
-    /// frames, about twenty-three seconds of media and some thirty-six megabytes, well past the
-    /// twelve-megabyte send buffer. So the buffer fills, and it fills against a perfectly ordinary
+    /// frames, about twenty-three seconds of media and some thirty-six megabytes, several times over
+    /// what the socket can hold. So the buffer fills, and it fills against a perfectly ordinary
     /// peer: this one advertises too-late-packet drop, which is libsrt's default and what every real
     /// player does.
     ///
@@ -218,7 +309,7 @@ public sealed unsafe class SrtSendPressureTests(ITestOutputHelper output)
 
         Srt.EnsureStarted();
 
-        var listener = Listening(port);
+        var listener = Listening(port, DefaultLatencyMs);
 
         try
         {
@@ -227,7 +318,7 @@ public sealed unsafe class SrtSendPressureTests(ITestOutputHelper output)
             var accepted = Accept(listener, port, SendTimeoutMilliseconds);
             var counting = new Counting(accepted);
 
-            using var sender = Sending(accepted, counting);
+            using var sender = Sending(accepted, counting, Budget(DefaultLatencyMs));
 
             var burst = new byte[BurstBytes];
 
@@ -276,10 +367,11 @@ public sealed unsafe class SrtSendPressureTests(ITestOutputHelper output)
             // call out of two one-second stalls with a hundred successful sends between them. The
             // clock is per chunk accepted rather than per call precisely so that reads as what it is.
             Assert.True(
-                counting.LongestStall < Budget,
+                counting.LongestStall < Budget(DefaultLatencyMs),
                 $"a stretch of {counting.LongestStall.TotalSeconds:0.00} s passed with nothing "
-                + $"accepted while seeding an ordinary peer, against a {Budget.TotalSeconds:0} s "
-                + "budget, so the margin this rests on is gone");
+                + $"accepted while seeding an ordinary peer, against a "
+                + $"{Budget(DefaultLatencyMs).TotalSeconds:0.##} s budget, so the margin this rests "
+                + "on is gone");
         }
         finally
         {
@@ -311,7 +403,7 @@ public sealed unsafe class SrtSendPressureTests(ITestOutputHelper output)
 
         Srt.EnsureStarted();
 
-        var listener = Listening(port);
+        var listener = Listening(port, DefaultLatencyMs);
 
         try
         {
@@ -320,7 +412,7 @@ public sealed unsafe class SrtSendPressureTests(ITestOutputHelper output)
             var accepted = Accept(listener, port, RetryTimeoutMilliseconds);
             var counting = new Counting(accepted);
 
-            using var sender = Sending(accepted, counting);
+            using var sender = Sending(accepted, counting, Budget(DefaultLatencyMs));
 
             using var draining = new Draining(peer.Socket, sender.PayloadSize, Messages);
 
@@ -375,17 +467,126 @@ public sealed unsafe class SrtSendPressureTests(ITestOutputHelper output)
     }
 
     /// <summary>
+    /// The arithmetic the cases above rest on, stated as a table so that changing it has to be
+    /// deliberate. No socket and no libsrt: this is what the service would give a viewer, not what a
+    /// viewer does with it.
+    ///
+    /// The figures are the probe's, restated: the stall an ordinary peer can suffer is the drop
+    /// threshold less what the flow-control window holds of the stream, so the budget has to clear
+    /// the threshold, and the threshold moves with the negotiated latency. A second of margin, which
+    /// at the default latency is four seconds of daylight and at the ceiling is still a second.
+    /// </summary>
+    [Fact]
+    public void The_budget_clears_the_drop_threshold_at_every_latency_a_viewer_can_negotiate()
+    {
+        // Off stays off, whatever a peer negotiates. A deployment that turned the budget off has said
+        // no viewer is to be dropped for this, and a floor must not quietly turn it back on.
+        Assert.Equal(TimeSpan.Zero, LiveConsumptionService.ViewerSendBudget(0, DefaultLatencyMs));
+        Assert.Equal(TimeSpan.Zero, LiveConsumptionService.ViewerSendBudget(0, HighLatencyMs));
+
+        // Below the floor the option cannot reach, so the floor decides. Note how far below: the
+        // smallest floor there is, 2020 ms, is already twice the option's own minimum, so no setting
+        // in range can ever take the budget under libsrt's drop threshold. It is the derivation and
+        // not the range that keeps an ordinary viewer safe, which is why the range starts at zero
+        // rather than at a figure argued to be safe on its own.
+        Assert.Equal(TimeSpan.FromMilliseconds(2020), LiveConsumptionService.ViewerSendBudget(1, 0));
+        Assert.Equal(
+            TimeSpan.FromMilliseconds(2020),
+            LiveConsumptionService.ViewerSendBudget(2, DefaultLatencyMs));
+
+        // At the default latency the option decides, which is what makes five seconds a figure worth
+        // discussing at all.
+        Assert.Equal(TimeSpan.FromSeconds(5), LiveConsumptionService.ViewerSendBudget(5, DefaultLatencyMs));
+
+        // And at the latencies that produced the false positive, the floor takes over.
+        Assert.Equal(TimeSpan.FromMilliseconds(7020), LiveConsumptionService.ViewerSendBudget(5, 6000));
+        Assert.Equal(
+            TimeSpan.FromMilliseconds(9020),
+            LiveConsumptionService.ViewerSendBudget(5, HighLatencyMs));
+
+        // A caller may ask for more than this service ever would - libsrt puts no ceiling on it,
+        // probed at 20000 and 60000 ms, both asked for by the caller alone against a listener at 120
+        // and both read back from the accepted socket as the negotiated figure. Past the clamp the
+        // budget stops following, because otherwise a stranger would choose how long it may hold a
+        // pool thread and eleven megabytes, which is the thing being bounded.
+        Assert.Equal(TimeSpan.FromMilliseconds(9020), LiveConsumptionService.ViewerSendBudget(5, 20_000));
+        Assert.Equal(TimeSpan.FromMilliseconds(9020), LiveConsumptionService.ViewerSendBudget(5, 60_000));
+
+        // A deployment that asks for more than the floor still gets what it asked for.
+        Assert.Equal(TimeSpan.FromSeconds(30), LiveConsumptionService.ViewerSendBudget(30, HighLatencyMs));
+    }
+
+    /// <summary>
+    /// A budget over a socket that cannot time out is refused where it is wired, not discovered as a
+    /// spinning core in production.
+    ///
+    /// The two halves live in different files - <c>SrtListener</c> sets SRTO_SNDTIMEO on the accepted
+    /// socket, <c>LiveConsumptionService</c> passes the budget - and neither can see the other. With
+    /// the timeout at zero every send would return SRT_ETIMEOUT immediately and the retry loop would
+    /// burn a core for the whole budget rather than waiting out a poll. Nothing sets it that way
+    /// today; this is what makes that a fact rather than a habit.
+    /// </summary>
+    [Fact]
+    public void A_budget_over_a_socket_that_cannot_time_out_is_refused()
+    {
+        Assert.SkipUnless(Srt.IsAvailable, LiveReplicas.NoLibsrt);
+
+        var port = SrtSenders.FreePort();
+
+        Srt.EnsureStarted();
+
+        var listener = Listening(port, DefaultLatencyMs);
+
+        try
+        {
+            using var peer = Calling(port, dropsLatePackets: true);
+
+            var accepted = Accept(listener, port, sendTimeoutMilliseconds: 0);
+
+            var refused = Assert.Throws<ArgumentException>(
+                () => new SrtSocketStream(
+                    accepted,
+                    writable: true,
+                    sendStallBudget: Budget(DefaultLatencyMs)));
+
+            output.WriteLine(refused.Message);
+
+            // The same socket, once it can time out, is accepted - so what was refused is the
+            // configuration and not the budget.
+            Assert.True(
+                Srt.SetInt32(accepted, SRT_SOCKOPT.SRTO_SNDTIMEO, SendTimeoutMilliseconds),
+                $"could not set the send timeout: {Srt.LastError()}");
+
+            using var sender = new SrtSocketStream(
+                accepted,
+                writable: true,
+                sendStallBudget: Budget(DefaultLatencyMs));
+
+            Assert.Equal(Budget(DefaultLatencyMs), sender.SendStallBudget);
+        }
+        finally
+        {
+            Srt.srt_close(listener);
+        }
+    }
+
+    /// <summary>
     /// Writes to a peer that never reads, and reports what the sending socket says about it: how much
     /// it discarded, the longest a single <see cref="SrtSocketStream.Write"/> took, and how much was
     /// accepted before the window ran out.
     /// </summary>
-    private Pressed Pressure(bool peerDropsLatePackets)
+    private Pressed Pressure(
+        bool peerDropsLatePackets,
+        int latencyMs = DefaultLatencyMs,
+        int bitsPerSecond = BitsPerSecond,
+        TimeSpan? watched = null)
     {
         var port = SrtSenders.FreePort();
 
         Srt.EnsureStarted();
 
-        var listener = Listening(port);
+        var listener = Listening(port, latencyMs);
+        var window = watched ?? Watched;
 
         try
         {
@@ -393,19 +594,22 @@ public sealed unsafe class SrtSendPressureTests(ITestOutputHelper output)
 
             // Exactly what an accepted viewer gets, because the object under measurement is the one
             // the consumption port writes viewers through - SrtListener's send timeout on the socket,
-            // LiveOptions' budget on the stream.
+            // and the budget the consumption port derives for this connection's own latency.
             var accepted = Accept(listener, port, SendTimeoutMilliseconds);
+            var counting = new Counting(accepted);
 
-            using var sender = new SrtSocketStream(accepted, writable: true, sendStallBudget: Budget);
+            using var sender = Sending(accepted, counting, Budget(latencyMs));
 
             Srt.Stats(accepted, out var settled, clear: false);
 
             output.WriteLine(
                 $"peer advertises packet drop: {peerDropsLatePackets}; payload {sender.PayloadSize} B, "
                 + $"send buffer {settled.byteAvailSndBuf / 1024} KB available, "
-                + $"{settled.msSndTsbPdDelay} ms of negotiated latency");
+                + $"{settled.msSndTsbPdDelay} ms of negotiated latency, "
+                + $"{bitsPerSecond / 1_000_000d:0.##} Mbit/s offered, "
+                + $"{Budget(latencyMs).TotalSeconds:0.##} s budget");
 
-            var pushing = new Pushing(sender, BitsPerSecond);
+            var pushing = new Pushing(sender, bitsPerSecond);
 
             try
             {
@@ -416,7 +620,7 @@ public sealed unsafe class SrtSendPressureTests(ITestOutputHelper output)
 
                 // Ends early once the budget has dropped the peer, because everything after that is
                 // a closed stream being sampled: the figures are taken at the moment it gave up.
-                while (started.Elapsed < Watched && !pushing.GaveUp)
+                while (started.Elapsed < window && !pushing.GaveUp)
                 {
                     Thread.Sleep(Sample);
 
@@ -436,16 +640,18 @@ public sealed unsafe class SrtSendPressureTests(ITestOutputHelper output)
                 Srt.Stats(accepted, out var last, clear: false);
 
                 output.WriteLine(
-                    $"wrote {pushing.Written / 1024} KB in {Watched.TotalSeconds:0} s, longest send that "
+                    $"wrote {pushing.Written / 1024} KB in {started.Elapsed.TotalSeconds:0} s, longest send that "
                     + $"returned {pushing.Longest.TotalSeconds:0.00} s, longest still outstanding "
                     + $"{stalled.TotalSeconds:0.00} s, {last.pktSndDrop} packets dropped by the sender, "
                     + $"{last.pktSndLoss} reported lost, {last.pktRetrans} resent, buffer holding "
                     + $"{last.byteSndBuf / 1024} KB at {last.msSndBuf} ms with {last.byteAvailSndBuf / 1024} KB free");
 
                 output.WriteLine(
-                    sender.Faulted
+                    $"{counting.Timeouts} sends timed out, longest run {counting.LongestRun}, longest "
+                    + $"stretch with nothing accepted {counting.LongestStall.TotalSeconds:0.00} s; "
+                    + (sender.Faulted
                         ? $"the stream faulted, {(sender.SendStalled ? "on the no-progress budget" : "on a refused send")}"
-                        : "the stream never faulted");
+                        : "the stream never faulted"));
 
                 // Read before the finally below closes the socket under the writer, which would
                 // fault the stream itself and make every case look like the blocked one.
@@ -455,7 +661,9 @@ public sealed unsafe class SrtSendPressureTests(ITestOutputHelper output)
                     pushing.Written,
                     pushing.Longest,
                     sender.Faulted,
-                    sender.SendStalled);
+                    sender.SendStalled,
+                    counting.Timeouts,
+                    counting.LongestStall);
             }
             finally
             {
@@ -482,15 +690,25 @@ public sealed unsafe class SrtSendPressureTests(ITestOutputHelper output)
     /// </param>
     /// <param name="Faulted">Whether the stream ended the window unusable.</param>
     /// <param name="SendStalled">Whether the budget was what made it unusable.</param>
+    /// <param name="Timeouts">
+    /// Sends that came back SRT_ETIMEOUT and were offered again. Zero means the retry loop was never
+    /// entered, which for a case claiming to guard against a false positive means it guards nothing.
+    /// </param>
+    /// <param name="LongestStall">
+    /// The longest stretch in which libsrt accepted nothing, which is the figure the budget is a
+    /// bound on and the one to compare a budget against.
+    /// </param>
     private readonly record struct Pressed(
         int Drops,
         TimeSpan Stalled,
         long Written,
         TimeSpan Longest,
         bool Faulted,
-        bool SendStalled);
+        bool SendStalled,
+        int Timeouts,
+        TimeSpan LongestStall);
 
-    private static int Listening(int port)
+    private static int Listening(int port, int latencyMs)
     {
         var listener = Srt.srt_create_socket();
 
@@ -498,9 +716,12 @@ public sealed unsafe class SrtSendPressureTests(ITestOutputHelper output)
 
         Srt.SetBool(listener, SRT_SOCKOPT.SRTO_REUSEADDR, true);
 
-        // The figure the service configures, because the drop threshold is derived from the latency
-        // the two ends negotiate and a test at another latency would be measuring another threshold.
-        Srt.SetInt32(listener, SRT_SOCKOPT.SRTO_LATENCY, 120);
+        // The latency is the axis, not a constant. It was hard-coded at 120 here, with a comment
+        // saying a test at another latency would be measuring another threshold - true, and exactly
+        // backwards for the question of whether this budget can drop a working viewer, because the
+        // threshold is what the budget has to stay clear of and the latency is what moves it. Every
+        // case now says which latency it is about.
+        Srt.SetInt32(listener, SRT_SOCKOPT.SRTO_LATENCY, latencyMs);
 
         var address = new IPEndPoint(IPAddress.Loopback, port).Serialize();
 
@@ -545,7 +766,9 @@ public sealed unsafe class SrtSendPressureTests(ITestOutputHelper output)
 
     private sealed class Peer(int socket) : IDisposable
     {
-        /// <summary>The raw socket, for the one case that reads from the peer rather than ignoring it.</summary>
+        /// <summary>
+        /// The raw socket, for the one case that reads from the peer rather than ignoring it.
+        /// </summary>
         public int Socket => socket;
 
         public void Dispose() => Srt.srt_close(socket);
@@ -575,14 +798,14 @@ public sealed unsafe class SrtSendPressureTests(ITestOutputHelper output)
     /// the way past. The counting goes through <see cref="SrtSocketStream"/>'s own test seam rather
     /// than around it, so what is counted is exactly what the retry loop saw.
     /// </summary>
-    private static SrtSocketStream Sending(int accepted, Counting counting)
+    private static SrtSocketStream Sending(int accepted, Counting counting, TimeSpan budget)
         => new(
             accepted,
             writable: true,
             counting.Send,
             receive: null,
             payloadSize: Srt.LiveDefaultPayloadSize,
-            sendStallBudget: Budget);
+            sendStallBudget: budget);
 
     /// <summary>
     /// <c>srt_sendmsg</c>, with a record of what timed out. Called only from the thread doing the

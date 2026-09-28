@@ -205,6 +205,24 @@ public static unsafe partial class Srt
     /// <summary>MTU 1500 less the UDP and SRT headers; a live message larger than this is refused.</summary>
     public const int LiveMaxPayloadSize = 1456;
 
+    /// <summary>
+    /// How long a packet may sit in a sending socket's own buffer before libsrt will discard it for a
+    /// peer that advertised too-late-packet drop, and therefore the longest a send can find that
+    /// buffer full with nothing in it yet discardable.
+    ///
+    /// libsrt's own arithmetic restated, from <c>CUDT::sndDropTooLate</c>:
+    /// <c>max(latency + SRTO_SNDDROPDELAY, 1000) + 20</c> ms, with SRTO_SNDDROPDELAY at its default
+    /// of zero. Checked against measurement rather than taken from the source alone - at the 120 ms
+    /// this service negotiates by default, <c>SrtSendPressureTests</c> sees the sending buffer settle
+    /// at exactly 1020 ms.
+    ///
+    /// A function of the <b>negotiated</b> latency rather than the configured one, which is what
+    /// makes it a method rather than a constant: the handshake settles at the larger of the two
+    /// sides, and a caller may ask for more than this service asked for.
+    /// </summary>
+    public static TimeSpan SendDropThreshold(int negotiatedLatencyMilliseconds)
+        => TimeSpan.FromMilliseconds(Math.Max(negotiatedLatencyMilliseconds, 1000) + 20);
+
     public const int SRT_INVALID_SOCK = -1;
 
     public const int SRT_ERROR = -1;
