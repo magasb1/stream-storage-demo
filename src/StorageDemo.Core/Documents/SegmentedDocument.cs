@@ -9,8 +9,9 @@ namespace StorageDemo.Core.Documents;
 /// It exists for one reason: a recording that runs for hours cannot wait until it ends to be
 /// stored. Holding it on one pod's disk for six hours means six hours of disk, and losing that pod
 /// means losing all six. So each few minutes is uploaded as it completes and the local file is
-/// deleted, which bounds disk to one piece and means what has already been recorded survives the
-/// pod that recorded it.
+/// deleted, which bounds disk to a handful of pieces and means what has already been recorded
+/// survives the pod that recorded it. How many is the writer's business: a recorder keeps a piece or
+/// two in hand so that an upload never stops it capturing, which is what its own notes explain.
 ///
 /// Each piece is uploaded through the ordinary storage path, as an ordinary object. Nothing here
 /// needs multipart upload or anything else only one provider has, which is the property the whole
