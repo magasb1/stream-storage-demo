@@ -1,3 +1,4 @@
+using System.Threading.Channels;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using StorageDemo.Core.Documents;
@@ -21,8 +22,16 @@ namespace StorageDemo.Infrastructure.Streaming;
 /// **It is written in parts and stored as it goes.** A camera recording for six hours cannot wait
 /// until it ends to be stored: the bytes would sit on one pod's disk the whole time and die with
 /// it. So a few minutes are muxed to a local file, uploaded through the ordinary storage path as an
-/// ordinary object, and the local file deleted. Disk and memory are bounded by one part however
-/// long the recording runs, and what has already been recorded survives the pod.
+/// ordinary object, and the local file deleted. Disk is bounded by a handful of parts however long
+/// the recording runs, and what has already been recorded survives the pod.
+///
+/// **Storing a part does not stop it reading.** The upload runs on its own task, fed a finished
+/// file at a time, and the muxing loop opens the next part rather than waiting for it. That used
+/// not to be so, and the difference is the whole safety of the thing: the packet queue this
+/// subscribes to fails on overflow rather than skipping, so for as long as an upload sat between
+/// two reads of it, the queue had to hold everything the stream sent while storage worked - most of
+/// a gigabyte for a five-minute part of a contribution feed - or the recording ended and the
+/// document was marked truncated. See <see cref="StorePartsAsync"/>.
 ///
 /// A part is not a segment. A segment is the buffer's unit, one keyframe to the next, and is the
 /// sender's to decide; a part is ours and is minutes long. A part holds many segments.
@@ -59,8 +68,21 @@ public sealed class StreamRecorder
 
     private DateTimeOffset _endsAt;
 
-    /// <summary>Bytes of the parts already stored, so the running total survives a part roll.</summary>
-    private long _stored;
+    /// <summary>
+    /// Bytes of the parts already muxed and handed over for storage, so the running total survives a
+    /// part roll.
+    ///
+    /// Muxed rather than stored, which is the honest figure now that the two differ: a part on its
+    /// way to storage is recorded video and saying otherwise would make <see cref="Bytes"/> fall
+    /// back by a part every few minutes.
+    /// </summary>
+    private long _muxed;
+
+    /// <summary>
+    /// Parts muxed so far, which names the next file. Separate from <see cref="Parts"/> because that
+    /// counts what storage has taken, and the two differ for as long as a part is in flight.
+    /// </summary>
+    private int _muxedParts;
 
     public StreamRecorder(
         StreamHub hub,
@@ -111,7 +133,14 @@ public sealed class StreamRecorder
 
     public string FileName { get; }
 
-    /// <summary>Everything stored so far, which grows through the recording rather than at its end.</summary>
+    /// <summary>
+    /// Everything captured so far, which grows through the recording rather than at its end.
+    ///
+    /// Written only by the muxing loop and <see cref="Parts"/> only by the storer, which is what
+    /// makes two tasks safe here without a lock: each figure has one writer, and whoever reads them
+    /// for a status response is reading a moment rather than a transaction, exactly as it was when
+    /// one task wrote both.
+    /// </summary>
     public long Bytes { get; private set; }
 
     /// <summary>Parts stored so far. Visible because it is the honest measure of progress.</summary>
@@ -152,6 +181,44 @@ public sealed class StreamRecorder
     public bool Due() => DateTimeOffset.UtcNow >= EndsAt || DateTimeOffset.UtcNow >= Deadline;
 
     /// <summary>
+    /// How many packets one recording of this stream is given to fall behind by, and the figure that
+    /// decides whether a stall costs a document.
+    ///
+    /// Asked for in seconds and answered in packets, exactly as a viewer's is, because a packet is
+    /// one demultiplexed frame and so a depth stated in packets means a different length of time on
+    /// every stream that reaches it: twenty thousand of them is over thirteen minutes of a 25 fps
+    /// camera and twenty seconds of a transport carrying a thousand packets a second. The short one
+    /// is the one that mattered, and nothing in a packet count said it was there.
+    ///
+    /// Bounded both ways, which is where this differs from a viewer's and is the reason it can be
+    /// derived from a sender's own declaration at all. A viewer's queue may only be clamped from
+    /// above, because depth is delay for a viewer and a deep queue is the fault being fixed; a
+    /// recorder accumulates no delay at all - it writes to a local file - so the only thing a queue
+    /// deeper than it needs costs is memory. So the seconds are floored by
+    /// <see cref="LiveOptions.RecorderQueuePackets"/>, which is the depth every recording had before
+    /// this was derived at all, and capped by <see cref="LiveOptions.RecorderQueueMaxPackets"/>.
+    ///
+    /// The floor is not a formality, it is the guarantee. A rate read from what the encoder presented
+    /// is a sender's claim in both directions: <see cref="StreamLayout"/> discards one too high, but
+    /// one too low is a measurement as far as libav can tell - an H.264 sender is free to
+    /// declare VUI timing of one frame a second and then send fifty - and believed, it would size
+    /// this queue at a few hundred packets on a Fail subscription. Floored at what the option already
+    /// said, no stream a sender can present gets a shallower queue than it got before, whatever it
+    /// declares, and the seconds can then only ever make a queue deeper than it was.
+    /// </summary>
+    /// <param name="preroll">
+    /// The rollback this recording will actually be given, which is part of the depth because
+    /// <see cref="StreamHub.Subscribe"/> fills the queue from the buffer before a live packet reaches
+    /// it. A seed that does not fit does not cost the part that did not fit: every seeded packet is
+    /// offered as not starting a segment, so the first overflow faults a Fail subscription outright
+    /// and the recording is over before it read anything.
+    /// </param>
+    public static int QueueDepth(StreamLayout layout, LiveOptions options, double preroll)
+        => Math.Max(
+            options.RecorderQueuePackets,
+            layout.QueueDepth(options.RecorderQueueSeconds + preroll, options.RecorderQueueMaxPackets));
+
+    /// <summary>
     /// Runs until its stop time, until it is stopped, or until the stream ends, storing a part
     /// every few minutes as it goes. Nothing about it depends on whoever asked for it still being
     /// there: closing the client, losing the client, or never having had one changes nothing.
@@ -174,11 +241,15 @@ public sealed class StreamRecorder
 
         Directory.CreateDirectory(_directory);
 
-        // Larger than a viewer's, because overflowing here is not a skip. Exhausting it ends the
+        // Deeper than a viewer's, because overflowing here is not a skip. Exhausting it ends the
         // recording and marks the document truncated: dropping packets to keep going would write
         // a hole into a file that claims to be a recording, and silence is worse than stopping.
+        //
+        // The pre-roll is asked of the hub rather than taken from the option, because a rollback
+        // begins at the keyframe at or before what was asked for and a coarse sender gives more than
+        // it was asked for. QueueDepth says why a seed that does not fit is worse than it sounds.
         using var subscription = _hub.Subscribe(
-            _options.RecorderQueuePackets,
+            QueueDepth(layout, _options, _hub.ResolvePreroll(_options.PrerollSeconds)),
             OverflowPolicy.Fail,
             streamIndexes: [],
             preroll: _options.PrerollSeconds);
@@ -188,31 +259,59 @@ public sealed class StreamRecorder
 
         var document = documents.BeginSegmented(FileName, ContentTypes.Guess(FileName), Describe());
 
+        // Finished parts on their way to storage. Bounded, because the alternative to waiting for
+        // storage is an unbounded pile of parts on a pod's disk, and this is the only queue in the
+        // recording whose overflow is a pause rather than a lost document.
+        var muxed = Channel.CreateBounded<MuxedPart>(
+            new BoundedChannelOptions(_options.RecorderPendingParts)
+            {
+                FullMode = BoundedChannelFullMode.Wait,
+                SingleWriter = true,
+                SingleReader = true,
+            });
+
+        var storing = StorePartsAsync(muxed, document);
+
         try
         {
-            var packets = subscription.Packets.ReadAllAsync(linked.Token).GetAsyncEnumerator(linked.Token);
-
-            // The timeline runs across parts rather than restarting in each. Joined back together
-            // they have to read as one continuous recording, which is exactly what a muxer
-            // continuing where the last one left off produces.
-            var timeline = 0d;
-            var more = true;
-
             try
             {
-                while (more && !Due())
+                var packets = subscription.Packets
+                    .ReadAllAsync(linked.Token)
+                    .GetAsyncEnumerator(linked.Token);
+
+                // The timeline runs across parts rather than restarting in each. Joined back together
+                // they have to read as one continuous recording, which is exactly what a muxer
+                // continuing where the last one left off produces.
+                var timeline = 0d;
+                var more = true;
+
+                try
                 {
-                    (more, timeline) = await WritePartAsync(
-                        packets,
-                        subscription,
-                        layout,
-                        timeline,
-                        document);
+                    while (more && !Due())
+                    {
+                        (more, timeline) = await WritePartAsync(
+                            packets,
+                            subscription,
+                            layout,
+                            timeline,
+                            muxed.Writer);
+                    }
+                }
+                finally
+                {
+                    await packets.DisposeAsync();
                 }
             }
             finally
             {
-                await packets.DisposeAsync();
+                // Whether the loop ended or threw, nothing more will be muxed - so the storer is told
+                // to finish what it is holding and awaited here, before the document is completed.
+                // A recording that failed still keeps the parts it captured, and the last word on a
+                // document cannot be written before its last part is in it.
+                muxed.Writer.TryComplete();
+
+                await storing;
             }
 
             if (Truncated)
@@ -268,7 +367,7 @@ public sealed class StreamRecorder
     }
 
     /// <summary>
-    /// Writes one part to a local file, stores it, and deletes the file.
+    /// Writes one part to a local file and hands it over to be stored.
     /// </summary>
     /// <returns>Whether the stream is still running, and where the timeline has reached.</returns>
     private async Task<(bool More, double Timeline)> WritePartAsync(
@@ -276,9 +375,9 @@ public sealed class StreamRecorder
         PacketSubscription subscription,
         StreamLayout layout,
         double timeline,
-        SegmentedDocument document)
+        ChannelWriter<MuxedPart> muxed)
     {
-        var path = System.IO.Path.Combine(_directory, $"{Parts:D5}.ts");
+        var path = System.IO.Path.Combine(_directory, $"{_muxedParts:D5}.ts");
         var until = DateTimeOffset.UtcNow + TimeSpan.FromMinutes(_options.RecordingPartMinutes);
         var more = true;
         long written;
@@ -295,7 +394,7 @@ public sealed class StreamRecorder
 
                     // Counted across the whole recording, not this part, because what a caller
                     // asked about is the recording.
-                    Bytes = _stored + muxer.Written;
+                    Bytes = _muxed + muxer.Written;
 
                     if (muxer.Fault is not null || Due() || DateTimeOffset.UtcNow >= until)
                     {
@@ -317,24 +416,83 @@ public sealed class StreamRecorder
             timeline = muxer.TimelineSeconds;
         }
 
-        if (written > 0)
+        if (written == 0)
         {
-            await using (var stored = File.OpenRead(path))
-            {
-                await document.AppendAsync(stored, written, Describe(), CancellationToken.None);
-            }
+            Delete(path);
 
-            _stored += written;
-            Parts++;
-            Bytes = _stored;
-
-            _metrics?.RecordedBytes(written);
+            return (more, timeline);
         }
 
-        Delete(path);
+        _muxed += written;
+        _muxedParts++;
+        Bytes = _muxed;
+
+        // Where the upload used to be, and the one line this whole change is about. It waits only
+        // once storage has fallen RecorderPendingParts whole parts behind, and that wait is now the
+        // only moment in a recording when nothing is draining the packet queue.
+        //
+        // Not cancellable, for the reason the append itself never was: a muxed part is recorded
+        // video, and a shutdown that dropped it on the floor would lose bytes the recorder has
+        // already counted. The storer deletes the file once it has taken it.
+        await muxed.WriteAsync(new MuxedPart(path, written), CancellationToken.None);
 
         return (more, timeline);
     }
+
+    /// <summary>
+    /// Stores finished parts, one at a time and in order, for as long as the recorder is muxing them.
+    ///
+    /// This is what takes a part upload off the read path. It used to run between two reads of the
+    /// packet queue, so the queue had to hold everything the stream sent for as long as storage
+    /// took - a five-minute part of a 25 Mbps contribution feed is about 940 MB, and fitting its
+    /// upload inside a queue asked for in seconds would have wanted something like 115 Mbit/s
+    /// sustained per concurrent recording. Nothing drained the channel while it happened and this
+    /// subscription fails rather than skipping, so a slow storage backend did not cost a recording
+    /// some latency, it cost the document. Now the muxing loop hands over a finished file and opens
+    /// the next one, and the queue is spent only by an upload that has already fallen a whole part
+    /// behind.
+    ///
+    /// One at a time and in order, because a segmented document is written in order: a part's key is
+    /// its position and the parts are joined in that order on the way out. In order is also why this
+    /// is one task rather than one per part - two uploads racing would store part four as part three
+    /// whenever the smaller of them finished first - and it is why nothing else touches the document
+    /// until this has finished.
+    ///
+    /// Never cancelled, for the same reason the append below has always been passed
+    /// <see cref="CancellationToken.None"/>: these bytes are already recorded.
+    /// </summary>
+    private async Task StorePartsAsync(Channel<MuxedPart> muxed, SegmentedDocument document)
+    {
+        try
+        {
+            await foreach (var part in muxed.Reader.ReadAllAsync(CancellationToken.None))
+            {
+                await using (var stored = File.OpenRead(part.Path))
+                {
+                    await document.AppendAsync(stored, part.Bytes, Describe(), CancellationToken.None);
+                }
+
+                Parts++;
+
+                _metrics?.RecordedBytes(part.Bytes);
+
+                Delete(part.Path);
+            }
+        }
+        catch (Exception ex)
+        {
+            // Told to the muxing loop rather than only thrown here. It waits on this channel whenever
+            // storage has fallen behind, and a storer that died quietly would leave it waiting there
+            // until the recording's own deadline - hours, on a document nobody is going to be able to
+            // finish anyway.
+            muxed.Writer.TryComplete(ex);
+
+            throw;
+        }
+    }
+
+    /// <summary>A part muxed to a local file and waiting to be stored.</summary>
+    private readonly record struct MuxedPart(string Path, long Bytes);
 
     /// <summary>What the probe cannot work out, and what it never sees for a long recording.</summary>
     private Dictionary<string, string> Describe()

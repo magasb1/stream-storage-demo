@@ -265,18 +265,28 @@ spec:
             - name: tmp
               mountPath: /tmp
       volumes:
-        # A recording is written here one part at a time and the file deleted once the part is
-        # stored, so disk is bounded by the part in progress rather than by how long a recording
-        # runs. What it is not bounded by is how many recordings run at once, and that is the
-        # ceiling nobody had written down:
+        # A recording is written here a part at a time and each file deleted once its part is
+        # stored, so disk is bounded by a few parts rather than by how long a recording runs. A few
+        # rather than one: an upload runs on its own task so that it never stops the recorder
+        # reading its packet queue, which means the part being written, the part being uploaded and
+        # Live__RecorderPendingParts more waiting are all on this volume at once. What it is still
+        # not bounded by is how many recordings run at once, and that is the ceiling nobody had
+        # written down:
         #
-        #   per recording  = Live__RecordingPartMinutes x bitrate
-        #                  = 5 min x 4 Mbit/s  ~= 150 MB
-        #   concurrent     = 8Gi / 150 MB      ~= 54 recordings per pod
+        #   per recording  = (Live__RecorderPendingParts + 2) x Live__RecordingPartMinutes x bitrate
+        #                  = 3 x 5 min x 4 Mbit/s  ~= 450 MB
+        #   concurrent     = 8Gi / 450 MB          ~= 18 recordings per pod
         #
-        # Sixty streams at camera rate fit under that, but only just, and Live__IngestPortCount
-        # raising a pod toward a hundred and twenty-five streams does not raise this. A detector
-        # triggering broadly would exceed it.
+        # That is a third of what it was before the upload was taken off the read path, and it is
+        # the price of that: the slack storage is given to fall behind is held here, as parts on
+        # disk, instead of in memory as packets nobody has muxed yet. Disk is the cheaper of the
+        # two and the only one of them bounded by anything, but the figure moved and this is where
+        # it shows. Sixty streams at camera rate no longer fit, Live__IngestPortCount raising a pod
+        # toward a hundred and twenty-five streams does not raise this, and a detector triggering
+        # broadly would exceed it comfortably. Live__RecorderPendingParts is already at its minimum
+        # of one in this arithmetic, so the dials left are a larger volume or a shorter
+        # Live__RecordingPartMinutes - and a shorter part buys disk by spending storage round trips
+        # and the slack that keeps a stalled upload from truncating anything.
         #
         # **Nothing enforces it.** There is no bound on concurrent recordings, and what happens when
         # the volume fills is untested: a part fails to write, the recording it belonged to ends,
