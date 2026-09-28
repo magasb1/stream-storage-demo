@@ -91,10 +91,20 @@ Scaling to a thousand streams. The plan, the reasoning and the research behind e
       per pod are therefore bounded by threads rather than bandwidth, on the route a cluster uses for
       every viewer that reached the wrong pod. Bounded writers with a dropping queue, an async write
       path, or disconnect a viewer that cannot keep up - any of the three beats a thread
-- [ ] (#5) ViewerQueuePackets is 2000 packets, which at 25 fps is eighty seconds of lag before skip-to-live
+- [x] (#5) ViewerQueuePackets is 2000 packets, which at 25 fps is eighty seconds of lag before skip-to-live
       engages, and a viewer eighty seconds behind live is not a viewer. RecorderQueuePackets has the
       same shape at 20000. Both want to be seconds of media rather than packets, since the packet is a
       frame and the frame rate is the encoder's choice
+      Viewer half done (#19): ViewerQueueSeconds, with ViewerQueuePackets as the ceiling. Recorder half
+      closed as measured and not worth it (#21): a recorder's queue can only be floored, never capped,
+      by the packet figure - overflowing it destroys the document rather than costing a skip - and with
+      that floor the seconds change nothing at or below ~67 packets/s, which is every stream this
+      service carries. A 25 fps camera lands back on 20000 exactly; +10% with AAC, +30% for KLV, 3x
+      only above ~197 packets/s. What actually made the recorder's queue matter was that it had to
+      absorb a whole part upload, and taking that off the read path (#21) is what fixed it. Revisit if
+      a >200 packets/s transport ever arrives. What the packet figure still is not is a memory bound:
+      20000 packets of a 25 Mbps feed at 25 fps is ~2.5GB against a 4Gi pod, because a packet gets
+      bigger as the rate falls. That wants stating in bytes, like BufferByteCeiling, and is its own job
 - [ ] (#6) Nothing bounds concurrent snapshot decodes: LibavMediaAnalyzer.OnAFileAsync spills every request
       to a temp file and runs libav in Task.Run with no valve, so 200 snapshots at once are 200 temp
       files and 200 decodes on the same pool as everything else. About 15 ms each here, so it passes at

@@ -269,76 +269,39 @@ public sealed class LiveOptions
     public int ViewerQueuePackets { get; init; } = 2_000;
 
     /// <summary>
-    /// The floor under a recorder's queue, in packets, whatever <see cref="RecorderQueueSeconds"/>
-    /// works out to. Keeps its name, its range and its value, which is the depth every recording had
-    /// while this was the depth rather than the floor.
+    /// Queue depth for a recorder. Larger, because overflowing here is not a skip: it ends the
+    /// recording and marks the document truncated, and that must be genuinely rare.
     ///
-    /// A floor rather than a ceiling, which is the opposite of what <see cref="ViewerQueuePackets"/>
-    /// is to <see cref="ViewerQueueSeconds"/>, and the difference is the point. Depth is delay for a
-    /// viewer, so a viewer's queue may only be clamped downwards; a recorder accumulates no delay at
-    /// all, because it writes to a local file, so the only thing a queue deeper than it needs costs a
-    /// recorder is memory. That asymmetry is what makes it safe to derive this from a rate the sender
-    /// influences: an encoder is free to declare one frame a second and send fifty, and a depth
-    /// derived from the declaration alone would be a few hundred packets on the one subscription in
-    /// the service whose overflow destroys its artefact. Floored here, no stream a sender can present
-    /// gets a shallower queue than it got before the depth was derived at all.
+    /// Still in packets, and now deliberately rather than provisionally. What this option used to say
+    /// could not safely be seconds has been fixed: the queue no longer has to cover a part upload,
+    /// because <c>StreamRecorder.StorePartsAsync</c> took that off the read path. What settled it
+    /// afterwards was working out what seconds would actually buy, with the same rate arithmetic
+    /// <see cref="StreamLayout"/> uses for a viewer. Nothing, for every stream this service carries:
+    /// at or below about sixty-seven packets a second the floor such a change would need rules, and a
+    /// 25 fps camera lands back on exactly this number; a camera with AAC gains a tenth; KLV beside
+    /// video gains a third; only a transport above about two hundred packets a second sees three
+    /// times it, and nothing here sends one. Against the ten minutes of slack
+    /// <see cref="RecorderPendingParts"/> now provides, a third more queue is a rounding error, and
+    /// it is not worth two more options and the prose to explain them. If a fast transport ever
+    /// arrives, that is when to do it.
     ///
-    /// A deployment that lowered this to bound memory still gets the bound it set. A deployment that
-    /// left it alone gets it unchanged on every stream up to about sixty-seven packets a second,
-    /// which is a camera with audio and everything below it.
+    /// What this figure is not is a memory bound, and the packet is why. Memory is bytes, and at a
+    /// fixed bitrate a packet gets larger as the packet rate falls, so this costs most exactly where
+    /// it looks most generous: twenty thousand packets of a 25 Mbps feed at 25 fps is a frame of
+    /// 125 KB apiece and about 2.5 GB, against a pod limit of 4Gi, while the same twenty thousand of
+    /// a thousand-packet transport is a tenth of that. Only a recording whose storage has stalled for
+    /// minutes ever fills it, and taking the upload off the read path made such a stall far less
+    /// likely - but the ceiling is the ceiling, it is unchanged by any of this, and what it wants is
+    /// to be stated in bytes as <see cref="BufferByteCeiling"/> already is. Its own change.
     /// </summary>
     [Range(64, 1_000_000)]
     public int RecorderQueuePackets { get; init; } = 20_000;
 
     /// <summary>
-    /// Queue depth for a recorder, in seconds of media, between the floor above and the ceiling below.
-    ///
-    /// Seconds because that is what the depth means, and the old figure proves why it matters: twenty
-    /// thousand packets is over thirteen minutes of a 25 fps camera and twenty seconds of a transport
-    /// carrying a thousand packets a second, out of the same number. The long one looked generous and
-    /// the short one was invisible, and it is the short one that ends recordings.
-    ///
-    /// Five minutes. It is one <see cref="RecordingPartMinutes"/> by coincidence rather than by
-    /// coupling, and the difference is worth stating because the coupling is what this figure had to
-    /// be rescued from: a part upload used to run between two reads of the queue with nothing draining
-    /// it, so the queue had to hold a whole part's worth of stream and a figure in seconds would have
-    /// turned a slow storage backend into truncated recordings. A recorder now hands a finished part
-    /// to a storer and opens the next one, so this is spent only once storage has fallen
-    /// <see cref="RecorderPendingParts"/> whole parts behind - and five minutes past that point is a
-    /// storage outage rather than a hiccup.
-    ///
-    /// What it actually changes is the fast end, because the floor covers the rest: at twenty-five
-    /// frames a second beside AAC audio it is a shade over the twenty thousand packets that used to be
-    /// the whole answer, and at two hundred packets a second and above it is three times it. Those are
-    /// the streams the old figure quietly gave the least time to.
-    /// </summary>
-    [Range(1, 3600)]
-    public double RecorderQueueSeconds { get; init; } = 300;
-
-    /// <summary>
-    /// The ceiling on a recorder's queue, in packets, whatever <see cref="RecorderQueueSeconds"/> and
-    /// the pre-roll work out to. It is what stops a fast transport from sizing a queue per recording
-    /// that this replica cannot afford, and it is why the depth above can be expressed in seconds at
-    /// all.
-    ///
-    /// Three times the floor, which is a memory figure rather than a media one: sixty thousand packets
-    /// of a contribution feed is of the same order as <see cref="BufferByteCeiling"/>, and that is
-    /// already this service's statement about what one stream may cost a pod in memory. It binds only
-    /// above about two hundred packets a second, and only a recording whose storage has stalled for
-    /// minutes ever fills what it allows.
-    ///
-    /// Lower it alongside <see cref="RecorderQueuePackets"/> where memory is tight; it is this figure
-    /// rather than that one that bounds a recording of a fast transport.
-    /// </summary>
-    [Range(64, 1_000_000)]
-    public int RecorderQueueMaxPackets { get; init; } = 60_000;
-
-    /// <summary>
     /// How many finished parts may be waiting for storage before a recorder has to wait for it.
     ///
-    /// This is the slack that took the part upload off the read path, and the reason the depth above
-    /// can be a number of seconds rather than a bet on storage throughput. A recorder muxes a part to
-    /// a local file, hands it over and opens the next one, so an upload that finishes inside a part's
+    /// This is the slack that took the part upload off the read path. A recorder muxes a part to a
+    /// local file, hands it over and opens the next one, so an upload that finishes inside a part's
     /// duration costs the packet queue nothing whatsoever. With one part allowed to wait behind the
     /// one being uploaded, storage can stall for two whole parts - ten minutes at the defaults -
     /// before the queue is touched at all.
@@ -346,9 +309,21 @@ public sealed class LiveOptions
     /// It is a disk figure as much as a slack one, and it loosens a promise this service used to make.
     /// Disk was bounded by one part per recording; it is now bounded by this plus two, the one being
     /// written and the one being uploaded. At a 25 Mbps contribution feed a part is about 940 MB, so
-    /// the default is three of those rather than one. Raise it where storage is slow and disk is
-    /// cheap. One is the least it can be, because a recorder that could hand nothing over would be
-    /// back to uploading between two reads.
+    /// the default is three of those rather than one, and <c>k8s/live/deployment.yaml</c> carries what
+    /// that does to the recordings-per-pod ceiling. Raise it where storage is slow and disk is cheap.
+    /// One is the least it can be, because a recorder that could hand nothing over would be back to
+    /// uploading between two reads.
+    ///
+    /// It is also a shutdown figure, which is the one place raising it costs something that is not
+    /// disk. On SIGTERM the muxing loop cancels, hands over its last part and waits for the storer,
+    /// which must then upload this many parts plus the one in flight, serially and without
+    /// cancellation, because a muxed part is recorded video and dropping it would lose bytes the
+    /// recorder has already counted. <c>LiveStreamEntry</c> gives a recording sixty seconds to do
+    /// that, against a termination grace period of the same sixty, and that budget did not move when
+    /// this option arrived: two parts at camera rate is 300 MB and comfortable, two parts of a
+    /// contribution feed is about 1.9 GB and would need 250 Mbit/s sustained to land, failing which
+    /// the recording is abandoned mid-upload. Before this option it was always one part. Raising it
+    /// raises what a pod has to flush in that same minute.
     /// </summary>
     [Range(1, 16)]
     public int RecorderPendingParts { get; init; } = 1;

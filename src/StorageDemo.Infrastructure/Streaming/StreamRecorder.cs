@@ -84,6 +84,13 @@ public sealed class StreamRecorder
     /// </summary>
     private int _muxedParts;
 
+    /// <summary>
+    /// Set when the recording ended by throwing rather than by finishing, so that the document it
+    /// leaves behind says so. Not <see cref="Truncated"/>, which is the specific case of the packet
+    /// queue overflowing and is a recording that worked as designed right up to its last packet.
+    /// </summary>
+    private bool _failed;
+
     public StreamRecorder(
         StreamHub hub,
         LiveOptions options,
@@ -136,10 +143,17 @@ public sealed class StreamRecorder
     /// <summary>
     /// Everything captured so far, which grows through the recording rather than at its end.
     ///
-    /// Written only by the muxing loop and <see cref="Parts"/> only by the storer, which is what
-    /// makes two tasks safe here without a lock: each figure has one writer, and whoever reads them
-    /// for a status response is reading a moment rather than a transaction, exactly as it was when
-    /// one task wrote both.
+    /// Written only by the muxing loop, as <see cref="Parts"/> is written only by the storer. That
+    /// is what makes these two safe without a lock now that two tasks are running: one writer each,
+    /// and whoever reads them for a status response is reading a moment rather than a transaction,
+    /// exactly as it was when one task wrote both.
+    ///
+    /// <see cref="Truncated"/> is the exception and is not covered by that argument: the muxing loop
+    /// writes it and the storer reads it through <c>Describe</c>, so a part stored around the moment
+    /// the queue overflows can carry metadata that does not yet say the recording is short. A bool
+    /// cannot tear, so the read is of a stale value rather than a broken one, and the value only ever
+    /// goes from false to true; the document's last word is written after the storer has finished and
+    /// does say it. Worth knowing rather than worth a lock, since the part that matters is correct.
     /// </summary>
     public long Bytes { get; private set; }
 
@@ -181,44 +195,6 @@ public sealed class StreamRecorder
     public bool Due() => DateTimeOffset.UtcNow >= EndsAt || DateTimeOffset.UtcNow >= Deadline;
 
     /// <summary>
-    /// How many packets one recording of this stream is given to fall behind by, and the figure that
-    /// decides whether a stall costs a document.
-    ///
-    /// Asked for in seconds and answered in packets, exactly as a viewer's is, because a packet is
-    /// one demultiplexed frame and so a depth stated in packets means a different length of time on
-    /// every stream that reaches it: twenty thousand of them is over thirteen minutes of a 25 fps
-    /// camera and twenty seconds of a transport carrying a thousand packets a second. The short one
-    /// is the one that mattered, and nothing in a packet count said it was there.
-    ///
-    /// Bounded both ways, which is where this differs from a viewer's and is the reason it can be
-    /// derived from a sender's own declaration at all. A viewer's queue may only be clamped from
-    /// above, because depth is delay for a viewer and a deep queue is the fault being fixed; a
-    /// recorder accumulates no delay at all - it writes to a local file - so the only thing a queue
-    /// deeper than it needs costs is memory. So the seconds are floored by
-    /// <see cref="LiveOptions.RecorderQueuePackets"/>, which is the depth every recording had before
-    /// this was derived at all, and capped by <see cref="LiveOptions.RecorderQueueMaxPackets"/>.
-    ///
-    /// The floor is not a formality, it is the guarantee. A rate read from what the encoder presented
-    /// is a sender's claim in both directions: <see cref="StreamLayout"/> discards one too high, but
-    /// one too low is a measurement as far as libav can tell - an H.264 sender is free to
-    /// declare VUI timing of one frame a second and then send fifty - and believed, it would size
-    /// this queue at a few hundred packets on a Fail subscription. Floored at what the option already
-    /// said, no stream a sender can present gets a shallower queue than it got before, whatever it
-    /// declares, and the seconds can then only ever make a queue deeper than it was.
-    /// </summary>
-    /// <param name="preroll">
-    /// The rollback this recording will actually be given, which is part of the depth because
-    /// <see cref="StreamHub.Subscribe"/> fills the queue from the buffer before a live packet reaches
-    /// it. A seed that does not fit does not cost the part that did not fit: every seeded packet is
-    /// offered as not starting a segment, so the first overflow faults a Fail subscription outright
-    /// and the recording is over before it read anything.
-    /// </param>
-    public static int QueueDepth(StreamLayout layout, LiveOptions options, double preroll)
-        => Math.Max(
-            options.RecorderQueuePackets,
-            layout.QueueDepth(options.RecorderQueueSeconds + preroll, options.RecorderQueueMaxPackets));
-
-    /// <summary>
     /// Runs until its stop time, until it is stopped, or until the stream ends, storing a part
     /// every few minutes as it goes. Nothing about it depends on whoever asked for it still being
     /// there: closing the client, losing the client, or never having had one changes nothing.
@@ -241,15 +217,20 @@ public sealed class StreamRecorder
 
         Directory.CreateDirectory(_directory);
 
-        // Deeper than a viewer's, because overflowing here is not a skip. Exhausting it ends the
+        // Larger than a viewer's, because overflowing here is not a skip. Exhausting it ends the
         // recording and marks the document truncated: dropping packets to keep going would write
         // a hole into a file that claims to be a recording, and silence is worse than stopping.
         //
-        // The pre-roll is asked of the hub rather than taken from the option, because a rollback
-        // begins at the keyframe at or before what was asked for and a coarse sender gives more than
-        // it was asked for. QueueDepth says why a seed that does not fit is worse than it sounds.
+        // Left in packets deliberately. A depth in packets means a different length of time on every
+        // stream - twenty thousand is thirteen minutes of a 25 fps camera and twenty seconds of a
+        // transport sending a thousand a second - so stating it in seconds was the other half of
+        // this change, and measuring it said the seconds buy nothing a stream here would notice.
+        // Every stream at or below about 67 packets a second, which is every camera this service
+        // carries, lands back on this number anyway; a KLV feed would gain 30%. What actually made
+        // the queue matter was having to cover a whole part upload, and StorePartsAsync is what
+        // removed that. See LiveOptions.RecorderQueuePackets.
         using var subscription = _hub.Subscribe(
-            QueueDepth(layout, _options, _hub.ResolvePreroll(_options.PrerollSeconds)),
+            _options.RecorderQueuePackets,
             OverflowPolicy.Fail,
             streamIndexes: [],
             preroll: _options.PrerollSeconds);
@@ -355,6 +336,16 @@ public sealed class StreamRecorder
         {
             _logger.LogError(ex, "The recording of '{Name}' failed", _hub.Name);
 
+            // A recording that failed part-way still has its earlier parts in storage, and a row
+            // describing them: AppendAsync upserts the document as it goes, so what it captured is
+            // readable whether or not this ever got as far as CompleteAsync. Which means the failure
+            // has to be written down, because the row that survives says nothing about having
+            // failed - it is a complete two-part recording as far as anyone reading it can tell,
+            // of a stream that was meant to run for an hour. That is the failure this class exists
+            // to avoid: Truncated is here precisely so that a short document says it is short, and a
+            // document short for a different reason is owed the same.
+            await MarkIncompleteAsync(document);
+
             _metrics?.Recorded("failed");
 
             return DocumentId;
@@ -386,6 +377,22 @@ public sealed class StreamRecorder
         {
             using var muxer = new PacketMuxer(file, layout, "mpegts", timeline);
 
+            // Whether the queue itself ended, as opposed to this part reaching its own boundary.
+            // The difference decides whether there is a next part to open, and getting it wrong is
+            // not a slow recording, it is a spin: a completed queue makes MoveNextAsync return
+            // false immediately and for ever, so a caller that read that as "this part is done"
+            // would open the next part, read nothing, delete the file and do it again thousands of
+            // times a second until the recording's deadline hours later.
+            //
+            // Asked of the loop rather than of the subscription, because the queue ends for two
+            // reasons and only one of them is a fault. PacketSubscription.Offer completes the
+            // reader when a Fail subscription overflows, and StreamHub.Close completes every
+            // subscriber when the stream ends. Only the first is Faulted. The second is reached
+            // today with the recorder already stopped - LiveStreamEntry.DisposeAsync calls Stop
+            // before Close, so cancellation gets here first - but nothing about this loop should
+            // depend on that ordering holding.
+            var ended = true;
+
             try
             {
                 while (await packets.MoveNextAsync())
@@ -398,11 +405,12 @@ public sealed class StreamRecorder
 
                     if (muxer.Fault is not null || Due() || DateTimeOffset.UtcNow >= until)
                     {
+                        ended = false;
                         break;
                     }
                 }
 
-                more = !Due();
+                more = !ended && !Due();
             }
             catch (OperationCanceledException)
             {
@@ -443,14 +451,15 @@ public sealed class StreamRecorder
     /// Stores finished parts, one at a time and in order, for as long as the recorder is muxing them.
     ///
     /// This is what takes a part upload off the read path. It used to run between two reads of the
-    /// packet queue, so the queue had to hold everything the stream sent for as long as storage
-    /// took - a five-minute part of a 25 Mbps contribution feed is about 940 MB, and fitting its
-    /// upload inside a queue asked for in seconds would have wanted something like 115 Mbit/s
-    /// sustained per concurrent recording. Nothing drained the channel while it happened and this
-    /// subscription fails rather than skipping, so a slow storage backend did not cost a recording
-    /// some latency, it cost the document. Now the muxing loop hands over a finished file and opens
-    /// the next one, and the queue is spent only by an upload that has already fallen a whole part
-    /// behind.
+    /// packet queue with nothing draining the channel, so the queue had to hold everything the stream
+    /// sent for as long as the upload took - a five-minute part of a 25 Mbps contribution feed is
+    /// about 940 MB of it - and this subscription fails rather than skipping. So a slow storage
+    /// backend did not cost a recording some latency, it cost the document, and the depth the queue
+    /// needed was a function of a storage backend's sustained throughput: something nothing here
+    /// measures, that no option could state, and that a slow afternoon changes. Now the muxing loop
+    /// hands over a finished file and opens the next one, so an upload that finishes inside a part's
+    /// duration costs the queue nothing at all, and the queue is spent only by one that has already
+    /// fallen a whole part behind.
     ///
     /// One at a time and in order, because a segmented document is written in order: a part's key is
     /// its position and the parts are joined in that order on the way out. In order is also why this
@@ -494,6 +503,53 @@ public sealed class StreamRecorder
     /// <summary>A part muxed to a local file and waiting to be stored.</summary>
     private readonly record struct MuxedPart(string Path, long Bytes);
 
+    /// <summary>
+    /// Writes the last word on a document whose recording threw, so that it says it is short.
+    ///
+    /// Reachable only from the outer catch, and deliberately doing the least it can. It does not
+    /// discard: the parts that reached storage are real recorded video, and a service whose thesis is
+    /// that silence is worse than stopping does not throw away the half of an hour it captured
+    /// because it could not get the rest. It does not retry either - whatever threw is still broken,
+    /// and this is the shutdown path.
+    ///
+    /// Its own failure is swallowed, which is the only thing it can honestly do. The likeliest reason
+    /// to be here at all is that storage is down, and the likeliest thing to happen next is that
+    /// writing this fails too; there is no third place to record that, and throwing would replace a
+    /// logged fault with a less informative one from the handler. It is worth attempting because the
+    /// two writes fail independently - <see cref="SegmentedDocument.CompleteAsync"/> upserts a row
+    /// and touches object storage not at all, so the case that motivates this, a part upload that
+    /// cannot reach the backend, is a case where marking the document still works.
+    /// </summary>
+    private async Task MarkIncompleteAsync(SegmentedDocument document)
+    {
+        // Before Describe, which reads it.
+        _failed = true;
+
+        try
+        {
+            if (await document.CompleteAsync(Describe(), CancellationToken.None) is { } stored)
+            {
+                DocumentId = stored.Id;
+
+                _logger.LogWarning(
+                    "The recording of '{Name}' is stored as {DocumentId} but marked incomplete: "
+                        + "{Parts} parts, {Bytes} bytes",
+                    _hub.Name,
+                    stored.Id,
+                    Parts,
+                    Bytes);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(
+                ex,
+                "The recording of '{Name}' failed and could not be marked incomplete, so its document "
+                    + "claims to be whole",
+                _hub.Name);
+        }
+    }
+
     /// <summary>What the probe cannot work out, and what it never sees for a long recording.</summary>
     private Dictionary<string, string> Describe()
     {
@@ -509,7 +565,15 @@ public sealed class StreamRecorder
             metadata["Recording parts"] = Parts.ToString();
         }
 
-        if (Truncated)
+        if (_failed)
+        {
+            metadata["Recording"] = Truncated
+                ? "Incomplete: the recorder could not keep up with the stream, and then the recording "
+                    + "failed before it finished. It is short of what was asked for."
+                : "Incomplete: this recording failed before it finished, so it is short of what was "
+                    + "asked for. What is here was captured and stored before that.";
+        }
+        else if (Truncated)
         {
             metadata["Recording"] = "Truncated: the recorder could not keep up with the stream.";
         }
