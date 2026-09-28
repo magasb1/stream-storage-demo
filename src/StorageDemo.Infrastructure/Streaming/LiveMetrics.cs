@@ -118,6 +118,8 @@ public sealed class LiveMetrics : IDisposable
 
     private readonly Counter<long> _viewerSessions;
 
+    private readonly Counter<long> _viewersDropped;
+
     private readonly Counter<long> _overflows;
 
     private readonly Counter<long> _snapshots;
@@ -228,6 +230,18 @@ public sealed class LiveMetrics : IDisposable
         _viewerSessions = _meter.CreateCounter<long>(
             "live.viewer.sessions",
             description: "Viewers served, by whether this replica owned the stream or fetched it.");
+
+        // The only observable for a condition that cannot be screened for. A viewer that clears its
+        // too-late-packet drop flag and then stops reading is indistinguishable from a healthy one
+        // at accept time - SRTO_TLPKTDROP read back on an accepted socket answers with our own
+        // setting, not the peer's - so Admit cannot refuse it and nothing else in this service ever
+        // names it. Without this counter the only trace of a viewer held for its whole send budget
+        // and then dropped is one log line.
+        _viewersDropped = _meter.CreateCounter<long>(
+            "live.viewer.dropped",
+            description:
+                "Viewers dropped for accepting no bytes within their send-stall budget, by which "
+                + "socket stalled.");
 
         // The fan-out's fault signal. A viewer overflowing skips forward and loses a moment; a
         // recorder overflowing stops and marks its document truncated. Both mean this pod could not
@@ -396,6 +410,29 @@ public sealed class LiveMetrics : IDisposable
     /// </param>
     public void Viewing(string route)
         => _viewerSessions.Add(1, new KeyValuePair<string, object?>("route", route));
+
+    /// <param name="socket">
+    /// Which socket stopped taking bytes: <c>viewer</c> for a player's own SRT socket on this pod,
+    /// which is every case today, leaving <c>forward</c> for the dialled socket of a stream this pod
+    /// pushes onward, which can be stalled by its own far end in the same way (#37).
+    ///
+    /// Deliberately not <c>route</c>, though the shape invites it. <c>route</c> already means
+    /// something else on <see cref="Viewing"/> - how a player reached the replica that owns its
+    /// stream - and it is counted by that owner, while this is counted by whichever pod holds the
+    /// socket. One relayed viewer would then appear as <c>route=relayed</c> on the owner and
+    /// <c>route=direct</c> on the pod that dropped it, and any dashboard joining the two by that
+    /// dimension would be quietly wrong. A relayed viewer is covered by the budget, and is counted
+    /// here as <c>viewer</c> like any other: the bytes leave by the player's socket either way, and
+    /// it is that socket's peer that chose not to read.
+    ///
+    /// A non-zero rate here is a viewer that stopped accepting bytes while its connection stayed up,
+    /// held a pool thread and about eleven megabytes of send buffer for its whole budget, and was
+    /// dropped for it. The condition measured to produce that is a peer which cleared
+    /// <c>SRTO_TLPKTDROP</c>, and this pod cannot confirm that - the option read back on an accepted
+    /// socket answers with our own setting - so this counts what happened rather than why.
+    /// </param>
+    public void ViewerDropped(string socket)
+        => _viewersDropped.Add(1, new KeyValuePair<string, object?>("socket", socket));
 
     public void Overflowed(OverflowPolicy policy)
         => _overflows.Add(

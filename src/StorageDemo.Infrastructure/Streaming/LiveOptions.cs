@@ -245,6 +245,89 @@ public sealed class LiveOptions
     public double ViewerQueueSeconds { get; init; } = 4;
 
     /// <summary>
+    /// The floor on how long a viewer's socket may accept nothing at all before the viewer is
+    /// dropped. Zero turns the budget off and no viewer is ever dropped for this.
+    ///
+    /// A floor rather than the figure itself, and that is the load-bearing part.
+    /// <c>LiveConsumptionService.ViewerSendBudget</c> raises it per connection to clear what that
+    /// connection negotiated, because the condition this has to stay clear of moves with the
+    /// negotiated latency and a fixed five seconds drops working viewers well inside the range
+    /// <see cref="SrtLatencyMs"/> already allows. The arithmetic and the probe table are there; what
+    /// belongs here is why the option exists and what its value buys.
+    ///
+    /// It bounds one condition and only one: a peer that is connected, acknowledging, and taking no
+    /// bytes at all. That peer exists because <c>SRTO_TLPKTDROP</c> is the player's to set - one
+    /// query parameter on its URL clears it - and with it clear libsrt's <c>sndDropTooLate</c>
+    /// returns immediately, so nothing ever frees the send buffer and <c>srt_sendmsg</c> waits.
+    /// Probing libsrt 1.5.3 directly for #20 gave sixteen unbroken seconds of timeouts in a
+    /// sixteen-second window against such a peer, ended only by closing the socket, and no setting of
+    /// <c>SRTO_SNDTIMEO</c> changed it - which is why that is a const in <c>SrtListener</c> and not
+    /// an option: it is the polling interval, and this is the policy.
+    ///
+    /// An ordinary viewer must never reach this, and that is the property being protected rather than
+    /// the drop. Such a viewer loses picture instead, which is #11's settled answer and not a fault.
+    /// Two cases stand behind that, both in <c>SrtSendPressureTests</c>. A peer reading literally
+    /// nothing at 12.29 Mbit/s and 120 ms of latency produces no timeout at all - the full rate goes
+    /// onto the socket while libsrt discards from its own buffer whatever the peer has not taken,
+    /// holding 1.5 MB at 1020 ms - so at this service's defaults the budget is not merely clear of an
+    /// ordinary viewer, it is never consulted. Raise the latency and it is: the same peer at 8000 ms
+    /// stalls for seconds at a time, which is the case the derived budget exists for and the case the
+    /// tests now cover. A viewer asking for a rollback is the other: seeding one hands the socket up
+    /// to <see cref="ViewerQueuePackets"/> packets - about twenty-three seconds of media, some
+    /// thirty-six megabytes, several times over what the send buffer holds - before a live packet
+    /// arrives, and that measures as two or three isolated timeouts of about a second each, never two
+    /// in a row. The budget is wall-clock and resets on every accepted chunk precisely so those do
+    /// not add up; a rule counting timeouts would drop every viewer that asked to start from the
+    /// past.
+    ///
+    /// This is also what bounds per-viewer send-buffer memory, which is the non-obvious half.
+    /// Nothing else does. A blocked viewer's sending socket was measured holding about eleven
+    /// megabytes - libsrt's default <c>SRTO_SNDBUF</c> is twelve, and the flow-control window caps
+    /// what can actually sit in it at 8192 packets, about 10.8 MB - filled because the peer's drop
+    /// flag is clear and so nothing ages out of it. Three hundred of those is 3.2 GB against a 4Gi
+    /// pod. The only thing that returns that memory is dropping the viewer, so this figure is also
+    /// how long such a fan-out may hold that much of the pod, and lengthening it is what has to be
+    /// justified. Shortening it past the derived floor buys nothing, though: below that the floor
+    /// governs and the real bound is the negotiated latency plus a second, which is the price of not
+    /// dropping viewers that are behaving.
+    ///
+    /// <c>SRTO_SNDBUF</c> is deliberately not set anywhere, and deliberately not in
+    /// <c>SRT_SOCKOPT</c> either, so nobody reaches for it as the memory bound instead. It is
+    /// pre-bind only: setting it on an accepted socket is refused with "Cannot do this operation on a
+    /// BOUND socket", so a per-viewer size does not exist. It could only go on the listener, one
+    /// figure for every viewer of every stream on the pod, and this service does not learn a stream's
+    /// bitrate until an encoder arrives. Being wrong low is not a smaller buffer but a manufactured
+    /// stall: at 262 KB, against a well-behaved peer, a probe never completed in 240 s, because
+    /// <c>sndDropTooLate</c> runs on entry to <c>srt_sendmsg</c> and never while a send is already
+    /// waiting, so an undersized buffer is never freed by its own head-of-line packet ageing out.
+    /// Being wrong high costs nothing. What the 12 MB default does not do is make the stall go away:
+    /// the window caps it at about 86 Mbit of stream, so a stream above that fills it inside one drop
+    /// threshold however large the buffer is set, and a 200 Mbit/s stream stalls for a second even at
+    /// 120 ms of latency.
+    ///
+    /// Five seconds: far enough above the rollback seed, and anything else that measures as an
+    /// isolated timeout at ordinary latencies, to leave them alone; short enough that a viewer
+    /// holding eleven megabytes for no reason holds them for five seconds rather than for as long as
+    /// it likes. It is not what keeps an ordinary viewer safe - the derived floor is, and it is a
+    /// second clear of the longest wait libsrt can impose whatever the two ends negotiate. Which is
+    /// also why the range starts at zero rather than at some figure argued to be safe on its own: no
+    /// figure here is, and the safety is not this number's job.
+    ///
+    /// Zero is off, for the operator this is ever wrong for. It leaves a viewer's send exactly as it
+    /// was before #20 - bounded by nothing - so it is a way to keep a service running while a false
+    /// positive is diagnosed, not a setting to leave alone.
+    ///
+    /// Players' sockets only, which is every viewer this pod serves: one watching a stream this pod
+    /// owns and one watching a stream fetched from another replica are both written through the same
+    /// SRT socket on this pod, and both are covered. Not covered is the other end of a forward - a
+    /// stream this pod pushes onward can have its far end clear the same flag, but that socket is
+    /// dialled rather than accepted and carries no <c>SRTO_SNDTIMEO</c>, so it never reaches this.
+    /// That is #37 rather than a widening of this change.
+    /// </summary>
+    [Range(0, 60)]
+    public int ViewerSendStallSeconds { get; init; } = 5;
+
+    /// <summary>
     /// The ceiling on a viewer's queue, in packets, whatever <see cref="ViewerQueueSeconds"/> and a
     /// rollback work out to. It is what stops a sender claiming an absurd frame rate from sizing a
     /// queue per viewer that this replica cannot afford, and it is why the depth above can be
