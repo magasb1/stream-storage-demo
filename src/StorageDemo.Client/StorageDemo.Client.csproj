@@ -4,6 +4,17 @@
     <!-- WPF pins this to Windows; the API and its tests stay cross-platform. -->
     <TargetFramework>net10.0-windows</TargetFramework>
     <UseWPF>true</UseWPF>
+
+    <!--
+      And this is what lets the rest of the solution be built and tested from Linux, which the
+      README's scenario B claims and its `dotnet test` requires: without it the whole solution
+      fails to restore there with NETSDK1100, before a single test is discovered. That failure
+      reads as a pass more easily than it should - it happens during restore, prints nothing
+      resembling a test result, and a piped command reports the exit status of whatever it was
+      piped into. The client is still Windows-only to run; this only builds it against the
+      reference packs.
+    -->
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
   </PropertyGroup>
   <ItemGroup>
     <!-- Reuses the shared content-type mapping only; the client holds no infrastructure. -->
