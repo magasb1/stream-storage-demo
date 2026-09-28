@@ -24,11 +24,18 @@ public sealed record LiveSourceResponse(LiveSource Source, LiveStream? Stream);
 /// because the source is the aggregate and a second way to change a forward would drift from this
 /// one.
 /// </param>
+/// <param name="StaticSensor">
+/// Where this camera is and where it looks, for a fixed one. Sending it is what makes this service
+/// synthesise ST 0601 onto the stream's own metadata track; sending null again removes it. All of
+/// it or none of it, which is why it is a nested object rather than eight fields that could be
+/// half-filled.
+/// </param>
 public sealed record SaveLiveSourceRequest(
     string Name,
     string? Url,
     bool Enabled = true,
-    IReadOnlyList<ForwardTarget>? Forwards = null);
+    IReadOnlyList<ForwardTarget>? Forwards = null,
+    StaticSensor? StaticSensor = null);
 
 /// <summary>
 /// What a configured source has to satisfy before it is stored, in one place because both surfaces
@@ -87,6 +94,73 @@ public static class LiveSourceRules
             {
                 return refusedForward;
             }
+        }
+
+        return Sensor(source.StaticSensor);
+    }
+
+    /// <summary>
+    /// Null when the sensor may be stored, or when none was configured.
+    ///
+    /// Every range is the ST 0601 item's own, read from the scale table in <see cref="Misb0601"/>'s
+    /// decoder - which is the table checked against a real stream in Misb0601RealStreamTests, so
+    /// these are the encodable ranges rather than plausible-looking ones. Refused here rather than
+    /// saturated at the encoder because a saturated value is indistinguishable from a measured one:
+    /// a camera configured at 25,000 metres would be published, conformingly, at 19,000.
+    ///
+    /// Bearing is 0..360 rather than 0..359.x because ST 0601 tag 5's own scale ends at 360, and
+    /// 360 encodes as the largest unsigned short rather than wrapping to zero. A caller that means
+    /// due north may say either.
+    /// </summary>
+    private static string? Sensor(StaticSensor? sensor)
+    {
+        if (sensor is null)
+        {
+            return null;
+        }
+
+        if (sensor.Latitude is < -90 or > 90 || double.IsNaN(sensor.Latitude))
+        {
+            return "A sensor latitude is -90 to 90 degrees.";
+        }
+
+        if (sensor.Longitude is < -180 or > 180 || double.IsNaN(sensor.Longitude))
+        {
+            return "A sensor longitude is -180 to 180 degrees.";
+        }
+
+        // ST 0601 tag 15's own range. Below sea level as far as the Dead Sea shore and above as far
+        // as anything that reports altitude this way flies.
+        if (sensor.AltitudeMetres is < -900 or > 19_000 || double.IsNaN(sensor.AltitudeMetres))
+        {
+            return "A sensor altitude is -900 to 19000 metres.";
+        }
+
+        if (sensor.TrueBearing is < 0 or > 360 || double.IsNaN(sensor.TrueBearing))
+        {
+            return "A true bearing is 0 to 360 degrees.";
+        }
+
+        // Tag 19's range, which is the full sphere rather than the half a mast would use: a camera
+        // may look up, and refusing that would be this service inventing a constraint ST 0601 does
+        // not have.
+        if (sensor.Depression is < -180 or > 180 || double.IsNaN(sensor.Depression))
+        {
+            return "A depression angle is -180 to 180 degrees.";
+        }
+
+        if (sensor.HorizontalFov is < 0 or > 180 || double.IsNaN(sensor.HorizontalFov)
+            || sensor.VerticalFov is < 0 or > 180 || double.IsNaN(sensor.VerticalFov))
+        {
+            return "A field of view is 0 to 180 degrees.";
+        }
+
+        // Absent is unmarked, which Misb0601 already treats as an answer distinct from
+        // "unclassified", so only a marking that was given and is not one of the five is refused.
+        if (sensor.Classification is { Length: > 0 } marking
+            && !Misb0601.Classifications.Contains(marking, StringComparer.OrdinalIgnoreCase))
+        {
+            return $"'{marking}' is not an ST 0102 classification. One of: {string.Join(", ", Misb0601.Classifications)}.";
         }
 
         return null;
@@ -208,7 +282,8 @@ public sealed class LiveSourcesController(
             string.IsNullOrWhiteSpace(request.Url) ? null : request.Url,
             request.Enabled,
             LiveSourceRules.WithIds(request.Forwards),
-            DateTimeOffset.UtcNow);
+            DateTimeOffset.UtcNow,
+            request.StaticSensor);
 
         if (LiveSourceRules.Refuse(source, _options.AllowedSchemes) is { } rejection)
         {

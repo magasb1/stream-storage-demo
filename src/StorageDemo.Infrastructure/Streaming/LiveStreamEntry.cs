@@ -15,9 +15,11 @@ namespace StorageDemo.Infrastructure.Streaming;
 public sealed class LiveStreamEntry : IAsyncDisposable
 {
     private readonly Lock _gate = new();
+    private readonly ILogger _logger;
 
     public LiveStreamEntry(StreamHub hub, Harvester harvester, ILogger logger, bool manual, string? manualUrl)
     {
+        _logger = logger;
         Hub = hub;
         Harvester = harvester;
         Decoder = new FrameDecoder(hub, logger);
@@ -55,6 +57,63 @@ public sealed class LiveStreamEntry : IAsyncDisposable
 
     /// <summary>The detection toggle, the worker's lease and the VMTI ring, the carriage half of detection.</summary>
     public StreamDetection Detection { get; } = new();
+
+    private StaticSensor? _sensor;
+    private CancellationTokenSource? _synthesising;
+    private Task? _synthesised;
+
+    /// <summary>
+    /// Starts, replaces or stops the publisher that synthesises this stream's ST 0601, to match the
+    /// configuration as it is now.
+    ///
+    /// Idempotent, which is what lets the heartbeat call it every beat: the sensor is a record, so
+    /// an unchanged configuration compares equal and nothing is torn down. A changed one replaces
+    /// the publisher rather than editing it, because the sets it writes are built from the sensor
+    /// it was given and a half-applied change would be a stream reporting one position and one
+    /// bearing from different configurations.
+    ///
+    /// Only the packets are started and stopped here. The track they go on is part of the layout
+    /// and cannot appear under a running feed - see <see cref="StreamHub.Synthesise"/> - so a newly
+    /// configured camera publishes nothing until its stream reconnects, and this call is harmless
+    /// in the meantime.
+    /// </summary>
+    public async Task SynthesiseAsync(StaticSensor? sensor)
+    {
+        CancellationTokenSource? previous;
+        Task? previousTask;
+
+        lock (_gate)
+        {
+            if (_sensor == sensor)
+            {
+                return;
+            }
+
+            previous = _synthesising;
+            previousTask = _synthesised;
+
+            _sensor = sensor;
+            _synthesising = sensor is null ? null : CancellationTokenSource.CreateLinkedTokenSource(Lifetime.Token);
+            _synthesised = _synthesising is null
+                ? null
+                : new StaticSensorPublisher(Hub, sensor!, _logger).RunAsync(_synthesising.Token);
+        }
+
+        if (previous is not null)
+        {
+            await previous.CancelAsync();
+        }
+
+        if (previousTask is not null)
+        {
+            // Bounded: the publisher's only await is on its own timer, which the cancellation
+            // above completes at once, so this returns as soon as the tick in flight finishes -
+            // and that tick is an encode of about a hundred bytes and one turn of the hub's lock.
+            await previousTask;
+        }
+
+        previous?.Dispose();
+    }
 
     private IDisposable PreviewSubscription { get; }
 
@@ -280,6 +339,15 @@ public sealed class LiveStreamEntry : IAsyncDisposable
         Hub.Close();
 
         await Task.WhenAny(Task.WhenAll(Decoding, Extracting), Task.Delay(TimeSpan.FromSeconds(10)));
+
+        if (_synthesised is not null)
+        {
+            // Already cancelled with the lifetime above; awaited so the token source below is not
+            // disposed underneath the tick still holding it.
+            await Task.WhenAny(_synthesised, Task.Delay(TimeSpan.FromSeconds(10)));
+        }
+
+        _synthesising?.Dispose();
 
         PreviewSubscription.Dispose();
         Decoder.Dispose();

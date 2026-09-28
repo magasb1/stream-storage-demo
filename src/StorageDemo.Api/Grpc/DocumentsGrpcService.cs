@@ -315,6 +315,7 @@ public sealed class DocumentsGrpcService(
             PacketsLost = stream.PacketsLost,
             PacketsDropped = stream.PacketsDropped,
             HasKlv = stream.HasKlv,
+            KlvSynthesised = stream.KlvSynthesised,
             DetectionEnabled = stream.DetectionEnabled,
             DetectionRate = stream.DetectionRate,
             Viewers = stream.Viewers,
@@ -410,7 +411,18 @@ public sealed class DocumentsGrpcService(
             request.Enabled,
             LiveSourceRules.WithIds([.. request.Forwards.Select(forward =>
                 new ForwardTarget(forward.Id, forward.Url, forward.Enabled))]),
-            DateTimeOffset.UtcNow);
+            DateTimeOffset.UtcNow,
+            request.StaticSensor is { } sensor
+                ? new StaticSensor(
+                    sensor.Longitude,
+                    sensor.Latitude,
+                    sensor.AltitudeMetres,
+                    sensor.TrueBearing,
+                    sensor.Depression,
+                    sensor.HorizontalFov,
+                    sensor.VerticalFov,
+                    sensor.HasClassification ? sensor.Classification : null)
+                : null);
 
         if (LiveSourceRules.Refuse(source, liveOptions.Value.AllowedSchemes) is { } rejection)
         {
@@ -452,6 +464,28 @@ public sealed class DocumentsGrpcService(
                 Url = forward.Url,
                 Enabled = forward.Enabled,
             });
+        }
+
+        if (source.StaticSensor is { } sensor)
+        {
+            var configured = new StaticSensorMessage
+            {
+                Longitude = sensor.Longitude,
+                Latitude = sensor.Latitude,
+                AltitudeMetres = sensor.AltitudeMetres,
+                TrueBearing = sensor.TrueBearing,
+                Depression = sensor.Depression,
+                HorizontalFov = sensor.HorizontalFov,
+                VerticalFov = sensor.VerticalFov,
+            };
+
+            // Absent stays absent: unmarked is not the same answer as an empty marking.
+            if (sensor.Classification is { } marking)
+            {
+                configured.Classification = marking;
+            }
+
+            message.StaticSensor = configured;
         }
 
         if (stream is not null)
@@ -790,6 +824,7 @@ public sealed class DocumentsGrpcService(
             },
             ReceivedAt = Timestamp.FromDateTimeOffset(sample.ReceivedAt),
             Raw = ByteString.CopyFrom(sample.Raw),
+            Synthesised = sample.Synthesised,
         };
 
         if (sample.ReferencePts is { } pts)

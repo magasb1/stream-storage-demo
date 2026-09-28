@@ -69,7 +69,13 @@ public sealed record Misb0601Set
 }
 
 /// <summary>
-/// Decodes the ST 0902 minimum set out of an ST 0601 packet, and nothing more.
+/// Decodes the ST 0902 minimum set out of an ST 0601 packet, and encodes the fixed subset of it a
+/// static sensor's configuration amounts to.
+///
+/// The two halves share one scale table, which is the point of them being in one file: the encoder
+/// inverts what the decoder reads, so the round trip in Misb0601Tests holds the encoder to a table
+/// already checked against a real sender's arithmetic in Misb0601RealStreamTests. A second table
+/// somewhere else would be the copy that rots.
 ///
 /// Sources, so the scaling can be checked against a document rather than against this file:
 /// - STANAG 4609 Ed. 5 adopts MISP-2019.1, whose normative references are MISB ST 0601.14 (UAS
@@ -100,7 +106,12 @@ public static class Misb0601
         0x06, 0x0E, 0x2B, 0x34, 0x02, 0x0B, 0x01, 0x01, 0x0E, 0x01, 0x03, 0x01, 0x01, 0x00, 0x00, 0x00,
     ];
 
-    private static readonly string[] Classifications =
+    /// <summary>
+    /// ST 0102 local set tag 1, codes 1 to 5, in that order. Public because a marking is also
+    /// something an operator configures and something this file encodes, and a second copy of this
+    /// list somewhere else would be the copy that rots.
+    /// </summary>
+    public static readonly IReadOnlyList<string> Classifications =
         ["UNCLASSIFIED", "RESTRICTED", "CONFIDENTIAL", "SECRET", "TOP SECRET"];
 
     /// <summary>Whether this packet is an ST 0601 local set at all, before any checksum is done.</summary>
@@ -188,6 +199,220 @@ public static class Misb0601
         }
 
         return checksumSeen ? set with { Unparsed = unparsed } : null;
+    }
+
+    /// <summary>
+    /// A ST 0601 Local Set describing a fixed camera, built from configuration rather than
+    /// telemetry: the packet a static sensor would send if it had anything to send with.
+    ///
+    /// What it carries and why, item by item. Every scale is <see cref="Decode"/>'s, inverted -
+    /// which is what makes the round-trip test in Misb0601Tests worth something, since those scales
+    /// are already checked against a real stream in Misb0601RealStreamTests.
+    /// - Tag 2, precision time stamp, first in the set as ST 0601.8-06 requires.
+    /// - Tags 5 and 18, platform heading and sensor relative azimuth, both present. Eighteen is
+    ///   emitted although it is zero, and that is not tidiness: <see cref="SensorGeometry.SensorBearing"/>
+    ///   is the sum of the two and returns null if either is absent, so a set without tag 18 would
+    ///   carry a bearing no consumer could read.
+    /// - Tag 19, sensor relative elevation, the depression angle.
+    /// - Tags 13, 14, 15, where the sensor is.
+    /// - Tags 16 and 17, the field of view, which is what lets a client draw a wedge.
+    /// - Tag 10, platform designation, carrying <paramref name="designation"/>. This is the
+    ///   in-band half of saying the set was synthesised: <see cref="Misb0601Set.PlatformDesignation"/>
+    ///   already decodes it, so it survives the round trip to any conforming consumer rather than
+    ///   only to this service's own clients.
+    /// - Tag 48, the ST 0102 security set, only when a marking was configured.
+    /// - Tag 65, the version, last before the checksum.
+    /// - Tag 1, the checksum, last, per ST 0601.8-08.
+    ///
+    /// Deliberately absent:
+    /// - Tag 20, sensor relative roll. Absent is read as unrolled by
+    ///   <see cref="SensorGeometry.NorthInImage(double?, double?)"/>, which is correct for a fixed
+    ///   mount, and sending zero would claim a measurement nobody made.
+    /// - Tags 21, 23, 24 and 25, slant range and frame centre. Computing where a camera looks at
+    ///   on the ground needs a range or a terrain model, and this service has neither. A guessed
+    ///   frame centre is worse than none: it is indistinguishable from a measured one, and
+    ///   geolocation work built on top of it would be built on an invention.
+    /// </summary>
+    /// <param name="timestamp">Tag 2. The time the set describes, which for a static sensor is simply now.</param>
+    /// <param name="designation">
+    /// Tag 10. Short, and it is what a consumer reads to tell configured position from reported
+    /// position.
+    /// </param>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// Thrown rather than saturated, for the same reason <see cref="Misb0903.Encode"/> throws: a
+    /// value outside an item's range is a configuration that was never refused, and a packet
+    /// carrying the range's endpoint instead would look exactly like a real measurement.
+    /// </exception>
+    public static byte[] Encode(StaticSensor sensor, DateTimeOffset timestamp, string designation)
+    {
+        ArgumentNullException.ThrowIfNull(sensor);
+        ArgumentException.ThrowIfNullOrEmpty(designation);
+
+        var body = new List<byte>();
+
+        // ST 0601.8-06: the precision time stamp is the first item in the set.
+        Item(body, 2, Microseconds(timestamp));
+
+        Item(body, 5, U16(sensor.TrueBearing, 0, 360));
+        Item(body, 10, Encoding.ASCII.GetBytes(designation));
+        Item(body, 13, S32(sensor.Latitude, 90));
+        Item(body, 14, S32(sensor.Longitude, 180));
+        Item(body, 15, U16(sensor.AltitudeMetres, -900, 19_000));
+        Item(body, 16, U16(sensor.HorizontalFov, 0, 180));
+        Item(body, 17, U16(sensor.VerticalFov, 0, 180));
+
+        // Zero, and sent. See the note on tags 5 and 18 above: absent, it would cost the set its
+        // bearing.
+        Item(body, 18, U32(0, 0, 360));
+
+        Item(body, 19, S32(sensor.Depression, 180));
+
+        if (sensor.Classification is { Length: > 0 } marking)
+        {
+            Item(body, 48, Security(marking));
+        }
+
+        Item(body, 65, [Version]);
+
+        // ST 0601.8-08: the checksum is the last item and covers the key, the set length, every
+        // item before it and its own tag and length byte, but not its own value - the same shape
+        // Misb0903.Encode writes, which defers to this standard for the algorithm.
+        var payload = new List<byte>(body) { 1, 2 };
+        byte[] packet = [.. Key, .. Length(payload.Count + 2), .. payload, 0, 0];
+
+        BinaryPrimitives.WriteUInt16BigEndian(
+            packet.AsSpan(packet.Length - 2),
+            Checksum(packet.AsSpan(0, packet.Length - 2)));
+
+        return packet;
+    }
+
+    /// <summary>
+    /// The revision this encoder writes, sent as tag 65. Sixteen is ST 0601.16; the items above are
+    /// unchanged since .8, whose table this file's scales were read from, and ST 0601 has never
+    /// changed the encoding of an existing item.
+    /// </summary>
+    public const byte Version = 16;
+
+    /// <summary>
+    /// The ST 0102 Security Local Set for tag 48, carrying the marking and nothing else.
+    ///
+    /// Only tag 1. A full ST 0102 set also carries a classifying country and a releasing
+    /// instruction, and this service is told neither: emitting a country because the set expects
+    /// one would be inventing the very field an operator would read to decide what may be shared.
+    /// Tag 1 alone is what <see cref="Decode"/> reads, and what a consumer needs to show a marking.
+    /// </summary>
+    private static byte[] Security(string marking)
+    {
+        var code = 0;
+
+        for (var index = 0; index < Classifications.Count; index++)
+        {
+            if (string.Equals(Classifications[index], marking, StringComparison.OrdinalIgnoreCase))
+            {
+                code = index + 1;
+            }
+        }
+
+        if (code == 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(marking),
+                marking,
+                $"Not an ST 0102 classification. One of: {string.Join(", ", Classifications)}.");
+        }
+
+        var set = new List<byte>();
+        Item(set, 1, [(byte)code]);
+
+        return [.. set];
+    }
+
+    private static byte[] Microseconds(DateTimeOffset timestamp)
+    {
+        var bytes = new byte[8];
+        BinaryPrimitives.WriteUInt64BigEndian(
+            bytes,
+            (ulong)(timestamp.UtcDateTime - DateTime.UnixEpoch).Ticks / 10);
+
+        return bytes;
+    }
+
+    /// <summary>The inverse of <see cref="U16(ReadOnlySpan{byte}, double, double)"/>.</summary>
+    private static byte[] U16(double value, double min, double max)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(value, min);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(value, max);
+
+        var bytes = new byte[2];
+        BinaryPrimitives.WriteUInt16BigEndian(bytes, (ushort)Math.Round((value - min) / (max - min) * ushort.MaxValue));
+
+        return bytes;
+    }
+
+    /// <summary>The inverse of <see cref="U32(ReadOnlySpan{byte}, double, double)"/>.</summary>
+    private static byte[] U32(double value, double min, double max)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(value, min);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(value, max);
+
+        var bytes = new byte[4];
+        BinaryPrimitives.WriteUInt32BigEndian(bytes, (uint)Math.Round((value - min) / (max - min) * uint.MaxValue));
+
+        return bytes;
+    }
+
+    /// <summary>
+    /// The inverse of <see cref="S32(ReadOnlySpan{byte}, double)"/>. The range maps onto
+    /// -(2^31-1)..(2^31-1), leaving -2^31 free as the standard's error indicator, which this
+    /// encoder never writes: a value it cannot represent is a refusal, not an error code.
+    /// </summary>
+    private static byte[] S32(double value, double range)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(value, -range);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(value, range);
+
+        var bytes = new byte[4];
+        BinaryPrimitives.WriteInt32BigEndian(bytes, (int)Math.Round(value / range * int.MaxValue));
+
+        return bytes;
+    }
+
+    /// <summary>
+    /// One TLV. Every tag this encoder writes is below 128, which BER-OID encodes as the byte
+    /// itself, and every value is short, which BER encodes as one length byte.
+    ///
+    /// ponytail: this and <see cref="Length"/> are the same two functions <see cref="Misb0903"/>
+    /// keeps privately, which is two copies of BER. They are eight lines each and the two encoders
+    /// are otherwise independent, so they are left alone rather than pulled into a shared KLV
+    /// primitives type; that is the change to make if a third encoder ever lands.
+    /// </summary>
+    private static void Item(List<byte> into, int tag, ReadOnlySpan<byte> value)
+    {
+        into.Add((byte)tag);
+        into.AddRange(Length(value.Length));
+        into.AddRange(value);
+    }
+
+    /// <summary>BER length: one byte below 128, otherwise a count of the length bytes that follow.</summary>
+    private static byte[] Length(int length)
+    {
+        if (length < 128)
+        {
+            return [(byte)length];
+        }
+
+        var bytes = new byte[4];
+        BinaryPrimitives.WriteUInt32BigEndian(bytes, (uint)length);
+
+        var first = 0;
+
+        while (first < 3 && bytes[first] == 0)
+        {
+            first++;
+        }
+
+        return [(byte)(0x80 | (4 - first)), .. bytes[first..]];
     }
 
     /// <summary>ST 0601.8 section 6.8: a running 16-bit big-endian word sum, odd trailing byte in the high half.</summary>

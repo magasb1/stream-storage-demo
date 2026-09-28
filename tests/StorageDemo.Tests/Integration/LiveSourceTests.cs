@@ -397,6 +397,80 @@ public sealed class LiveSourceTests : IAsyncLifetime
 
     private static Metadata Metadata() => new() { { LiveTokenInterceptor.Header, Token } };
 
+    /// <summary>
+    /// A fixed camera's position survives the trip and the gRPC port agrees, and a value outside an
+    /// ST 0601 item's range is refused rather than stored.
+    ///
+    /// Both surfaces, because they funnel through one <c>LiveSourceRules.Refuse</c> and a row one
+    /// port could save and the other refuses would make the ranges a suggestion. Refused rather
+    /// than saturated at the encoder: a camera configured at 25,000 metres would otherwise be
+    /// published, conformingly, at 19,000, and nothing downstream could tell that from a
+    /// measurement.
+    /// </summary>
+    [Fact]
+    public async Task A_fixed_cameras_position_round_trips_and_an_impossible_one_is_refused()
+    {
+        const string name = "mast/north";
+
+        var sensor = new StaticSensor(
+            Longitude: -1.826,
+            Latitude: 51.179,
+            AltitudeMetres: 143.5,
+            TrueBearing: 218.4,
+            Depression: -12.75,
+            HorizontalFov: 6.2,
+            VerticalFov: 3.5,
+            Classification: "SECRET");
+
+        var saved = await Saved(name, new SaveLiveSourceRequest(name, Url: null, Enabled: true, Forwards: null, StaticSensor: sensor));
+
+        Assert.Equal(sensor, saved.StaticSensor);
+
+        var read = await _client.GetFromJsonAsync<LiveSourceResponse>($"/api/live/sources/{name}");
+
+        Assert.NotNull(read);
+        Assert.Equal(sensor, read.Source.StaticSensor);
+
+        // The same row over gRPC, where the marking is optional so that absent and empty stay
+        // different answers.
+        var listed = await _grpc.ListLiveSourcesAsync(new Empty(), Metadata());
+        var row = Assert.Single(listed.Sources, source => source.Name == name);
+
+        Assert.NotNull(row.StaticSensor);
+        Assert.Equal(sensor.Latitude, row.StaticSensor.Latitude);
+        Assert.Equal(sensor.TrueBearing, row.StaticSensor.TrueBearing);
+        Assert.Equal("SECRET", row.StaticSensor.Classification);
+
+        // Every range refused is the ST 0601 item's own, so these are the values that have no
+        // encoding rather than values somebody thought were unlikely.
+        foreach (var impossible in new[]
+                 {
+                     sensor with { AltitudeMetres = 25_000 },
+                     sensor with { Latitude = 91 },
+                     sensor with { Longitude = 181 },
+                     sensor with { TrueBearing = 361 },
+                     sensor with { Depression = -181 },
+                     sensor with { HorizontalFov = 181 },
+                     sensor with { VerticalFov = -1 },
+                     sensor with { Classification = "COSMIC" },
+                 })
+        {
+            var refused = await Save("mast/south", new SaveLiveSourceRequest("mast/south", null, true, null, impossible));
+
+            Assert.Equal(HttpStatusCode.BadRequest, refused.StatusCode);
+        }
+
+        Assert.Equal(
+            HttpStatusCode.NotFound,
+            (await _client.GetAsync("/api/live/sources/mast/south")).StatusCode);
+
+        // Removing the configuration is sending the row back without it, the same way a forward is
+        // removed: the source is the aggregate.
+        var cleared = await Saved(name, new SaveLiveSourceRequest(name, Url: null, Enabled: true));
+
+        Assert.Null(cleared.StaticSensor);
+    }
+
     private Task<HttpResponseMessage> Save(string name, SaveLiveSourceRequest request)
         => _client.PutAsJsonAsync($"/api/live/sources/{name}", request);
 

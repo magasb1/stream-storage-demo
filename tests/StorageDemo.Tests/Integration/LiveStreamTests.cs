@@ -902,6 +902,102 @@ public sealed class LiveStreamTests : IAsyncLifetime
         Assert.Equal(Misb.Known.Classification, document.Metadata["Classification"]);
     }
 
+    /// <summary>
+    /// A fixed camera that sends no metadata of its own, configured with a position and a pointing,
+    /// through the real ingest: the stream reports metadata it never received, the route serves the
+    /// configured values decoded out of a conforming ST 0601 packet, and both halves of the
+    /// provenance say where the numbers came from.
+    ///
+    /// The whole feature end to end and on the real path. What it is really asserting is that a
+    /// packet this replica produced reached a consumer through the same seam an arriving one does:
+    /// the synthetic track was appended to the layout before the hub adopted it, the muxer wrote it
+    /// into the transport as a KLV stream, and the extractor read it back and decoded it.
+    /// </summary>
+    [Fact]
+    public async Task A_configured_fixed_camera_reports_metadata_it_never_sent()
+    {
+        Assert.SkipUnless(Srt.IsAvailable, NoLibsrt);
+        Assert.SkipUnless(HasSrt(), "This FFmpeg has no SRT. Run scripts/fetch-ffmpeg.sh.");
+
+        const string name = "mast/perimeter-north";
+
+        var sensor = new StaticSensor(
+            Longitude: -1.826,
+            Latitude: 51.179,
+            AltitudeMetres: 143.5,
+            TrueBearing: 218.4,
+            Depression: -12.75,
+            HorizontalFov: 6.2,
+            VerticalFov: 3.5,
+            Classification: "UNCLASSIFIED");
+
+        // Configured before the camera connects, which is the operator's own order and the one
+        // that matters: the metadata track is part of the layout, so it can only be added at a
+        // connection.
+        var saved = await _client.PutAsJsonAsync(
+            $"/api/live/sources/{name}",
+            new SaveLiveSourceRequest(name, Url: null, Enabled: true, Forwards: null, StaticSensor: sensor));
+
+        Assert.Equal(HttpStatusCode.OK, saved.StatusCode);
+
+        // Plain video, no metadata track anywhere in it - which is the whole situation: a mast
+        // camera has no platform, no INS and nothing to report.
+        Push(name);
+
+        LiveStream? stream = null;
+
+        Assert.True(
+            await WaitAsync(
+                async () => (stream = await Get(name)) is { HasKlv: true, KlvSynthesised: true, KlvAt: not null },
+                TimeSpan.FromSeconds(60)),
+            $"the stream never reported synthesised metadata: {stream}");
+
+        // The track is in the container the layout describes, not merely in this service's head.
+        Assert.Contains("klv", stream!.Layout, StringComparison.Ordinal);
+        Assert.Equal("UNCLASSIFIED", stream.Classification);
+
+        var response = await _client.GetAsync($"/api/live/klv/{name}");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var sample = await response.Content.ReadFromJsonAsync<KlvSample>();
+
+        Assert.NotNull(sample);
+
+        // Out of band, for a client that wants to say "configured position" rather than "reported
+        // position" without parsing anything.
+        Assert.True(sample.Synthesised);
+
+        // Stamped at the live edge on the stream's own clock, so it is carried synchronously like
+        // any other metadata rather than leaving a consumer to align it by tag 2 alone.
+        Assert.Equal(KlvAlignment.PresentationTimestamp, sample.Alignment);
+        Assert.NotNull(sample.ReferencePts);
+
+        Assert.NotNull(sample.Fields);
+
+        // In band, and the half that survives to a consumer that has never heard of this service.
+        Assert.Equal("SYNTHESISED STATIC SENSOR", sample.Fields.PlatformDesignation);
+
+        Assert.Equal(sensor.Latitude, sample.Fields.SensorLatitude!.Value, 1e-6);
+        Assert.Equal(sensor.Longitude, sample.Fields.SensorLongitude!.Value, 1e-6);
+        Assert.Equal(sensor.AltitudeMetres, sample.Fields.SensorTrueAltitude!.Value, 0.5);
+        Assert.Equal(sensor.HorizontalFov, sample.Fields.SensorHorizontalFov!.Value, 1e-2);
+        Assert.Equal(sensor.VerticalFov, sample.Fields.SensorVerticalFov!.Value, 1e-2);
+        Assert.Equal(sensor.Depression, sample.Fields.SensorRelativeElevation!.Value, 1e-6);
+
+        // The bearing a client's north arrow is drawn from, through the expression that composes
+        // tags 5 and 18 rather than off either one.
+        Assert.Equal(
+            sensor.TrueBearing,
+            SensorGeometry.SensorBearing(sample.Fields.PlatformHeading, sample.Fields.SensorRelativeAzimuth)!.Value,
+            1e-2);
+
+        // Nothing was invented. A frame centre needs a range or a terrain model this service does
+        // not have, and a guessed one is indistinguishable from a measured one.
+        Assert.Null(sample.Fields.FrameCenterLatitude);
+        Assert.Null(sample.Fields.FrameCenterLongitude);
+        Assert.Null(sample.Fields.SlantRange);
+    }
+
     private async Task<DocumentResponse?> Get(Guid id)
     {
         var documents = await _client.GetFromJsonAsync<List<DocumentResponse>>("/api/documents");

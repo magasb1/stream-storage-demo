@@ -208,3 +208,8 @@ Scaling to a thousand streams. The plan, the reasoning and the research behind e
 - [x] Rewrite the README's "About SRT" section and CONTEXT.md's "Claim"
 - [x] Drop the README's link to docs/design/server-side-stream-ingest.md, which was never in the
       repo. CONTEXT.md, the drawio and replica-failover.md carry what it would have said
+- [x] Synthesised ST 0601 for static cameras, carried in band on a synthetic track: a fixed camera
+      configured with a position, a pointing and a field of view is indistinguishable, to every
+      consumer, from one that reports its own telemetry. The seam is shared with VMTI, which is not
+      in this change. Per-viewer opt-in is a non-goal: a KLVA track on stream type 0x06 is what
+      every real FMV stream carries and players ignore it

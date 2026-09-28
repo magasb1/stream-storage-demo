@@ -272,6 +272,13 @@ public sealed class LiveStreamCoordinator(
                 return;
             }
 
+            // Read before the demultiplexer starts, because the layout is built from the first
+            // packet and the hub reads this when it adopts it. One store read per connection, on a
+            // store that says of itself it is read-heavy and rarely written. Without it a fixed
+            // camera configured while it was away would come back without its metadata track and
+            // the heartbeat would have nothing to do but declare it pending forever.
+            entry.Hub.Synthesise(Synthetic(await sources.GetAsync(name, CancellationToken.None)));
+
             var feed = await entry.TakeOverAsync(connectionId);
             var running = entry;
 
@@ -475,6 +482,11 @@ public sealed class LiveStreamCoordinator(
 
             return null;
         }
+
+        // The pulled twin of the read in AttachAsync, and for the same reason. A manual stream
+        // created straight through the endpoint has no configured row at all, which reads as
+        // nothing to synthesise.
+        entry.Hub.Synthesise(Synthetic(await sources.GetAsync(parsed, cancellationToken)));
 
         var feed = await entry.TakeOverAsync(Guid.NewGuid().ToString("N")[..8]);
         var running = entry;
@@ -1188,6 +1200,12 @@ public sealed class LiveStreamCoordinator(
 
         ReconcileForwards(entry, source);
 
+        if (await ReconcileMetadata(entry, source))
+        {
+            // The stream was ended to pick up a configuration change. Nothing left to describe.
+            return;
+        }
+
         await registry.UpsertAsync(
             Describe(entry, interrupted ? LiveStreamState.Interrupted : LiveStreamState.Live),
             cancellationToken);
@@ -1278,6 +1296,95 @@ public sealed class LiveStreamCoordinator(
     }
 
     /// <summary>
+    /// The synthetic tracks a configured row asks for on this stream's next layout.
+    ///
+    /// The rate is <see cref="StaticSensorPublisher"/>'s own constant rather than a number written
+    /// out here, because the two must not drift: a track whose declared rate is wrong resizes every
+    /// viewer's queue on the stream, and an undeclared one is worse still.
+    /// </summary>
+    private static IReadOnlyList<SyntheticTrack> Synthetic(LiveSource? source)
+        => source is { Enabled: true, StaticSensor: not null }
+            ? [new SyntheticTrack(SyntheticTrackRole.PlatformMetadata, StaticSensorPublisher.PacketsPerSecond)]
+            : [];
+
+    /// <summary>
+    /// Brings the metadata this replica synthesises for this stream into line with what was
+    /// configured for its name - the metadata twin of <see cref="ReconcileForwards"/>, on the same
+    /// once-per-stream-per-beat read of the same row.
+    ///
+    /// Three things have to agree: what is configured now, what the running layout carries, and
+    /// whether a publisher is putting packets on it. The first two can only be made to agree at a
+    /// connection, because the track is part of the layout and every consumer already attached
+    /// subscribed against the layout it joined on. So this reconciles the publisher freely, and
+    /// where the layout itself is wrong it says so or reconnects.
+    /// </summary>
+    /// <returns>True when the stream was ended to pick the change up, so the caller stops here.</returns>
+    private async Task<bool> ReconcileMetadata(LiveStreamEntry entry, LiveSource? source)
+    {
+        var sensor = source is { Enabled: true } ? source.StaticSensor : null;
+
+        // What the next layout should carry, whenever that is. Parking a source silences its
+        // synthesis the same way it silences its forwards.
+        entry.Hub.Synthesise(Synthetic(source));
+
+        var layout = entry.Hub.Layout;
+
+        // Precedence, and the one case where a mismatch is the right answer rather than something
+        // to reconcile. The sender declares KLV of its own, so no synthetic track was added and
+        // none should be: a camera that reports its own telemetry wins over what somebody typed
+        // about it. Deliberately decided on what the layout declares and not on whether packets
+        // are actually arriving on it - a timeout would make this depend on how long nothing had
+        // been seen for, which is a different and much worse question.
+        if (layout is { KlvIndex: >= 0, KlvIsSynthetic: false })
+        {
+            await entry.SynthesiseAsync(null);
+
+            return false;
+        }
+
+        var carried = layout is { KlvIsSynthetic: true };
+
+        // Published only onto a track that exists. Asked to publish onto one that does not, the
+        // publisher would simply find no index and tick away doing nothing, but saying it here is
+        // what keeps "is this stream carrying synthesised metadata" a single fact.
+        await entry.SynthesiseAsync(carried ? sensor : null);
+
+        if (layout is null || carried == (sensor is not null))
+        {
+            return false;
+        }
+
+        if (!entry.Manual || source is not { IsPull: true })
+        {
+            // Nothing here can reopen this connection. A pushed stream is the encoder's to
+            // reconnect, and dropping it to force that would be this service deciding a camera
+            // should stop sending; a manual stream whose row carries no URL is the same, since
+            // AdoptAsync would have nothing to pick the name up with and it would simply end.
+            //
+            // So the configuration is reported as not yet carried - LiveStream.KlvSynthesised
+            // beside LiveStream.HasKlv - rather than reported as live, which is the one answer that
+            // would be a lie. Debug rather than information because this is a standing state rather
+            // than an event, and the heartbeat visits it every two seconds for as long as it lasts.
+            logger.LogDebug(
+                "'{Name}' has sensor metadata configured that its layout does not carry; it will appear when the feed reconnects",
+                entry.Name);
+
+            return false;
+        }
+
+        // A pulled stream: this replica owns the connection, so it can reopen it, and the same
+        // mechanism a parked source uses is the one that does it. The stream ends here and
+        // AdoptAsync picks the name up again on a later beat, one connection later carrying the
+        // right layout - so this converges rather than repeating, because PullAsync tells the new
+        // hub what to synthesise before the demultiplexer starts.
+        _local.TryRemove(entry.Name, out _);
+
+        await EndAsync(entry, "sensor-changed", "its sensor metadata configuration changed");
+
+        return true;
+    }
+
+    /// <summary>
     /// Whether an interrupted stream has waited long enough. A manual stream that has never
     /// received anything is given the same window from when it was created, so one created a
     /// moment before its sender starts is not swept away in between.
@@ -1358,7 +1465,8 @@ public sealed class LiveStreamCoordinator(
             health?.Link,
             entry.Viewers,
             entry.Detection.Model,
-            entry.Detection.Labels.Count == 0 ? null : entry.Detection.Labels);
+            entry.Detection.Labels.Count == 0 ? null : entry.Detection.Labels,
+            KlvSynthesised: entry.Hub.Layout is { KlvIsSynthetic: true });
     }
 
     /// <param name="forOutput">

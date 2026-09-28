@@ -113,6 +113,11 @@ public sealed class KlvExtractor(StreamHub hub, ILogger logger)
 
         var timeBase = layout.TimeBase(layout.KlvIndex);
 
+        // Read from the layout rather than from the packet, because it is a fact about the track:
+        // this index either is one this service appended or is one the sender declared, and the two
+        // never both happen - a stream that declares KLV of its own gets no synthetic track at all.
+        var synthesised = layout.KlvIsSynthetic;
+
         await foreach (var packet in subscription.Packets.ReadAllAsync(cancellationToken))
         {
             if (!ReferenceEquals(hub.Layout, layout))
@@ -135,7 +140,8 @@ public sealed class KlvExtractor(StreamHub hub, ILogger logger)
                 synchronous ? KlvAlignment.PresentationTimestamp : KlvAlignment.Timestamp,
                 DateTimeOffset.UtcNow,
                 fields,
-                packet.Data);
+                packet.Data,
+                synthesised);
 
             lock (_gate)
             {

@@ -31,6 +31,26 @@ which is what keeps it close to free at a thousand streams. The recorder already
 because it subscribes to every index, so recordings were complete before this existed; the
 extractor is for live access.
 
+**Synthetic track.** A track this replica produces rather than receives, appended to a stream's
+layout after everything its sender declared, so every index the sender declared keeps its number.
+Its packets go in through the hub like any other, which is what makes them reach viewers, forwards,
+recordings, snapshots and the KLV extractor through one path. It declares the rate it will actually
+be published at, because an undeclared one falls through to the assumption and silently resizes
+every viewer's queue on that stream. It carries a role, so the metadata index can only ever point at
+the platform-metadata track.
+
+**Static sensor.** Where a fixed camera is and where it looks, configured on its source rather than
+reported by it: position, altitude, true bearing, depression and field of view, with an optional
+marking. A mast or perimeter camera has no platform and no INS, so all of that is configuration and
+none of it changes, and the service synthesises a valid ST 0601 Local Set from it onto a synthetic
+track. A stream that sends KLV of its own gets none: the camera reporting for itself always wins,
+and the transition is a layout change a reconnect makes visible rather than a quiet swap.
+
+**Synthesised metadata.** A KLV packet this service built from a static sensor rather than received.
+Marked in band as ST 0601 tag 10, Platform Designation, so it survives to any conforming consumer
+downstream, and out of band on the KLV sample and the stream, so a client can say "configured
+position" rather than "reported position" without parsing a string.
+
 **Detection.** What a detector found in one frame: an identifier, a box in pixels, and what it
 thinks the thing is. Detections leave as a MISB ST 0903.4 VMTI local set, one VTarget pack each, on
 the same timestamp as the ST 0601 metadata for that frame, so a STANAG 4609 consumer reads them
