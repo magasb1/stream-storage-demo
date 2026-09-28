@@ -194,11 +194,13 @@ public sealed unsafe class StreamLayoutTests
     /// <c>StreamHub.PublishAtLiveEdge</c> deliberately leaves <c>StreamHub.Packets</c> alone, so an
     /// observation taken from those counters is arrivals only and omits the synthetic track by
     /// construction. A 25 fps stream with a 1 Hz track therefore observes 25 against a declared 26.
-    /// Compared bare, the observation would lose and the declaration would stand - correct here by
-    /// luck - but the moment the sender is also sending a little fast the bare observation wins and
-    /// sizes the queue 3.8% short of a figure this service computed itself and knows to be right.
-    /// Adding the synthetic rate back is what makes the two halves comparable, and 26 is the proof
-    /// it was added.
+    ///
+    /// The 26 below is necessary but not sufficient, and saying so is the point of this note: at
+    /// 25 observed against 26 declared, max(26, 25 + 1) and max(26, 25) are both 26, so that
+    /// assertion alone passes with the addition deleted. Verified by mutation rather than assumed.
+    /// The case that discriminates is one where the observation wins, so the addend is inside the
+    /// figure that is returned - 30 arriving reads 31, not 30 - and it is asserted below beside
+    /// the invariance it exists to protect.
     /// </summary>
     [Fact]
     public void A_synthetic_tracks_own_rate_is_added_back_to_what_was_observed()
@@ -214,9 +216,15 @@ public sealed unsafe class StreamLayoutTests
         Assert.Equal(26, declared.PacketsPerSecond);
         Assert.Equal(1, declared.SyntheticPacketsPerSecond);
 
-        // The assertion that pins the whole composition: 25 arriving plus the 1 this service
-        // publishes is 26, which is what was declared, so nothing moves.
+        // What the change must not do: 25 arriving plus the 1 this service publishes is 26, which
+        // is what was declared, so nothing moves.
         Assert.Equal(26, declared.EffectivePacketsPerSecond(observedArrivals: 25));
+
+        // And the assertion that actually pins the composition, because it is the one that fails
+        // when the synthetic rate is not added: 30 arriving is 31, not 30. Above the declaration,
+        // so the addend survives into the answer instead of being masked by the maximum.
+        Assert.Equal(31, declared.EffectivePacketsPerSecond(observedArrivals: 30));
+
         Assert.Equal(104, declared.QueueDepth(declared.EffectivePacketsPerSecond(25), seconds: 4, ceiling: 2_000));
         Assert.Equal(104, declared.QueueDepth(declared.PacketsPerSecond, seconds: 4, ceiling: 2_000));
 
@@ -235,6 +243,11 @@ public sealed unsafe class StreamLayoutTests
         Assert.Equal(0, bare.SyntheticPacketsPerSecond);
         Assert.Equal(0, reporting.SyntheticPacketsPerSecond);
         Assert.Equal(25, bare.EffectivePacketsPerSecond(observedArrivals: 25));
+
+        // The same 30 arrivals against the same declaration, with nothing to add back, reads 30 -
+        // which is what makes the 31 above a statement about the addend rather than about the
+        // arithmetic around it.
+        Assert.Equal(30, bare.EffectivePacketsPerSecond(observedArrivals: 30));
     }
 
     /// <summary>
@@ -274,16 +287,64 @@ public sealed unsafe class StreamLayoutTests
     }
 
     /// <summary>
+    /// An honest stream's measured rate straddles its declaration, which is why
+    /// <c>LiveStreamCoordinator.MisdeclaredBeyond</c> exists and why it is a band rather than a
+    /// strict comparison.
+    ///
+    /// This repository's own pinned case is the demonstration. 25 fps video beside 48 kHz AAC in
+    /// 1024-sample frames declares 71.875 packets a second - 25 and 46.875 - and neither is a
+    /// whole number of packets in a two-second beat: the stream delivers 50 video packets and
+    /// either 93 or 94 audio ones, so the window reads 71.5 or 72. The high one is above the
+    /// declaration through no fault of the sender, and about half of all windows are the high one.
+    ///
+    /// Compared strictly, that stream is called a misdeclarer. The band is what stops it; the
+    /// figures here are the premise the band rests on, and they are pinned so that a change to the
+    /// rate arithmetic cannot quietly move them out from under it. The band itself is the
+    /// coordinator's, because only the log line reads it - a queue is sized from the larger of the
+    /// two either way, which is why 72 is still what comes back below.
+    /// </summary>
+    [Fact]
+    public void An_honest_streams_measured_rate_straddles_its_declaration()
+    {
+        Assert.SkipUnless(Ffmpeg.IsPresent, "No FFmpeg. Run scripts/fetch-ffmpeg.sh.");
+
+        FfmpegLibrary.EnsureLoaded();
+
+        using var honest = Layout(videoFrameRate: 25, sampleRate: 48_000, frameSize: 1_024);
+
+        Assert.Equal(71.875, honest.PacketsPerSecond, 3);
+
+        // Both windows an honest sender produces, and the high one is above the declaration.
+        Assert.Equal(71.875, honest.EffectivePacketsPerSecond(observedArrivals: 71.5));
+        Assert.Equal(72, honest.EffectivePacketsPerSecond(observedArrivals: 72));
+
+        // And the overshoot is a fraction of a percent, nowhere near the 25% band and further
+        // still from the fifty times the case in issue #26 is about.
+        Assert.True(
+            72 < honest.PacketsPerSecond * 1.25,
+            "an honest stream's high window reached the band that marks a sender as misdeclaring");
+    }
+
+    /// <summary>
     /// What this does to a viewer's deepest rollback, which is the other consumer of the rate and
     /// the one with a measured figure already pinned to it.
     ///
-    /// Two regions, and the boundary is arithmetic rather than taste. <c>Fitting</c>'s room is
-    /// <c>ViewerQueuePackets / R - ViewerQueueSeconds</c>, and <c>ResolvePreroll</c> then clamps it
-    /// to what the rolling buffer actually holds, which is <c>BufferWindowSeconds</c> = 30. Room
-    /// exceeds 30 whenever R is below 2000/34 = 58.8, so below that the buffer binds and Fitting is
-    /// moot: the headline 76 and 72.9 seconds pinned above are both already in that region and both
-    /// already undeliverable. Above it Fitting binds, and there this change moves the figure toward
-    /// the truth rather than away from it.
+    /// Two regions. <c>Fitting</c>'s room is <c>ViewerQueuePackets / R - ViewerQueueSeconds</c>,
+    /// and <c>ResolvePreroll</c> then clamps it to what the rolling buffer actually holds. Room
+    /// exceeds thirty seconds whenever R is below 2000/34 = 58.8, so around and below that the
+    /// buffer binds and Fitting is moot: the headline 76 and 72.9 seconds pinned above are both
+    /// well inside that region and both already undeliverable. Above it Fitting binds, and there
+    /// this change moves the figure toward the truth rather than away from it.
+    ///
+    /// 58.8 is a floor on the boundary rather than the boundary, and the difference is the
+    /// buffer's own rule: <c>RollingBuffer.Evict</c> treats <c>BufferWindowSeconds</c> as a floor
+    /// and keeps the last segment however long it runs, so <c>HeldSeconds</c> sits in
+    /// [30, 30 + one keyframe interval). A sender with a ten-second GOP holds about forty, and its
+    /// boundary is 2000/44 = 45.5 - so between 45.5 and 58.8 a coarse-GOP stream's delivered
+    /// rollback does move. That movement is a correction, not a regression: the figure it moves
+    /// toward is what the stream is actually sending. The assertions below use the configured
+    /// window, which is the floor, so they are the conservative end of the claim rather than all
+    /// of it.
     /// </summary>
     [Fact]
     public void A_rollback_is_unchanged_below_the_rate_at_which_fitting_binds()
@@ -294,7 +355,8 @@ public sealed unsafe class StreamLayoutTests
 
         var options = new LiveOptions();
 
-        // The boundary itself, from the options rather than from the prose above.
+        // The boundary at the buffer's floor, from the options rather than from the prose above. A
+        // stream whose keyframe interval makes HeldSeconds larger has a lower one; see the note.
         Assert.Equal(58.8, options.ViewerQueuePackets / (options.BufferWindowSeconds + options.ViewerQueueSeconds), 1);
 
         using var bare = Layout(videoFrameRate: 25);

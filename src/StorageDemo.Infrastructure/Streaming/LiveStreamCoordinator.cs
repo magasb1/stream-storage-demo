@@ -44,6 +44,29 @@ public sealed class LiveStreamCoordinator(
     private readonly ConcurrentDictionary<string, LiveStreamEntry> _local = new(StringComparer.Ordinal);
 
     /// <summary>
+    /// How far past its declaration a stream has to be measured before it is said to be
+    /// misdeclaring. Only the log line reads it; the queue is sized from the larger of the two
+    /// whatever this says.
+    ///
+    /// It exists because an observation is a count over a wall-clock window, so an honest stream's
+    /// measured rate straddles its declaration and lands above it about half the time. This
+    /// repository's own pinned case is the demonstration: 25 fps video beside 48 kHz AAC in
+    /// 1024-sample frames declares 71.875 packets a second, and over a two-second beat the stream
+    /// delivers 50 video packets and either 93 or 94 audio ones - 71.5 or 72. Strictly greater,
+    /// 72 accuses it. Because <see cref="Effective"/> runs on every viewer attach and every
+    /// rollback resolved, the once-per-connection flag would be spent on the first high window,
+    /// which for any stream with viewers is a near certainty: a line reading as an accusation,
+    /// once per connection, for most healthy streams, at a thousand streams a pod. That teaches an
+    /// operator to ignore the one line that matters.
+    ///
+    /// A quarter, because the case this exists for is fifty times the declaration and the band
+    /// costs it nothing; anything inside a quarter is a queue a little deeper or shallower in
+    /// seconds than asked for, which is what <see cref="StreamLayout.PacketsPerSecond"/> already
+    /// says it tolerates.
+    /// </summary>
+    private const double MisdeclaredBeyond = 1.25;
+
+    /// <summary>
     /// The registry as it looked at the last heartbeat, which is the only form the handshake can
     /// read. See <see cref="AdmitPublisher"/>.
     /// </summary>
@@ -706,7 +729,9 @@ public sealed class LiveStreamCoordinator(
     /// stream that has not been running that long has always answered.
     /// </summary>
     public double ResolvePreroll(string name, double seconds)
-        => _local.TryGetValue(name, out var entry) ? entry.Hub.ResolvePreroll(Fitting(entry, seconds)) : 0;
+        => _local.TryGetValue(name, out var entry) && entry.Hub.Layout is { } layout
+            ? entry.Hub.ResolvePreroll(Fitting(entry, seconds, Effective(entry, layout)))
+            : 0;
 
     /// <summary>
     /// The rollback to actually ask the buffer for: what the viewer asked for, cut to what its queue
@@ -730,14 +755,22 @@ public sealed class LiveStreamCoordinator(
     /// than the whole live slack can still land outside on the second answer, which costs that
     /// viewer its rollback and nothing else - exactly what happened to every viewer before this.
     /// </summary>
-    private double Fitting(LiveStreamEntry entry, double asked)
+    /// <param name="packetsPerSecond">
+    /// The rate to fit against, from <see cref="Effective"/>. Passed in rather than resolved here
+    /// so that <see cref="Serve"/> fits the rollback and sizes the queue from one reading of it.
+    /// The observation behind it is rewritten every beat, and a rise landing between two reads
+    /// would seed a queue from the lower figure with a rollback fitted to the higher - which does
+    /// not cost the viewer the overshoot but the whole rollback, because every seeded packet is
+    /// offered as not starting a segment and the first overflow discards the lot.
+    /// </param>
+    private double Fitting(LiveStreamEntry entry, double asked, double packetsPerSecond)
     {
-        if (asked <= 0 || entry.Hub.Layout is not { } layout)
+        if (asked <= 0)
         {
             return asked;
         }
 
-        var room = (_options.ViewerQueuePackets / Effective(entry, layout)) - _options.ViewerQueueSeconds;
+        var room = (_options.ViewerQueuePackets / packetsPerSecond) - _options.ViewerQueueSeconds;
 
         if (room <= 0)
         {
@@ -772,14 +805,18 @@ public sealed class LiveStreamCoordinator(
         // is a diagnosis rather than an accusation - but this runs for every viewer that attaches
         // and every rollback resolved, so a line per occurrence would be noise on the busiest path
         // here. See LiveStreamEntry.ReportsMisdeclaredRate for where the once is kept.
-        if (effective > layout.PacketsPerSecond && entry.ReportsMisdeclaredRate())
+        if (effective > layout.PacketsPerSecond * MisdeclaredBeyond && entry.ReportsMisdeclaredRate())
         {
+            // The sender's own figure, not the effective rate: the effective rate includes the
+            // synthetic track this service publishes, so a stream declaring 1 and sending 50
+            // beside a 1 Hz track would be reported as sending 51, and the number in an
+            // accusation has to be one the operator can check against the camera.
             logger.LogInformation(
                 "Stream '{Name}' declares {Declared} packets a second and is sending {Observed}; "
                 + "its viewers' queues are sized from what arrives",
                 entry.Name,
                 Math.Round(layout.PacketsPerSecond, 2),
-                Math.Round(effective, 2));
+                Math.Round(entry.ObservedPacketsPerSecond, 2));
         }
 
         return effective;
@@ -839,10 +876,15 @@ public sealed class LiveStreamCoordinator(
             return continueFromSeconds;
         }
 
+        // Read once and used twice, which the two uses require of each other: the rollback below
+        // is fitted to this rate and the queue is sized from it, and the observation behind it is
+        // rewritten every beat. Fitting says what a rise landing between two reads would cost.
+        var packetsPerSecond = Effective(entry, layout);
+
         // The same figure the header promised this viewer, and for the reason Fitting gives: a
         // rollback bigger than the queue costs the viewer all of it rather than the part that did
         // not fit.
-        var preroll = Fitting(entry, request.Preroll);
+        var preroll = Fitting(entry, request.Preroll, packetsPerSecond);
 
         // The rollback is part of the depth, because Subscribe fills the queue from the buffer
         // before a live packet ever reaches it: sized for the live slack alone, a viewer asking to
@@ -851,7 +893,7 @@ public sealed class LiveStreamCoordinator(
         var queued = _options.ViewerQueueSeconds + entry.Hub.ResolvePreroll(preroll);
 
         using var subscription = entry.Hub.Subscribe(
-            layout.QueueDepth(Effective(entry, layout), queued, _options.ViewerQueuePackets),
+            layout.QueueDepth(packetsPerSecond, queued, _options.ViewerQueuePackets),
             OverflowPolicy.SkipToLive,
             streamIndexes: [],
             preroll);

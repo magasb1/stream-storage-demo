@@ -61,9 +61,9 @@ public sealed class LiveStreamEntryTests
     }
 
     /// <summary>
-    /// What is actually arriving, in packets a second, taken over the interval the meter's own
-    /// reading spans. Issue #26: a declared rate that is too low cannot be detected from the
-    /// declaration, so the traffic has to be measured.
+    /// What is actually arriving, in packets a second, measured over the windows between readings.
+    /// Issue #26: a declared rate that is too low cannot be detected from the declaration, so the
+    /// traffic has to be measured.
     /// </summary>
     [Fact]
     public async Task What_is_arriving_is_measured_over_the_window_between_readings()
@@ -81,15 +81,115 @@ public sealed class LiveStreamEntryTests
         time.Advance(TimeSpan.FromSeconds(2));
         entry.TakeFeed(0, 0);
 
-        // Fifty packets over two seconds is twenty-five a second, whatever the sender declared.
+        // One window is not yet an answer: a rate has to survive two of them, so this still reads
+        // as unmeasured and the declaration still stands. See ObservedPacketsPerSecond.
+        Assert.Equal(0, entry.ObservedPacketsPerSecond);
+
+        Publish(hub, packets: 50, bytes: 1);
+
+        time.Advance(TimeSpan.FromSeconds(2));
+        entry.TakeFeed(0, 0);
+
+        // Fifty packets over two seconds, twice, is twenty-five a second whatever was declared.
         Assert.Equal(25, entry.ObservedPacketsPerSecond);
 
-        // A feed that has stopped reads zero once a window passes with nothing arriving, which is
-        // how an interrupted stream falls back to its declaration without being asked.
+        // A feed that has stopped reads zero on the first empty window, because the smaller of the
+        // two is what is kept - which is how an interrupted stream falls back to its declaration
+        // without being asked, and without waiting a second beat to do it.
         time.Advance(TimeSpan.FromSeconds(2));
         entry.TakeFeed(0, 0);
 
         Assert.Equal(0, entry.ObservedPacketsPerSecond);
+    }
+
+    /// <summary>
+    /// A burst has to persist across two windows before a viewer's queue is sized from it.
+    ///
+    /// The damping matters more than it looks, because a depth is fixed at <c>Subscribe</c> and
+    /// never revised: one inflated sample is not a bad moment but that viewer's whole session,
+    /// which can be hours. A window counts arrivals against wall-clock time, so a retransmission
+    /// burst inflates it by roughly (window + latency) / window - five times at the 8000 ms
+    /// latency ceiling against a two-second beat - and an observation of 200 on a genuinely 25 fps
+    /// stream would give 800 packets, thirty-two seconds of real media where ViewerQueueSeconds
+    /// promised four.
+    /// </summary>
+    [Fact]
+    public async Task A_burst_in_one_window_does_not_size_a_queue()
+    {
+        var time = new SteppedTime();
+
+        await using var entry = Entry(out var hub, time);
+
+        // Two honest windows at twenty-five a second, so there is a settled figure to disturb.
+        for (var window = 0; window < 2; window++)
+        {
+            Publish(hub, packets: 50, bytes: 1);
+            time.Advance(TimeSpan.FromSeconds(2));
+            entry.TakeFeed(0, 0);
+        }
+
+        Assert.Equal(25, entry.ObservedPacketsPerSecond);
+
+        // A single window at eight times the rate - a retransmission burst arriving at once.
+        Publish(hub, packets: 400, bytes: 1);
+        time.Advance(TimeSpan.FromSeconds(2));
+        entry.TakeFeed(0, 0);
+
+        // Unchanged, rather than the 200 the burst window alone would have said and the 800-packet
+        // queue that would have followed it for the whole of a viewer's session.
+        Assert.Equal(25, entry.ObservedPacketsPerSecond);
+
+        // And a rise that is real is picked up on the window after, one beat late and in the
+        // direction that under-sizes rather than over-sizes while it waits.
+        Publish(hub, packets: 400, bytes: 1);
+        time.Advance(TimeSpan.FromSeconds(2));
+        entry.TakeFeed(0, 0);
+
+        Assert.Equal(200, entry.ObservedPacketsPerSecond);
+    }
+
+    /// <summary>
+    /// A new connection is not measured by the one it replaced.
+    ///
+    /// Left standing, the observation outlives the encoder session that produced it: a camera
+    /// reconfigured from 50 fps to a genuine 1 fps time-lapse reconnects, still reads 50, and is
+    /// accused of misdeclaring on its first beat - by the same per-connection flag that was just
+    /// reset to let a new session be judged on its own traffic. The window mark moves with it too,
+    /// because one left open across the outage spans dead air and reads low.
+    /// </summary>
+    [Fact]
+    public async Task A_reconnect_is_not_measured_by_the_connection_it_replaced()
+    {
+        var time = new SteppedTime();
+
+        await using var entry = Entry(out var hub, time);
+
+        for (var window = 0; window < 2; window++)
+        {
+            Publish(hub, packets: 100, bytes: 1);
+            time.Advance(TimeSpan.FromSeconds(2));
+            entry.TakeFeed(0, 0);
+        }
+
+        Assert.Equal(50, entry.ObservedPacketsPerSecond);
+
+        // The feed goes away and a new encoder takes the name.
+        await entry.TakeOverAsync("second-connection");
+
+        // Not the 50 the old connection was sending: a connection nothing has measured falls back
+        // to the declaration, which is what ObservedPacketsPerSecond says zero means.
+        Assert.Equal(0, entry.ObservedPacketsPerSecond);
+
+        // And the new session is measured from its own mark rather than across the outage. Two
+        // windows of two packets a second, which is what the reconfigured camera is now sending.
+        for (var window = 0; window < 2; window++)
+        {
+            Publish(hub, packets: 4, bytes: 1);
+            time.Advance(TimeSpan.FromSeconds(2));
+            entry.TakeFeed(0, 0);
+        }
+
+        Assert.Equal(2, entry.ObservedPacketsPerSecond);
     }
 
     /// <summary>
@@ -107,24 +207,30 @@ public sealed class LiveStreamEntryTests
 
         await using var entry = Entry(out var hub, time);
 
-        Publish(hub, packets: 50, bytes: 1);
+        // Two windows at fifty a second, which settles the figure and - because the smaller of the
+        // last two is what is kept - leaves room below it for the window under test to show.
+        for (var window = 0; window < 2; window++)
+        {
+            Publish(hub, packets: 100, bytes: 1);
+            time.Advance(TimeSpan.FromSeconds(2));
+            entry.TakeFeed(0, 0);
+        }
 
-        time.Advance(TimeSpan.FromSeconds(2));
-        entry.TakeFeed(0, 0);
+        Assert.Equal(50, entry.ObservedPacketsPerSecond);
 
-        Assert.Equal(25, entry.ObservedPacketsPerSecond);
-
+        // A claim or a manual creation describing the stream a hundredth of a second after a beat.
         Publish(hub, packets: 5, bytes: 1);
 
         time.Advance(TimeSpan.FromMilliseconds(10));
         entry.TakeFeed(0, 0);
 
         // Unchanged, rather than the five hundred a second the short interval would have said.
-        Assert.Equal(25, entry.ObservedPacketsPerSecond);
+        Assert.Equal(50, entry.ObservedPacketsPerSecond);
 
         // And nothing was lost by skipping it: the window carries on from where it was, so the
         // five packets above are counted in the next reading rather than dropped. Fifty-five over
-        // two and a bit seconds, not the fifty the meter's own interval would have differenced.
+        // two seconds is 27.5, not the 25 the meter's own interval would have differenced - which
+        // is the whole reason this keeps a mark of its own.
         time.Advance(TimeSpan.FromSeconds(2) - TimeSpan.FromMilliseconds(10));
         Publish(hub, packets: 50, bytes: 1);
         entry.TakeFeed(0, 0);
@@ -175,19 +281,25 @@ public sealed class LiveStreamEntryTests
         // A frame a second declared, video and metadata together.
         Assert.Equal(2, layout.PacketsPerSecond);
 
-        // Two seconds of fifty a second arriving, and the two synthetic sets that go with it.
-        for (var index = 0; index < 100; index++)
+        // Two beats of fifty a second arriving, with the synthetic sets that go with them. Two,
+        // because a rate has to survive two windows before a queue is sized from it.
+        var pts = 0;
+
+        for (var window = 0; window < 2; window++)
         {
-            hub.Publish(new MediaPacket(0, new byte[16], index, index, 1, IsKeyframe: index % 25 == 0), index);
+            for (var index = 0; index < 100; index++, pts++)
+            {
+                hub.Publish(new MediaPacket(0, new byte[16], pts, pts, 1, IsKeyframe: pts % 25 == 0), pts);
+            }
+
+            Assert.True(hub.PublishAtLiveEdge(SyntheticTrackRole.PlatformMetadata, new byte[32]));
+            Assert.True(hub.PublishAtLiveEdge(SyntheticTrackRole.PlatformMetadata, new byte[32]));
+
+            time.Advance(TimeSpan.FromSeconds(2));
+            entry.TakeFeed(0, 0);
         }
 
-        Assert.True(hub.PublishAtLiveEdge(SyntheticTrackRole.PlatformMetadata, new byte[32]));
-        Assert.True(hub.PublishAtLiveEdge(SyntheticTrackRole.PlatformMetadata, new byte[32]));
-
-        time.Advance(TimeSpan.FromSeconds(2));
-        entry.TakeFeed(0, 0);
-
-        // Arrivals only: the two sets published above moved nothing here, by the design that keeps
+        // Arrivals only: the four sets published above moved nothing here, by the design that keeps
         // a locally produced packet from holding a dead camera's stream open.
         Assert.Equal(50, entry.ObservedPacketsPerSecond);
 

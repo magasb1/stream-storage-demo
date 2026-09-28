@@ -240,15 +240,18 @@ public sealed class LiveStreamEntry : IAsyncDisposable
     /// </summary>
     private static readonly TimeSpan ShortestSample = TimeSpan.FromSeconds(1);
 
-    /// <summary>The hub's packet total when the rate below was last taken, with its timestamp.</summary>
+    /// <summary>The hub's packet total when the window below opened, with its timestamp.</summary>
     private long _sampledPackets;
     private long _sampledAt;
+
+    /// <summary>The most recent window's own rate, which is half of what the property reports.</summary>
+    private double _lastWindow;
 
     private double _observedPacketsPerSecond;
 
     /// <summary>
-    /// What has actually been arriving, in packets a second, over the last window of at least
-    /// <see cref="ShortestSample"/>; zero before the first window closes.
+    /// What has actually been arriving, in packets a second: the smaller of the last two windows
+    /// of at least <see cref="ShortestSample"/>, and zero until two of them have closed.
     ///
     /// Arrivals only, and that is the part that has to be carried by whoever reads it.
     /// <see cref="StreamHub.PublishAtLiveEdge"/> does not touch <see cref="StreamHub.Packets"/> -
@@ -257,10 +260,29 @@ public sealed class LiveStreamEntry : IAsyncDisposable
     /// <see cref="StreamLayout.SyntheticPacketsPerSecond"/> is what adds them back, and
     /// <c>LiveStreamCoordinator</c>'s effective rate is where the two are put together.
     ///
-    /// Zero rather than null before the first sample, and zero again on a stream whose feed has
-    /// stopped, because the only consumer takes the larger of this and the declaration: a stream
-    /// that has not been measured yet, or is no longer arriving, falls back to what the sender
-    /// said without any of the three having to ask which case it is in.
+    /// The smaller of two windows rather than the latest, because a queue sized from this is fixed
+    /// at <see cref="StreamHub.Subscribe"/> and never resized: one bad sample is not a bad moment,
+    /// it is that viewer's whole session, which can be hours. A window is a count of arrivals over
+    /// wall-clock time, so a burst inflates it by roughly (window + latency) / window - at the
+    /// 8000 ms latency ceiling against a two-second beat, five times - and an observation of 200
+    /// on a genuinely 25 fps stream gives 800 packets, thirty-two seconds of real media where
+    /// <see cref="LiveOptions.ViewerQueueSeconds"/> promised four. Requiring a rise to survive two
+    /// windows costs one beat of lag on a genuine one, self-healing and in the direction that
+    /// under-sizes rather than over-sizes; a burst that is only a burst never reaches a viewer at
+    /// all.
+    ///
+    /// Zero rather than null before the first two windows, and zero again on a stream whose feed
+    /// has stopped, because the only consumer takes the larger of this and the declaration: a
+    /// stream that has not been measured yet, or is no longer arriving, falls back to what the
+    /// sender said without any of them having to ask which case it is in.
+    ///
+    /// It freezes where a beat returns before it describes the stream - <c>ReconcileMetadata</c>
+    /// ending it to pick up a configuration change, or the source store throwing - because
+    /// <see cref="TakeFeed"/> is the only thing that moves it and those paths never reach it. The
+    /// last figure then stands until a beat completes again, which is bounded by
+    /// <see cref="LiveOptions.ViewerQueuePackets"/> at worst and self-corrects on the next whole
+    /// beat. Worth knowing rather than worth guarding: the same paths already leave the meter's
+    /// own interval unreported.
     /// </summary>
     public double ObservedPacketsPerSecond => Volatile.Read(ref _observedPacketsPerSecond);
 
@@ -311,12 +333,26 @@ public sealed class LiveStreamEntry : IAsyncDisposable
             // second of packets over an interval this would have called a whole one - a rate about
             // a tenth low, on the one figure that exists because a low rate cannot be detected.
             // Keeping the window's own start here means the sample is exact whoever else called.
+            //
+            // Hub.Packets is read outside the hub's own lock, above, and that is safe here by an
+            // argument of its own rather than the one made about Bytes and Parts elsewhere: both
+            // sides of every difference come from the same read, so a value that was stale when it
+            // was taken is subtracted from the next reading of the same counter and the error
+            // cancels rather than accumulating. It is worth saying now that the figure sizes a
+            // queue rather than only feeding a meter, where a slow drift would have been harmless.
             var elapsed = _time.GetElapsedTime(_sampledAt);
 
             if (elapsed >= ShortestSample)
             {
-                Volatile.Write(ref _observedPacketsPerSecond, (packets - _sampledPackets) / elapsed.TotalSeconds);
+                var window = (packets - _sampledPackets) / elapsed.TotalSeconds;
 
+                // The smaller of this window and the one before it. See ObservedPacketsPerSecond
+                // for why a rise has to survive two of them; the first window after a reset sees
+                // _lastWindow at zero and so reports zero, which is the same "not yet measured"
+                // answer a stream that has never been sampled gives.
+                Volatile.Write(ref _observedPacketsPerSecond, Math.Min(window, _lastWindow));
+
+                _lastWindow = window;
                 _sampledPackets = packets;
                 _sampledAt = _time.GetTimestamp();
             }
@@ -350,6 +386,21 @@ public sealed class LiveStreamEntry : IAsyncDisposable
             // same one truthfully, so it gets its own chance to be reported. See
             // ReportsMisdeclaredRate.
             Interlocked.Exchange(ref _misdeclarationReported, 0);
+
+            // And the measurement goes with it, which is the half that is easy to forget. Left
+            // standing, the new connection inherits the old one's rate: a camera reconfigured from
+            // 50 fps to a genuine 1 fps time-lapse reconnects, still reads 50, and is accused of
+            // misdeclaring on its first beat - by the flag just reset above, which is what makes
+            // the two belong in one block. The mark moves with it, because a window left open
+            // across the outage spans dead air and reads low. Clearing both puts a new session on
+            // the "not yet sampled, so fall back to the declaration" path that
+            // ObservedPacketsPerSecond documents, which is where a connection nothing has measured
+            // belongs.
+            Volatile.Write(ref _observedPacketsPerSecond, 0);
+
+            _lastWindow = 0;
+            _sampledPackets = Hub.Packets;
+            _sampledAt = _time.GetTimestamp();
         }
 
         if (previous is not null)

@@ -394,13 +394,29 @@ public sealed unsafe class StreamLayout : IDisposable
     /// queue shallower in seconds than asked for, bounded by the packet ceiling - rather than
     /// gaining a new one out of a change aimed at the opposite case.
     ///
-    /// Not held to <see cref="MaxPacketsPerSecond"/>, which a declaration is, because the two are
-    /// not the same kind of statement. That ceiling exists because a claim is free: a sender types
-    /// 10000/1 and pins every one of its viewers to the packet ceiling, and so to a fraction of a
-    /// second of queue, at no cost to itself. An observation is traffic that actually arrived, and
-    /// a stream genuinely sending two thousand packets a second genuinely does fit under a second
-    /// of them in <see cref="LiveOptions.ViewerQueuePackets"/>. The memory is bounded by that
-    /// ceiling either way, so the worst a flood can do here is tell the truth about itself.
+    /// Not held to <see cref="MaxPacketsPerSecond"/>, which a declaration is, and at the shipped
+    /// options that is not a judgement call but arithmetic: the cap is unreachable. A queue is
+    /// clamped to <see cref="LiveOptions.ViewerQueuePackets"/> = 2000, and
+    /// <see cref="LiveOptions.ViewerQueueSeconds"/> = 4 reaches it at any rate from 500 a second
+    /// up, which is below the cap of 1000 - so from 500 upward the ceiling already binds and the
+    /// queue is 2000 packets whether this reads 500 or a million. On the other consumer the rate
+    /// is a divisor and the room is already zero at 500. Capping would change no production
+    /// number, and the largest queue a flood can provoke is exactly the one an honest viewer
+    /// asking for a full rollback is already given.
+    ///
+    /// That rests on an inequality worth stating, because it is a deployment's to break:
+    /// <c>ViewerQueueSeconds * MaxPacketsPerSecond &gt;= ViewerQueuePackets</c>, which is
+    /// 4000 >= 2000 today. ViewerQueueSeconds ranges down to 0.25, and below 2 the cap would start
+    /// to bind before the packet ceiling does - at which point an uncapped observation would be
+    /// doing something the cap was written to prevent, and this decision would need taking again.
+    ///
+    /// What <see cref="LiveOptions.ViewerQueueSeconds"/> promises changes shape here, and it is
+    /// worth saying plainly: before this it was a number of seconds of the rate the sender
+    /// declared, and it is now a number of seconds of the rate measured at the moment the viewer
+    /// attached. A depth is fixed at <see cref="StreamHub.Subscribe"/> and never revised, so a
+    /// stream whose rate genuinely moves during a long session is held to whatever it was doing
+    /// when that viewer arrived. <c>LiveStreamEntry.ObservedPacketsPerSecond</c> is damped against
+    /// a burst for exactly this reason.
     ///
     /// Nothing here is stored. The declaration is read once from what the sender presented and
     /// never corrected - see <see cref="PacketsPerSecond"/> - because this layout outlives the
