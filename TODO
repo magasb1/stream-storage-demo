@@ -92,8 +92,9 @@ Scaling to a thousand streams. The plan, the reasoning and the research behind e
       every viewer that reached the wrong pod. Bounded writers with a dropping queue, an async write
       path, or disconnect a viewer that cannot keep up - any of the three beats a thread. #19 took the
       async write path on the relayed route and left this scoped to the direct one; #11 then measured
-      that route and found no thread to save there - the ceiling on it is the twelve megabytes of
-      libsrt send buffer a slow player fills, not a worker
+      that route and found no per-viewer thread to save there for an ordinary player, because libsrt
+      discards from the send buffer rather than making the send wait. The thread is back only in the
+      case #20 now carries: a viewer that cleared its own packet-drop flag
 - [ ] (#5) ViewerQueuePackets is 2000 packets, which at 25 fps is eighty seconds of lag before skip-to-live
       engages, and a viewer eighty seconds behind live is not a viewer. RecorderQueuePackets has the
       same shape at 20000. Both want to be seconds of media rather than packets, since the packet is a
@@ -106,22 +107,40 @@ Scaling to a thousand streams. The plan, the reasoning and the research behind e
 - [ ] (#7) The document tail is about eleven a second: 200 recordings finishing together took 18 s for the
       last document, in every healthy run. Storage write plus document write, serialized by LiteDB on
       this configuration. Fine at 200, and it scales with the stream count
-- [x] (#11) Measured a slow player on the consumption port, ffmpeg -readrate 0.3 against a 12 Mbit/s
-      stream, in LiveSlowPlayerTests. The code reading was right: SRT drops rather than blocking its
-      sender. Ten slow direct players moved this process from 5 pool workers to 5 and 29 threads to
-      28 over two minutes, with no viewer skipped to live, against the 219 workers 200 slow relayed
-      readers cost before #19 - libsrt's sender-side too-late-packet drop keeps the send buffer
-      drained, so srt_sendmsg never waits. The player loses picture instead: asked of libsrt from the
-      receiving end, such a reader gets 1.3-1.9 Mbit/s of a 12.4 Mbit/s stream and loses about a
-      thousand packets a second, and a reader pacing itself strictly by bytes is disconnected by its
-      own library after about thirty seconds ("SEQUENCE DISCREPANCY ... Reception no longer possible").
-      What a slow direct viewer costs this replica is memory, and it is bounded: about twelve
-      megabytes of libsrt send buffer plus that viewer's four-second queue, measured as 197 MB
-      resident going to 404 MB for ten of them and then flattening. Ingest, the healthy player and the
-      publisher's own link were untouched throughout. So #20's send timeout would bound something that
-      does not happen, and #4's direct half is a memory ceiling rather than a thread one: what wants
-      measuring next is a hundred slow direct players against that per-viewer twelve megabytes, and
-      whether SRTO_SNDBUF should be sized per viewer the way the queue now is
+- [x] (#11) Measured a slow player on the consumption port - ffmpeg -readrate 0.3 against a 12.29 Mbit/s
+      stream, ten of them, two minutes - in LiveSlowPlayerTests, with the mechanism measured on the
+      sending socket in SrtSendPressureTests rather than inferred from it. For a player whose handshake
+      advertised too-late-packet drop, which is libsrt's default and what an ordinary player does, the
+      send does not wait: against a peer that had stopped reading, libsrt held 1581 KB at 1020 ms of
+      the 12000 KB the buffer offers, discarded 461 packets a second out of it, and left no send
+      outstanding at any sample. Ten slow players then skipped nothing to live, which bounds every
+      single write below the four-second queue without counting a thread, and cost fewer than half a
+      thread each - so one thread each, #4's relayed shape, is excluded; the test cannot tell that
+      apart from none, since the peak of 8 workers and 33 threads against 6 and 31 lands during the
+      attach. The player loses picture, which
+      is what #11 predicted: a reader taking three tenths is handed 1.9 Mbit/s of a 12.29 Mbit/s stream
+      and loses about 980 packets a second once its own buffer is full, and one pacing strictly by
+      bytes is disconnected by its own library after about thirty seconds ("SEQUENCE DISCREPANCY ...
+      Reception no longer possible"). Ingest, the healthy player and the publisher's own link were
+      untouched throughout. What a slow viewer costs in memory is NOT settled here: resident grew
+      4.6 MB per player in the run of record and between 5.8 and 20.7 in earlier ones, and that figure
+      carries a muxer, a subscription and a four-second queue as well as the 1.5 MB of send buffer, so
+      the split is inference and the rig knob (LIVE_SCALE_SLOW_DIRECT) exists to measure the slope
+      properly. .scratch/scale-to-1000/slow-direct-players.md is the run
+- [ ] (#20) No SRTO_SNDTIMEO is set anywhere, and the block that leaves is reachable by any caller.
+      Measured in SrtSendPressureTests: with the peer's too-late-packet-drop flag cleared, nothing
+      frees the sending socket's buffer, it filled to its twelve megabytes in fourteen seconds and one
+      send was still inside libsrt twelve seconds later, returning only when the socket was closed
+      under it. A caller clears that flag with one query parameter (tlpktdrop=0), or raises the drop
+      threshold instead by asking for a longer latency, since the handshake settles at the larger of
+      the two sides; the consumption port admits every caller by design, and since #18 the thread that
+      waits is a pool worker, so a handful of them starves the body that disposes newly accepted
+      sockets. Set a send timeout on accepted viewer sockets and decide what a timeout means - skip
+      forward or drop the viewer - together with SRTO_SNDBUF and ViewerQueueSeconds, because the three
+      are one policy. The coupling is the trap: any per-viewer send buffer below bitrate x 1.02 s,
+      which is 1.5 MB at 12.3 Mbit/s, guarantees the buffer reaches its ceiling before the drop
+      threshold can free it, and so manufactures this block for every viewer rather than only for the
+      one that asked for it
 - [ ] (#13) The scale rig exercises no detection, no KLV and no forwards. Detection is the one that
       would move the ceiling: the frame tier decodes at keyframes for the preview, and a detector asks
       for a rate, which makes the decoder decode everything between keyframes for those streams

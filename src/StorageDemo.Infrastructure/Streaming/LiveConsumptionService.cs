@@ -97,22 +97,35 @@ public sealed class LiveConsumptionService(
         // StartNew bound TaskScheduler.Current, so this no longer inherits a scheduler from
         // whoever called it.
         //
-        // The pool pays for the write, because a viewer's writes block inline in srt_sendmsg2 and no
+        // The pool pays for the write, because a viewer's writes block inline in srt_sendmsg and no
         // SRTO_SNDTIMEO is set on these sockets. The fear that came with that - a viewer which is
-        // slow but still alive pinning whatever thread is serving it for as long as it likes, and a
-        // pool saturated by such sends leaving a newly accepted viewer queueing for the body that
-        // disposes the socket accepted just above - has since been measured, and libsrt does not
-        // allow it. Ten players taking three tenths of a 12 Mbit/s stream held this process at five
-        // pool workers and twenty-eight threads for two minutes and overflowed no viewer's queue:
-        // libsrt's sender-side too-late-packet drop keeps that socket's send buffer drained rather
-        // than letting a send wait on it, so the send returns and the loop carries on.
+        // slow but still alive pinning whatever thread is serving it for as long as it likes - has
+        // since been measured on both sides, and the answer carries a condition that is the viewer's
+        // to set rather than ours.
         //
-        // What a slow viewer costs instead is memory and picture. Memory, because libsrt fills that
-        // socket's send buffer first - about twelve megabytes with its defaults, plus that viewer's
-        // own queue, and then it stops growing. Picture, because past that the transport discards the
-        // surplus: such a player receives under two of those twelve megabits and loses the rest.
-        // Neither is a thread, and both are bounded. LiveSlowPlayerTests holds the figures, #11 asked
-        // the question, and #20's send timeout would bound something that was not happening.
+        // For a viewer whose handshake advertised too-late-packet drop, which is libsrt's default and
+        // what an ordinary player does, the send does not wait. libsrt discards from this socket's
+        // send buffer whatever has been queued longer than its drop threshold - the negotiated
+        // latency or a second, whichever is larger, plus a little - so against a peer that had
+        // stopped reading altogether the buffer settled at 1020 ms and 1.5 MB, an eighth of the
+        // twelve megabytes libsrt said it could hold, while it discarded 461 packets a second out of
+        // it and no send waited at all. Ten slow players then cost this process fewer than half a thread
+        // each and skipped no viewer to live; one thread each, which is what #4 measured on the
+        // relayed route, is excluded.
+        //
+        // Clear that flag and nothing frees the buffer. It fills to its twelve megabytes and the send
+        // waits on a condition variable no timeout ever wakes, while the peer goes on acknowledging
+        // so the connection is never declared lost either: measured at twelve seconds and still
+        // waiting when the test closed the socket under it. A caller sets that with one query
+        // parameter on its URL, and can raise the drop threshold instead by asking for a longer
+        // latency, which the handshake settles at the larger of the two sides. Admit above says yes
+        // to everyone by design, so that waiting thread is a stranger's to take, and with the pool
+        // carrying these bodies it is also what a newly accepted viewer queues behind.
+        //
+        // So #20 stays open, re-scoped: a send timeout, sized together with SRTO_SNDBUF and
+        // ViewerQueueSeconds, because those three are one policy. SrtSendPressureTests measures both
+        // cases on the sending socket; LiveSlowPlayerTests measures what the ordinary one costs this
+        // replica, and #11, which asked whether a slow player loses picture, is answered: it does.
         //
         // Ingest is the other way round, and the difference is the point: the listener started above
         // and the coordinator's feed are synchronous from their first line to their last, blocking

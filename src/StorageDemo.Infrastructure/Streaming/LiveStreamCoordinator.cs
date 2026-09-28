@@ -770,11 +770,13 @@ public sealed class LiveStreamCoordinator(
     /// slow or not. What has gone is the unbounded half: the relay route, which is every viewer that
     /// reached the wrong replica, and which now costs nothing per viewer that will not read.
     ///
-    /// That occupancy has since been measured rather than feared, because the same fault on the
-    /// direct route would have been the same ceiling: it is short even for a player taking three
-    /// tenths of what it is sent, since libsrt discards what it can no longer deliver instead of
-    /// making the write wait for it. Ten such players cost this process no thread growth at all.
-    /// <c>LiveSlowPlayerTests</c> has the figures.
+    /// That occupancy has since been measured rather than feared, and it is short for a player that
+    /// advertised too-late-packet drop in its handshake: libsrt discards from the send buffer instead
+    /// of making the write wait, and ten players taking three tenths of what they are sent cost fewer
+    /// than half a thread each. It is not short for a player that cleared that flag, which nothing
+    /// here chooses - the send then waits with no timeout at all, which is #20.
+    /// <c>SrtSendPressureTests</c> has both figures, <c>LiveSlowPlayerTests</c> what the ordinary
+    /// case costs.
     /// </summary>
     private async Task<double> Serve(
         LiveStreamEntry entry,
