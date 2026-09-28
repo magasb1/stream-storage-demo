@@ -106,11 +106,23 @@ At the clean 200-stream, 550-reader row:
 
 - **The per-stream demultiplexer threads are the cost, not the receive worker.** `.NET Long Runni` is
   the `LongRunning` task per feed - `LiveStreamCoordinator.Feed`, which is synchronous and so really
-  does hold a thread - and at the collapse it is 1.8 cores against the receive worker's 0.24. The open
-  TODO about pooling `StreamDemuxer.Pump`'s per-packet `byte[]` is aimed at exactly this thread, and
-  this is the measurement that says it is worth doing: ingest scale on a Linux node is bounded by
-  demultiplexing cost per packet rather than by the accept path. Note what that does *not* say - the
-  socket reader is not exonerated, it is starved; the bullet below is the careful version.
+  does hold a thread - and at the collapse it is 1.8 cores against the receive worker's 0.24. Ingest
+  scale on a Linux node is therefore bounded by per-packet cost on that thread rather than by the
+  accept path. Note what that does *not* say - the socket reader is not exonerated, it is starved;
+  the bullet below is the careful version.
+
+  **Corrected**: this bullet used to say the same measurement made pooling `StreamDemuxer.Pump`'s
+  per-packet `byte[]` worth doing, and it does not. `perf-ingest.md`'s Experiment 1 had already
+  bounded that at a hundred streams and dropped it, and `DemuxCostBench` has since measured it at
+  camera rate off a file: the pump costs 17.9 µs a packet, and 14.7 µs with the allocation removed
+  outright and nothing correct in its place, so pooling's whole ceiling is 3.2 µs against the 250 to
+  470 µs this thread spends on the same packet on a rig - about fourteen milliseconds of processor a
+  second at 150 streams, out of 2.1 cores. A pool's buckets also hold 27 % more bytes for the same
+  media, and memory is what binds here first. Naming the thread was right; naming the allocation
+  inside it was a guess. What this rig's figures support is that the cost is the transport read:
+  reading the same pattern at libsrt's 1,316-byte message granularity rather than 64 KB costs 4.0 µs
+  a packet on this side of the P/Invoke alone - more than the allocation and the copy together - and
+  `perf-ingest.md`'s trace put 69 % of the thread inside `srt_recvmsg`.
 - **The demultiplexer threads ate the cores the receive worker needed** - which is a weaker claim
   than "the receive path is fine", and the weaker one is what the rig supports. At the collapsed row
   the pod wanted 2.8 cores and the rig 2.0 on a four-core box, so every thread there is
