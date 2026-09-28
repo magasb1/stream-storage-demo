@@ -26,7 +26,7 @@ public sealed unsafe class StreamLayoutTests
         using var layout = Layout(videoFrameRate: 25);
 
         Assert.Equal(25, layout.PacketsPerSecond);
-        Assert.Equal(100, layout.QueueDepth(seconds: 4, ceiling: 2_000));
+        Assert.Equal(100, layout.QueueDepth(layout.PacketsPerSecond, seconds: 4, ceiling: 2_000));
     }
 
     /// <summary>
@@ -46,7 +46,7 @@ public sealed unsafe class StreamLayoutTests
 
         // Forty-eight kilohertz in frames of 1024 samples is 46.875 packets a second, not 48000.
         Assert.Equal(71.875, layout.PacketsPerSecond, 3);
-        Assert.Equal(288, layout.QueueDepth(seconds: 4, ceiling: 2_000));
+        Assert.Equal(288, layout.QueueDepth(layout.PacketsPerSecond, seconds: 4, ceiling: 2_000));
     }
 
     /// <summary>
@@ -70,7 +70,7 @@ public sealed unsafe class StreamLayoutTests
         using var impossible = Layout(videoFrameRate: 25, sampleRate: 48_000, frameSize: 1);
 
         Assert.Equal(60, claimed.PacketsPerSecond);
-        Assert.Equal(240, claimed.QueueDepth(seconds: 4, ceiling: 2_000));
+        Assert.Equal(240, claimed.QueueDepth(claimed.PacketsPerSecond, seconds: 4, ceiling: 2_000));
 
         // The audio track claims 48000 packets a second, from a frame of one sample. Discarded, so
         // this transport is twenty-five frames of picture plus the assumption for the track that
@@ -91,7 +91,7 @@ public sealed unsafe class StreamLayoutTests
 
         using var layout = Layout(videoFrameRate: 50);
 
-        Assert.Equal(2_000, layout.QueueDepth(seconds: 60, ceiling: 2_000));
+        Assert.Equal(2_000, layout.QueueDepth(layout.PacketsPerSecond, seconds: 60, ceiling: 2_000));
     }
 
     /// <summary>
@@ -108,11 +108,11 @@ public sealed unsafe class StreamLayoutTests
         using var layout = Layout(videoFrameRate: 1);
 
         // Four seconds of a one-frame-a-second stream is four packets, not sixty-four.
-        Assert.Equal(4, layout.QueueDepth(seconds: 4, ceiling: 2_000));
+        Assert.Equal(4, layout.QueueDepth(layout.PacketsPerSecond, seconds: 4, ceiling: 2_000));
 
         // And asking for less than the floor in seconds gets the floor, in that stream's own terms:
         // half a second of this stream rounds up to one packet, and a queue has to hold a few.
-        Assert.Equal(4, layout.QueueDepth(seconds: 0.1, ceiling: 2_000));
+        Assert.Equal(4, layout.QueueDepth(layout.PacketsPerSecond, seconds: 0.1, ceiling: 2_000));
     }
 
     /// <summary>
@@ -153,6 +153,175 @@ public sealed unsafe class StreamLayoutTests
         Assert.Equal(76, Rollback(bare), 1);
         Assert.Equal(72.9, Rollback(declared), 1);
         Assert.Equal(19.5, Rollback(undeclared), 1);
+    }
+
+    /// <summary>
+    /// A sender that declares far below what it sends has its viewers' queues sized from what
+    /// arrives. Issue #26, and the case that is unreachable from the declaration alone.
+    ///
+    /// <c>Believable</c> rejects a rate that cannot be true and cannot reject one that is merely
+    /// too low: a 1 fps time-lapse and a 50 fps camera lying about itself present the same thing.
+    /// Believed, the liar's viewers get the floor - four packets - against the two hundred four
+    /// seconds of its traffic actually needs, so every one of them skips to live almost
+    /// continuously while the stream reports itself healthy.
+    /// </summary>
+    [Fact]
+    public void A_sender_declaring_far_below_what_it_sends_is_sized_from_what_arrives()
+    {
+        Assert.SkipUnless(Ffmpeg.IsPresent, "No FFmpeg. Run scripts/fetch-ffmpeg.sh.");
+
+        FfmpegLibrary.EnsureLoaded();
+
+        using var lying = Layout(videoFrameRate: 1);
+
+        Assert.Equal(1, lying.PacketsPerSecond);
+
+        // What it was believed for: four seconds of a stream said to send one packet a second is
+        // one packet, raised to the floor a transport's interleaving needs.
+        Assert.Equal(4, lying.QueueDepth(lying.PacketsPerSecond, seconds: 4, ceiling: 2_000));
+
+        // And what fifty arriving a second is worth instead.
+        Assert.Equal(50, lying.EffectivePacketsPerSecond(observedArrivals: 50));
+        Assert.Equal(
+            200,
+            lying.QueueDepth(lying.EffectivePacketsPerSecond(50), seconds: 4, ceiling: 2_000));
+    }
+
+    /// <summary>
+    /// A stream carrying #35's synthetic track is not disturbed by any of this, which is the
+    /// regression this change most needs guarded.
+    ///
+    /// <c>StreamHub.PublishAtLiveEdge</c> deliberately leaves <c>StreamHub.Packets</c> alone, so an
+    /// observation taken from those counters is arrivals only and omits the synthetic track by
+    /// construction. A 25 fps stream with a 1 Hz track therefore observes 25 against a declared 26.
+    /// Compared bare, the observation would lose and the declaration would stand - correct here by
+    /// luck - but the moment the sender is also sending a little fast the bare observation wins and
+    /// sizes the queue 3.8% short of a figure this service computed itself and knows to be right.
+    /// Adding the synthetic rate back is what makes the two halves comparable, and 26 is the proof
+    /// it was added.
+    /// </summary>
+    [Fact]
+    public void A_synthetic_tracks_own_rate_is_added_back_to_what_was_observed()
+    {
+        Assert.SkipUnless(Ffmpeg.IsPresent, "No FFmpeg. Run scripts/fetch-ffmpeg.sh.");
+
+        FfmpegLibrary.EnsureLoaded();
+
+        using var declared = Layout(
+            videoFrameRate: 25,
+            synthetic: [new SyntheticTrack(SyntheticTrackRole.PlatformMetadata, 1)]);
+
+        Assert.Equal(26, declared.PacketsPerSecond);
+        Assert.Equal(1, declared.SyntheticPacketsPerSecond);
+
+        // The assertion that pins the whole composition: 25 arriving plus the 1 this service
+        // publishes is 26, which is what was declared, so nothing moves.
+        Assert.Equal(26, declared.EffectivePacketsPerSecond(observedArrivals: 25));
+        Assert.Equal(104, declared.QueueDepth(declared.EffectivePacketsPerSecond(25), seconds: 4, ceiling: 2_000));
+        Assert.Equal(104, declared.QueueDepth(declared.PacketsPerSecond, seconds: 4, ceiling: 2_000));
+
+        // Had the observation been used bare it would have read 25 - the figure this must not
+        // produce, and the one a stream of exactly this shape yields every beat.
+        Assert.NotEqual(25, declared.EffectivePacketsPerSecond(25));
+
+        // A layout with no synthetic track has nothing to add back, and one whose sender sends its
+        // own KLV got no synthetic track at all.
+        using var bare = Layout(videoFrameRate: 25);
+        using var reporting = Layout(
+            videoFrameRate: 25,
+            klv: true,
+            synthetic: [new SyntheticTrack(SyntheticTrackRole.PlatformMetadata, 1)]);
+
+        Assert.Equal(0, bare.SyntheticPacketsPerSecond);
+        Assert.Equal(0, reporting.SyntheticPacketsPerSecond);
+        Assert.Equal(25, bare.EffectivePacketsPerSecond(observedArrivals: 25));
+    }
+
+    /// <summary>
+    /// Before the first sample, on an interrupted stream, and on a sender that overstates, the
+    /// declaration is what stands - which is the case for taking the larger of the two rather than
+    /// the observation.
+    /// </summary>
+    [Fact]
+    public void An_unmeasured_or_overstating_stream_keeps_its_declaration()
+    {
+        Assert.SkipUnless(Ffmpeg.IsPresent, "No FFmpeg. Run scripts/fetch-ffmpeg.sh.");
+
+        FfmpegLibrary.EnsureLoaded();
+
+        using var layout = Layout(videoFrameRate: 25);
+
+        // Zero is what a stream that has not completed a sample window reports, and it is also
+        // what an interrupted one reports once a window passes with nothing arriving: neither is
+        // asked to say which it is, because both want the same answer.
+        Assert.Equal(25, layout.EffectivePacketsPerSecond(observedArrivals: 0));
+
+        // A sender that overstates keeps today's behaviour exactly - a queue shallower in seconds
+        // than asked for, bounded by the ceiling - rather than gaining a new one out of a change
+        // aimed at the opposite case.
+        using var overstating = Layout(videoFrameRate: 100);
+
+        Assert.Equal(100, overstating.PacketsPerSecond);
+        Assert.Equal(100, overstating.EffectivePacketsPerSecond(observedArrivals: 25));
+
+        // Nothing that cannot be read moves it either. These do not arise from
+        // LiveStreamEntry's arithmetic - a difference of packet totals over a measured interval -
+        // but the figure is multiplied by seconds and cast to a queue depth, so it is closed here
+        // rather than argued about.
+        Assert.Equal(25, layout.EffectivePacketsPerSecond(double.NaN));
+        Assert.Equal(25, layout.EffectivePacketsPerSecond(double.PositiveInfinity));
+        Assert.Equal(25, layout.EffectivePacketsPerSecond(-5));
+    }
+
+    /// <summary>
+    /// What this does to a viewer's deepest rollback, which is the other consumer of the rate and
+    /// the one with a measured figure already pinned to it.
+    ///
+    /// Two regions, and the boundary is arithmetic rather than taste. <c>Fitting</c>'s room is
+    /// <c>ViewerQueuePackets / R - ViewerQueueSeconds</c>, and <c>ResolvePreroll</c> then clamps it
+    /// to what the rolling buffer actually holds, which is <c>BufferWindowSeconds</c> = 30. Room
+    /// exceeds 30 whenever R is below 2000/34 = 58.8, so below that the buffer binds and Fitting is
+    /// moot: the headline 76 and 72.9 seconds pinned above are both already in that region and both
+    /// already undeliverable. Above it Fitting binds, and there this change moves the figure toward
+    /// the truth rather than away from it.
+    /// </summary>
+    [Fact]
+    public void A_rollback_is_unchanged_below_the_rate_at_which_fitting_binds()
+    {
+        Assert.SkipUnless(Ffmpeg.IsPresent, "No FFmpeg. Run scripts/fetch-ffmpeg.sh.");
+
+        FfmpegLibrary.EnsureLoaded();
+
+        var options = new LiveOptions();
+
+        // The boundary itself, from the options rather than from the prose above.
+        Assert.Equal(58.8, options.ViewerQueuePackets / (options.BufferWindowSeconds + options.ViewerQueueSeconds), 1);
+
+        using var bare = Layout(videoFrameRate: 25);
+        using var declared = Layout(
+            videoFrameRate: 25,
+            synthetic: [new SyntheticTrack(SyntheticTrackRole.PlatformMetadata, 1)]);
+
+        // An honest stream below the boundary: the observation agrees with the declaration, so the
+        // room is the same figure it was, and the buffer binds at 30 either way.
+        Assert.Equal(76, Rollback(bare, observedArrivals: 25), 1);
+        Assert.Equal(72.9, Rollback(declared, observedArrivals: 25), 1);
+        Assert.True(Rollback(declared, observedArrivals: 25) > options.BufferWindowSeconds);
+
+        // The liar from the issue, which is the case that crosses the boundary. Declared, it claims
+        // a rollback of 1996 seconds against a buffer holding 30; observed at fifty arriving a
+        // second it says 36, and with #35's track 35.2 - still more than the buffer holds, so the
+        // thirty seconds is delivered either way and the figure the header promises stops being a
+        // fiction.
+        using var lying = Layout(videoFrameRate: 1);
+        using var lyingWithTrack = Layout(
+            videoFrameRate: 1,
+            synthetic: [new SyntheticTrack(SyntheticTrackRole.PlatformMetadata, 1)]);
+
+        Assert.Equal(1_996, Rollback(lying, observedArrivals: 0), 1);
+        Assert.Equal(36, Rollback(lying, observedArrivals: 50), 1);
+        Assert.Equal(35.2, Rollback(lyingWithTrack, observedArrivals: 50), 1);
+        Assert.True(Rollback(lyingWithTrack, observedArrivals: 50) > options.BufferWindowSeconds);
     }
 
     /// <summary>
@@ -278,11 +447,16 @@ public sealed unsafe class StreamLayoutTests
     /// stream: the viewer queue ceiling in seconds of this stream, less the room held back for the
     /// live flow.
     /// </summary>
-    private static double Rollback(StreamLayout layout)
+    /// <param name="observedArrivals">
+    /// What the stream is measured to be sending, excluding synthetic tracks; zero for a stream
+    /// that has not been measured, which is what makes the declaration stand.
+    /// </param>
+    private static double Rollback(StreamLayout layout, double observedArrivals = 0)
     {
         var options = new LiveOptions();
+        var rate = layout.EffectivePacketsPerSecond(observedArrivals);
 
-        return (options.ViewerQueuePackets / layout.PacketsPerSecond) - options.ViewerQueueSeconds;
+        return (options.ViewerQueuePackets / rate) - options.ViewerQueueSeconds;
     }
 
     /// <summary>

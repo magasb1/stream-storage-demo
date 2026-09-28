@@ -737,7 +737,7 @@ public sealed class LiveStreamCoordinator(
             return asked;
         }
 
-        var room = (_options.ViewerQueuePackets / layout.PacketsPerSecond) - _options.ViewerQueueSeconds;
+        var room = (_options.ViewerQueuePackets / Effective(entry, layout)) - _options.ViewerQueueSeconds;
 
         if (room <= 0)
         {
@@ -748,6 +748,41 @@ public sealed class LiveStreamCoordinator(
         var reaches = entry.Hub.ResolvePreroll(ask);
 
         return reaches <= room ? ask : Math.Max(0, ask - (reaches - room));
+    }
+
+    /// <summary>
+    /// The rate this stream's viewers are sized against, and the one place either viewer path asks
+    /// for it: the sender's declaration, or what the traffic is actually doing where that is more.
+    ///
+    /// Issue #26, and the arithmetic itself is
+    /// <see cref="StreamLayout.EffectivePacketsPerSecond"/>, which says why it is a maximum and why
+    /// the synthetic rate is added to the observed half. Here because this is where the two things
+    /// it needs meet - the layout is the hub's, the observation is the entry's - and because
+    /// <see cref="Serve"/> and <see cref="Fitting"/> must answer identically: a queue sized from
+    /// one rate and a rollback fitted to another is a viewer promised more history than its queue
+    /// can hold, which costs it the whole rollback rather than the part that did not fit.
+    /// </summary>
+    private double Effective(LiveStreamEntry entry, StreamLayout layout)
+    {
+        var effective = layout.EffectivePacketsPerSecond(entry.ObservedPacketsPerSecond);
+
+        // Once per stream per connection and not once per sample, which is the whole of the
+        // decision. That a sender is misdeclaring is the kind of thing an operator wants told -
+        // an H.264 encoder's VUI timing is wrong in the wild by accident often enough that this
+        // is a diagnosis rather than an accusation - but this runs for every viewer that attaches
+        // and every rollback resolved, so a line per occurrence would be noise on the busiest path
+        // here. See LiveStreamEntry.ReportsMisdeclaredRate for where the once is kept.
+        if (effective > layout.PacketsPerSecond && entry.ReportsMisdeclaredRate())
+        {
+            logger.LogInformation(
+                "Stream '{Name}' declares {Declared} packets a second and is sending {Observed}; "
+                + "its viewers' queues are sized from what arrives",
+                entry.Name,
+                Math.Round(layout.PacketsPerSecond, 2),
+                Math.Round(effective, 2));
+        }
+
+        return effective;
     }
 
     public Task<double> WriteToViewerAsync(
@@ -816,7 +851,7 @@ public sealed class LiveStreamCoordinator(
         var queued = _options.ViewerQueueSeconds + entry.Hub.ResolvePreroll(preroll);
 
         using var subscription = entry.Hub.Subscribe(
-            layout.QueueDepth(queued, _options.ViewerQueuePackets),
+            layout.QueueDepth(Effective(entry, layout), queued, _options.ViewerQueuePackets),
             OverflowPolicy.SkipToLive,
             streamIndexes: [],
             preroll);

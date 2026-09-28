@@ -138,6 +138,7 @@ public sealed unsafe class StreamLayout : IDisposable
         AVRational[] timeBases,
         SyntheticTrackRole?[] roles,
         double packetsPerSecond,
+        double syntheticPacketsPerSecond,
         int videoIndex,
         int klvIndex)
     {
@@ -145,6 +146,7 @@ public sealed unsafe class StreamLayout : IDisposable
         _timeBases = timeBases;
         _roles = roles;
         PacketsPerSecond = packetsPerSecond;
+        SyntheticPacketsPerSecond = syntheticPacketsPerSecond;
         VideoIndex = videoIndex;
         KlvIndex = klvIndex;
     }
@@ -203,8 +205,30 @@ public sealed unsafe class StreamLayout : IDisposable
     /// between four and eighty. A declaration that cannot be true - an infinity, or ten thousand
     /// frames a second - is replaced rather than believed, because this figure is sender-controlled
     /// and a viewer's queue is sized from it.
+    ///
+    /// Still read once and never corrected after issue #26, which is the point of
+    /// <see cref="EffectivePacketsPerSecond"/> being a function rather than a setter: a
+    /// declaration that turns out to be far too low is answered by giving the viewer path a
+    /// better figure to ask for, not by editing this one. This layout outlives the connection and
+    /// is shared with the recorder, the forwarder and the snapshot muxer, none of which is on the
+    /// path the misdeclaration hurts.
     /// </summary>
     public double PacketsPerSecond { get; }
+
+    /// <summary>
+    /// The part of <see cref="PacketsPerSecond"/> that this service produces rather than receives:
+    /// the sum of the appended <see cref="SyntheticTrack"/> rates, and zero for a layout with none.
+    ///
+    /// It exists because an observed rate and a declared one are not otherwise commensurable.
+    /// <see cref="StreamHub.PublishAtLiveEdge"/> deliberately leaves <c>StreamHub.Packets</c> alone
+    /// - that split is what stops a packet this replica produced moving <c>LastPacketAt</c> and
+    /// keeping a dead camera alive for ever - so any rate measured from those counters is arrivals
+    /// only and systematically omits every synthetic track. Adding this back is what makes the two
+    /// halves of <c>LiveStreamCoordinator</c>'s effective rate comparable, and it is what keeps a
+    /// 25 fps stream with a 1 Hz synthetic track reading 26 rather than 25: a rate this service
+    /// itself declared and knows to be true must not be talked down by measuring around it.
+    /// </summary>
+    public double SyntheticPacketsPerSecond { get; }
 
     /// <summary>
     /// The clock everything is measured against. The video stream when there is one, so a segment
@@ -241,6 +265,7 @@ public sealed unsafe class StreamLayout : IDisposable
 
         var arrived = (int)format->nb_streams;
         var packetsPerSecond = 0d;
+        var syntheticPacketsPerSecond = 0d;
         var videoIndex = -1;
         var klvIndex = -1;
 
@@ -318,33 +343,118 @@ public sealed unsafe class StreamLayout : IDisposable
             // hangs on; SyntheticTrack.PacketsPerSecond says what it costs to get wrong.
             packetsPerSecond += track.PacketsPerSecond;
 
+            // Kept as well as added, rather than recovered later by walking the roles: a role says
+            // which track is synthetic, not what rate it was declared at, and the track records
+            // here are gone once this loop ends. See SyntheticPacketsPerSecond for what reads it.
+            syntheticPacketsPerSecond += track.PacketsPerSecond;
+
             if (klvIndex < 0 && track.Role == SyntheticTrackRole.PlatformMetadata)
             {
                 klvIndex = index;
             }
         }
 
-        return new StreamLayout(parameters, timeBases, roles, packetsPerSecond, videoIndex, klvIndex);
+        return new StreamLayout(
+            parameters,
+            timeBases,
+            roles,
+            packetsPerSecond,
+            syntheticPacketsPerSecond,
+            videoIndex,
+            klvIndex);
     }
 
     /// <summary>
-    /// How many packets a subscriber has to hold to keep this many seconds of this stream, never
-    /// fewer than a burst's worth and never more than <paramref name="ceiling"/>.
+    /// The rate a viewer's queue should actually be sized from: this layout's declaration, or what
+    /// the stream is observed to be sending where that is more.
+    ///
+    /// Issue #26. <see cref="Believable"/> can reject a declared rate that cannot be true - an
+    /// infinity, ten thousand frames a second - but it cannot reject one that is merely too low,
+    /// because from outside a 1 fps time-lapse and a 50 fps camera misdeclaring itself are the
+    /// same thing. A sender declaring 1 while sending 50 gets a viewer queue of four packets
+    /// against the two hundred its traffic needs, so every viewer of it skips to live almost
+    /// continuously while the stream reports itself healthy. An H.264 encoder's VUI timing is
+    /// wrong in the wild by accident, so this needs no attacker.
+    ///
+    /// <see cref="SyntheticPacketsPerSecond"/> is added to the observation and not to the
+    /// declaration, and getting that backwards is the trap in this one expression.
+    /// <see cref="StreamHub.PublishAtLiveEdge"/> does not increment <c>StreamHub.Packets</c> - the
+    /// split that stops a locally produced packet moving <c>LastPacketAt</c> and keeping a dead
+    /// camera alive - so an observation taken from those counters is arrivals only, while
+    /// <see cref="PacketsPerSecond"/> already counts every track. Without the addition a 25 fps
+    /// stream carrying a 1 Hz synthetic track would observe 25 against a declared 26 and have
+    /// every viewer's queue sized 3.8% short of a figure this service computed itself and knows to
+    /// be right - invisibly, on exactly the streams whose rate is least in doubt. With it the two
+    /// are commensurable, the larger is the declared 26, and nothing moves.
+    ///
+    /// The larger of the two rather than the observation alone, for two reasons. A stream that has
+    /// just started, is interrupted, or has not yet completed a sample window reports no arrivals
+    /// at all, and falls back to the declaration without any caller having to ask which of the
+    /// three it is in. And a sender that <i>over</i>states keeps exactly today's behaviour - a
+    /// queue shallower in seconds than asked for, bounded by the packet ceiling - rather than
+    /// gaining a new one out of a change aimed at the opposite case.
+    ///
+    /// Not held to <see cref="MaxPacketsPerSecond"/>, which a declaration is, because the two are
+    /// not the same kind of statement. That ceiling exists because a claim is free: a sender types
+    /// 10000/1 and pins every one of its viewers to the packet ceiling, and so to a fraction of a
+    /// second of queue, at no cost to itself. An observation is traffic that actually arrived, and
+    /// a stream genuinely sending two thousand packets a second genuinely does fit under a second
+    /// of them in <see cref="LiveOptions.ViewerQueuePackets"/>. The memory is bounded by that
+    /// ceiling either way, so the worst a flood can do here is tell the truth about itself.
+    ///
+    /// Nothing here is stored. The declaration is read once from what the sender presented and
+    /// never corrected - see <see cref="PacketsPerSecond"/> - because this layout outlives the
+    /// connection and is shared with the recorder, the forwarder and the snapshot muxer, none of
+    /// which wants a rate that moves underneath it.
+    /// </summary>
+    /// <param name="observedArrivals">
+    /// Packets a second arriving from the sender, excluding synthetic tracks, or zero where the
+    /// stream has not been measured. <c>LiveStreamEntry.ObservedPacketsPerSecond</c> is the one
+    /// producer of it.
+    /// </param>
+    public double EffectivePacketsPerSecond(double observedArrivals)
+    {
+        // Guarded rather than trusted: this is multiplied by a number of seconds and cast to a
+        // queue depth, and the arithmetic upstream is a difference of packet totals over a
+        // measured interval. Believable is not reused, because its fallback is the assumption of
+        // sixty - right for a rate a sender declared, wrong here, where a figure that cannot be
+        // read is a reason to keep the declaration and nothing more.
+        var observed = double.IsFinite(observedArrivals) && observedArrivals > 0
+            ? observedArrivals + SyntheticPacketsPerSecond
+            : 0;
+
+        return Math.Max(PacketsPerSecond, observed);
+    }
+
+    /// <summary>
+    /// How many packets a subscriber has to hold to keep this many seconds of a stream running at
+    /// <paramref name="packetsPerSecond"/>, never fewer than a burst's worth and never more than
+    /// <paramref name="ceiling"/>.
     ///
     /// The ceiling is the reason a queue can be asked for in seconds at all. Seconds are what the
     /// intent is written in - a viewer must never accumulate more delay than it can be asked to
     /// tolerate - but the memory the queue costs is packets, and a sender is free to claim a
     /// thousand frames a second. Whichever of the two binds first is the answer.
+    ///
+    /// The rate is passed in rather than read from <see cref="PacketsPerSecond"/>, which is issue
+    /// #26: <c>Believable</c> can reject a declared rate that is too high but not one that is too
+    /// low, because a 1 fps time-lapse and a 50 fps camera misdeclaring itself present the same
+    /// thing. The one production caller is <c>LiveStreamCoordinator.Serve</c>, which passes the
+    /// larger of the declaration and what the traffic is actually doing; taking the rate as an
+    /// argument is what puts that rule in one place there rather than hiding a second rate in
+    /// here. Everything else attaches with a flat packet count and never reaches this at all.
     /// </summary>
-    public int QueueDepth(double seconds, int ceiling)
+    public int QueueDepth(double packetsPerSecond, double seconds, int ceiling)
     {
         // The floor is in seconds, so that a slow stream gets a short queue rather than a deep one:
         // a floor in packets is how a queue meant to hold a moment came to hold eighty seconds.
-        var packets = Math.Ceiling(Math.Max(seconds, MinimumSeconds) * PacketsPerSecond);
+        var packets = Math.Ceiling(Math.Max(seconds, MinimumSeconds) * packetsPerSecond);
 
         // Clamped this way round rather than with Math.Clamp, which throws when a deployment has
         // set a ceiling below the floor rather than quietly giving it the smaller of the two. The
-        // rates are finite by construction, so the cast cannot see a NaN.
+        // rates are finite by construction - a declaration through Believable, an observation
+        // through EffectivePacketsPerSecond, which is the only thing that produces one - so the
+        // cast cannot see a NaN.
         return Math.Min(ceiling, Math.Max(MinimumPackets, (int)Math.Min(packets, int.MaxValue)));
     }
 
