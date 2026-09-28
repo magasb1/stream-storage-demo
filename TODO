@@ -114,9 +114,14 @@ Scaling to a thousand streams. The plan, the reasoning and the research behind e
       files and 200 decodes on the same pool as everything else. About 15 ms each here, so it passes at
       200 and will not at a thousand with a detector triggering captures. A semaphore the width of the
       processor count costs nothing and removes the queue
-- [ ] (#7) The document tail is about eleven a second: 200 recordings finishing together took 18 s for the
-      last document, in every healthy run. Storage write plus document write, serialized by LiteDB on
-      this configuration. Fine at 200, and it scales with the stream count
+- [x] (#7) Withdrawn: there is no document tail worth the name, and the 18 s this entry used to claim was
+      my own measurement error. The stopwatch started when the rig got round to asking rather than when
+      the recorders stopped, so at 200 streams it was timing thirty seconds of a forty-five-second
+      recording and reporting three quarters of it as a queue of document writes. Re-anchored on the
+      live.recordings.active gauge reaching zero, the last document lands 0.1 s after the final
+      recorder stops - measured again at 200 streams recording 400 s each while #21's decoupling rolled
+      a part under all of them. Storage write plus document write are still serialized by LiteDB on
+      this configuration, so the shape of the worry was right; the number was not
 - [x] (#11) Measured a slow player on the consumption port - ffmpeg -readrate 0.3 against a 12.29 Mbit/s
       stream, ten of them, two minutes - in LiveSlowPlayerTests, with the mechanism measured on the
       sending socket in SrtSendPressureTests rather than inferred from it. For a player whose handshake
