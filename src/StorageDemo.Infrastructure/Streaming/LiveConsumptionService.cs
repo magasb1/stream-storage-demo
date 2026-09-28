@@ -97,13 +97,35 @@ public sealed class LiveConsumptionService(
         // StartNew bound TaskScheduler.Current, so this no longer inherits a scheduler from
         // whoever called it.
         //
-        // The pool is not strictly better off, which should be read before this is taken for a win
-        // everywhere. A viewer's writes block inline in srt_sendmsg2 and no SRTO_SNDTIMEO is set on
-        // these sockets, so a viewer that is slow but still alive pins whatever thread is serving it
-        // for as long as it likes. That used to be a thread of its own and is now a pool thread, so
-        // a pool saturated by such sends makes a newly accepted viewer queue for its own body to
-        // begin - and that body is what disposes the socket accepted just above. The missing send
-        // timeout is #20; this change does not pretend to be its fix.
+        // The pool pays for the write, because a viewer's writes block inline in srt_sendmsg and no
+        // SRTO_SNDTIMEO is set on these sockets. The fear that came with that - a viewer which is
+        // slow but still alive pinning whatever thread is serving it for as long as it likes - has
+        // since been measured on both sides, and the answer carries a condition that is the viewer's
+        // to set rather than ours.
+        //
+        // For a viewer whose handshake advertised too-late-packet drop, which is libsrt's default and
+        // what an ordinary player does, the send does not wait. libsrt discards from this socket's
+        // send buffer whatever has been queued longer than its drop threshold - the negotiated
+        // latency or a second, whichever is larger, plus a little - so against a peer that had
+        // stopped reading altogether the buffer settled at 1020 ms and 1.5 MB, an eighth of the
+        // twelve megabytes libsrt said it could hold, while it discarded 461 packets a second out of
+        // it and no send waited at all. Ten slow players then cost this process fewer than half a thread
+        // each and skipped no viewer to live; one thread each, which is what #4 measured on the
+        // relayed route, is excluded.
+        //
+        // Clear that flag and nothing frees the buffer. It fills to its twelve megabytes and the send
+        // waits on a condition variable no timeout ever wakes, while the peer goes on acknowledging
+        // so the connection is never declared lost either: measured at twelve seconds and still
+        // waiting when the test closed the socket under it. A caller sets that with one query
+        // parameter on its URL, and can raise the drop threshold instead by asking for a longer
+        // latency, which the handshake settles at the larger of the two sides. Admit above says yes
+        // to everyone by design, so that waiting thread is a stranger's to take, and with the pool
+        // carrying these bodies it is also what a newly accepted viewer queues behind.
+        //
+        // So #20 stays open, re-scoped: a send timeout, sized together with SRTO_SNDBUF and
+        // ViewerQueueSeconds, because those three are one policy. SrtSendPressureTests measures both
+        // cases on the sending socket; LiveSlowPlayerTests measures what the ordinary one costs this
+        // replica, and #11, which asked whether a slow player loses picture, is answered: it does.
         //
         // Ingest is the other way round, and the difference is the point: the listener started above
         // and the coordinator's feed are synchronous from their first line to their last, blocking

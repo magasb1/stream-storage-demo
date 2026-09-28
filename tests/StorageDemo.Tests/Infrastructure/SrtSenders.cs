@@ -80,12 +80,31 @@ internal static class SrtSenders
     /// measures the rig. This is what a viewer costs the service - a socket, a subscription and a
     /// muxer - with nothing on this side but a read.
     /// </summary>
-    public static Process StartCopyPlayers(int port, IReadOnlyList<string> names)
+    /// <param name="readRate">
+    /// How fast each connection reads, as a multiple of real time, or null to take the bytes as fast
+    /// as the service hands them over, which is what a healthy player does.
+    ///
+    /// It is the only way this suite has of making a player on the consumption port slow. A relayed
+    /// viewer is an HTTP read this process can simply pause between; a direct one is libsrt's
+    /// connection, and nothing on this side of it can be slowed down, so the pacing has to happen
+    /// inside the reader. 0.3 is a player taking under a third of what it is sent - a link that
+    /// cannot carry the stream, which is the case #11 asks about, rather than a player that has
+    /// stopped reading altogether.
+    ///
+    /// Per input, not per process: ffmpeg's read-rate limiter is an input option, and the ten
+    /// connections in one of these processes are ten inputs.
+    /// </param>
+    public static Process StartCopyPlayers(int port, IReadOnlyList<string> names, double? readRate = null)
         => Start(
         [
             "-hide_banner", "-loglevel", "error",
             .. names.SelectMany(name => (string[])
-                ["-i", Target(port, $"#!::r={name},m=request", null)]),
+            [
+                .. readRate is { } rate
+                    ? (string[])["-readrate", rate.ToString("0.###", CultureInfo.InvariantCulture)]
+                    : [],
+                "-i", Target(port, $"#!::r={name},m=request", null),
+            ]),
 
             // One output per input rather than every input mapped into one: ffmpeg interleaves the
             // streams of a single output by timestamp, so one slow viewer would hold up the rest of

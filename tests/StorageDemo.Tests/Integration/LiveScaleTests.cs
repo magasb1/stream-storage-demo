@@ -102,6 +102,29 @@ public sealed class LiveScaleTests(ITestOutputHelper output) : IAsyncLifetime
     /// </summary>
     private static readonly int SlowReaders = Optional("LIVE_SCALE_SLOW_READERS", 0);
 
+    /// <summary>
+    /// How many of the direct players read slower than the stream arrives, and how fast they read.
+    ///
+    /// The same failure on the other route, and it costs something else entirely: a direct player's
+    /// writes block inline in libsrt rather than being handed to a queue, so the question here was
+    /// threads and the answer measured in <see cref="LiveSlowPlayerTests"/> is that an ordinary
+    /// player costs none of them - libsrt discards from the send buffer rather than making the send
+    /// wait. What ten of them cost in memory could not be separated from ten muxers and ten queues at
+    /// that scale, which is what this exists for: a hundred of them against a send buffer that holds
+    /// about a second and a half of stream each, and a resident figure with a slope worth reading.
+    ///
+    /// Rounded up to whole processes, because the players come ten to a process and one process reads
+    /// at one rate.
+    /// </summary>
+    private static readonly int SlowDirect = Optional("LIVE_SCALE_SLOW_DIRECT", 0);
+
+    /// <summary>
+    /// What those players read, as a percentage of real time: 30 is three tenths, which is #11's
+    /// figure and the one the focused test measured at, so a rig row can be read beside it. A
+    /// percentage rather than a fraction because the environment is read as an integer.
+    /// </summary>
+    private static readonly double SlowDirectRate = Configured("LIVE_SCALE_SLOW_DIRECT_RATE", 30) / 100d;
+
     private static readonly int SlowDelayMs = Configured("LIVE_SCALE_SLOW_DELAY_MS", 2000);
 
     /// <summary>How long each recording runs, once every stream has been asked for one.</summary>
@@ -330,7 +353,12 @@ public sealed class LiveScaleTests(ITestOutputHelper output) : IAsyncLifetime
                         .Select(offset => Name(offset % streams))
                         .ToArray();
 
-                    _processes.Add(SrtSenders.StartCopyPlayers(ConsumptionPort, names));
+                    // The slow ones first, so a sample small enough to be all of them is all of them -
+                    // the same order the relayed readers are given their pause in below.
+                    _processes.Add(SrtSenders.StartCopyPlayers(
+                        ConsumptionPort,
+                        names,
+                        index < SlowDirect ? SlowDirectRate : null));
                     _direct += names.Length;
                 }
             }

@@ -272,7 +272,13 @@ public sealed unsafe class SrtSocketStream : Stream, IWireWriter
     ///
     /// libsrt has no asynchronous send: a send blocks until the socket has room, and making that
     /// non-blocking would mean libsrt's own epoll rather than anything a .NET task can express. A
-    /// write to an SRT peer therefore occupies a thread whatever this method does. What the base
+    /// write to an SRT peer therefore occupies a thread whatever this method does.
+    ///
+    /// How long it occupies one is the peer's business, not this class's, and it is measured in
+    /// <c>SrtSendPressureTests</c>: a peer advertising too-late-packet drop lets libsrt discard from
+    /// this buffer, so the write never waits; a peer that cleared that flag fills the buffer and the
+    /// write then waits with no timeout, because nothing sets SRTO_SNDTIMEO. That is #20, and it is
+    /// the reason the consumption port's comment about this method is as long as it is. What the base
     /// class does is not wrong so much as pointless here: it moves the blocking send to a
     /// thread-pool worker and releases the caller while it runs, which for a consumer that has
     /// nothing else to do until the write finishes buys a hop and a <see cref="Task"/> and no
