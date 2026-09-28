@@ -137,7 +137,8 @@ still reported itself healthy - is in [`docs/observability.md`](docs/observabili
 ## Tests
 
 ```bash
-dotnet test
+dotnet test                                              # the solution
+dotnet test tests/StorageDemo.Tests/StorageDemo.Tests.csproj   # just the suite, no desktop client
 ```
 
 One specification per abstraction, run against every implementation, so LiteDB and PostgreSQL — and
